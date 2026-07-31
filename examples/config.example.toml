@@ -1,0 +1,9 @@
+# RFC 5737 documentation addresses. Replace them with private LAN addresses.
+xbox_ip = "192.0.2.25"
+local_ip = "192.0.2.35"
+xbdm_port = 730
+
+[safety]
+require_supported_build = true
+allow_invasive_diagnostics = false
+

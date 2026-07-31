@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Minimal Blaze 3 ProtoFire/TDF codec used by the FIFA 14 revival tools."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+INTEGER = 0
+STRING = 1
+BINARY = 2
+STRUCT = 3
+LIST = 4
+MAP = 5
+UNION = 6
+VARIABLE = 7
+OBJECT_TYPE = 8
+OBJECT_ID = 9
+
+
+@dataclass
+class Field:
+    label: str
+    type: int
+    value: Any
+
+
+def encode_tag(label: str) -> bytes:
+    label = label[:4]
+    value = 0
+    for index, character in enumerate(label):
+        value |= (0x20 | (ord(character) & 0x1F)) << ((3 - index) * 6)
+    return value.to_bytes(3, "big")
+
+
+def decode_tag(data: bytes) -> str:
+    value = int.from_bytes(data, "big")
+    label = "".join(
+        chr(((((value >> shift) & 0x3F) & 0x1F) | 0x40))
+        for shift in (18, 12, 6, 0)
+    )
+    return label.rstrip("@")
+
+
+def encode_integer(value: int) -> bytes:
+    if value < 0:
+        value = ((-value) << 1) | 1
+    if value < 0x40:
+        return bytes((value,))
+    output = bytearray(((value & 0x3F) | 0x80,))
+    value >>= 6
+    while value >= 0x80:
+        output.append((value & 0x7F) | 0x80)
+        value >>= 7
+    output.append(value)
+    return bytes(output)
+
+
+class Decoder:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.position = 0
+
+    def take(self, size: int) -> bytes:
+        end = self.position + size
+        if end > len(self.data):
+            raise ValueError(f"TDF truncated at offset 0x{self.position:X}")
+        result = self.data[self.position:end]
+        self.position = end
+        return result
+
+    def byte(self) -> int:
+        return self.take(1)[0]
+
+    def integer(self) -> int:
+        value = self.byte()
+        if value < 0x80:
+            return value
+        result = value & 0x3F
+        for index in range(1, 9):
+            value = self.byte()
+            result |= (value & 0x7F) << ((index * 7) - 1)
+            if value < 0x80:
+                break
+        return result
+
+    def string(self) -> str:
+        size = self.integer()
+        if size == 0:
+            return ""
+        raw = self.take(size)
+        if raw[-1] != 0:
+            raise ValueError("TDF string is not NUL terminated")
+        return raw[:-1].decode("ascii", "replace")
+
+    def struct(self) -> list[Field]:
+        fields: list[Field] = []
+        while self.position < len(self.data) and self.data[self.position] != 0:
+            fields.append(self.field())
+        if self.position >= len(self.data):
+            raise ValueError("Unterminated TDF struct")
+        self.position += 1
+        return fields
+
+    def list_item(self, item_type: int) -> Any:
+        if item_type == INTEGER:
+            return self.integer()
+        if item_type == STRING:
+            return self.string()
+        if item_type == STRUCT:
+            return self.struct()
+        if item_type == OBJECT_TYPE:
+            return (self.integer(), self.integer())
+        if item_type == OBJECT_ID:
+            return (self.integer(), self.integer(), self.integer())
+        raise ValueError(
+            f"Unsupported TDF list item type {item_type} "
+            f"at offset 0x{self.position:X}"
+        )
+
+    def field(self) -> Field:
+        offset = self.position
+        label = decode_tag(self.take(3))
+        field_type = self.byte()
+        if field_type == INTEGER:
+            value: Any = self.integer()
+        elif field_type == STRING:
+            value = self.string()
+        elif field_type == BINARY:
+            value = self.take(self.integer())
+        elif field_type == STRUCT:
+            value = self.struct()
+        elif field_type == LIST:
+            item_type = self.byte()
+            count = self.integer()
+            value = (item_type, [self.list_item(item_type) for _ in range(count)])
+        elif field_type == MAP:
+            key_type = self.byte()
+            value_type = self.byte()
+            count = self.integer()
+            pairs = [
+                (
+                    self.list_item(key_type),
+                    self.list_item(value_type),
+                )
+                for _ in range(count)
+            ]
+            value = (key_type, value_type, pairs)
+        elif field_type == UNION:
+            active = self.byte()
+            value = (active, None if active == 0x7F else self.field())
+        elif field_type == OBJECT_TYPE:
+            value = (self.integer(), self.integer())
+        elif field_type == OBJECT_ID:
+            value = (self.integer(), self.integer(), self.integer())
+        else:
+            raise ValueError(
+                f"Unsupported TDF type {field_type} for {label} "
+                f"at offset 0x{offset:X}"
+            )
+        return Field(label, field_type, value)
+
+    def all(self) -> list[Field]:
+        fields: list[Field] = []
+        while self.position < len(self.data):
+            fields.append(self.field())
+        return fields
+
+
+def encode_string(value: str) -> bytes:
+    raw = value.encode("ascii") + b"\0"
+    return encode_integer(len(raw)) + raw
+
+
+def encode_item(item_type: int, value: Any) -> bytes:
+    if item_type == INTEGER:
+        return encode_integer(int(value))
+    if item_type == STRING:
+        return encode_string(str(value))
+    if item_type == STRUCT:
+        return encode_fields(value) + b"\0"
+    if item_type == OBJECT_TYPE:
+        return encode_integer(value[0]) + encode_integer(value[1])
+    if item_type == OBJECT_ID:
+        return (
+            encode_integer(value[0])
+            + encode_integer(value[1])
+            + encode_integer(value[2])
+        )
+    raise ValueError(f"Unsupported TDF item type {item_type}")
+
+
+def encode_field(field: Field) -> bytes:
+    output = bytearray(encode_tag(field.label))
+    output.append(field.type)
+    if field.type == INTEGER:
+        output += encode_integer(int(field.value))
+    elif field.type == STRING:
+        output += encode_string(str(field.value))
+    elif field.type == BINARY:
+        output += encode_integer(len(field.value))
+        output += field.value
+    elif field.type == STRUCT:
+        output += encode_fields(field.value)
+        output.append(0)
+    elif field.type == LIST:
+        item_type, values = field.value
+        output.append(item_type)
+        output += encode_integer(len(values))
+        for value in values:
+            output += encode_item(item_type, value)
+    elif field.type == MAP:
+        key_type, value_type, pairs = field.value
+        output += bytes((key_type, value_type))
+        output += encode_integer(len(pairs))
+        for key, value in pairs:
+            output += encode_item(key_type, key)
+            output += encode_item(value_type, value)
+    elif field.type == UNION:
+        active, nested = field.value
+        output.append(active)
+        if nested is not None:
+            output += encode_field(nested)
+    elif field.type == OBJECT_TYPE:
+        output += encode_integer(field.value[0])
+        output += encode_integer(field.value[1])
+    elif field.type == OBJECT_ID:
+        output += encode_integer(field.value[0])
+        output += encode_integer(field.value[1])
+        output += encode_integer(field.value[2])
+    else:
+        raise ValueError(f"Unsupported TDF type {field.type}")
+    return bytes(output)
+
+
+def encode_fields(fields: list[Field]) -> bytes:
+    return b"".join(encode_field(field) for field in fields)
+
+
+def encode_frame(
+    component: int,
+    command: int,
+    error: int,
+    message_type: int,
+    message_number: int,
+    payload: bytes,
+) -> bytes:
+    if len(payload) > 0xFFFF:
+        raise ValueError("Extended ProtoFire frames are not implemented")
+    return (
+        len(payload).to_bytes(2, "big")
+        + component.to_bytes(2, "big")
+        + command.to_bytes(2, "big")
+        + error.to_bytes(2, "big")
+        + bytes(((message_type & 0xF) << 4, (message_number >> 16) & 0xF))
+        + (message_number & 0xFFFF).to_bytes(2, "big")
+        + payload
+    )
+
+
+def json_value(value: Any) -> Any:
+    if isinstance(value, Field):
+        return {
+            "label": value.label,
+            "type": value.type,
+            "value": json_value(value.value),
+        }
+    if isinstance(value, bytes):
+        return {"hex": value.hex().upper()}
+    if isinstance(value, dict):
+        return {key: json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [json_value(item) for item in value]
+    if isinstance(value, list):
+        return [json_value(item) for item in value]
+    return value
+
+
+def decode_frame(data: bytes) -> dict[str, Any]:
+    if len(data) < 12:
+        raise ValueError("ProtoFire frame is shorter than its header")
+    payload_size = int.from_bytes(data[0:2], "big")
+    if len(data) != 12 + payload_size:
+        raise ValueError(
+            f"ProtoFire size mismatch: header={payload_size}, "
+            f"actual={len(data) - 12}"
+        )
+    message_type = data[8] >> 4
+    message_number = ((data[9] & 0xF) << 16) | int.from_bytes(data[10:12], "big")
+    return {
+        "payload_size": payload_size,
+        "component": int.from_bytes(data[2:4], "big"),
+        "command": int.from_bytes(data[4:6], "big"),
+        "error": int.from_bytes(data[6:8], "big"),
+        "message_type": message_type,
+        "message_number": message_number,
+        "fields": Decoder(data[12:]).all(),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("frame", type=Path)
+    args = parser.parse_args()
+    result = decode_frame(args.frame.read_bytes())
+    print(json.dumps(json_value(result), indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

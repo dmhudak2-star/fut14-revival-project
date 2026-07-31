@@ -1,0 +1,84 @@
+# Current research status
+
+Last updated: 2026-07-31.
+
+## Supported title
+
+- Platform: Xbox 360 RGH/JTAG
+- FIFA 14 `default.xex` timestamp: `0x534C8977`
+- Runtime base: `0x82000000`
+- Runtime size: `0x023EC400`
+- `powdllzf.xex.dll` runtime base observed: `0x89700000`
+
+All addresses below are build-specific.
+
+## Confirmed native objects and entry points
+
+| Purpose | Address/value |
+| --- | --- |
+| Cards root global | `0x897C3608` |
+| Cards root vtable | `0x89708AE0` |
+| Cards root initialize | `0x89748A38` |
+| Cards auth field | root `+0x3A08` |
+| Cards auth vtable | `0x89707078` |
+| Cards `pow/auth` entry | `0x897381E8` |
+| FUT adapter getter | `0x827C6370` |
+| FUT loader start | `0x82782078` |
+| FUT loader poll | `0x827C63B0` |
+| EnterFUT2 wrapper | `0x82DA6850` |
+| EnterFUT2 handler | `0x828350C8` |
+| LoadFUTSkipBlaze | `0x82805D30` |
+| ION interface global | `0x83DA4604` |
+| ION SendNavEvent | `0x82805C10` |
+| `advance` string | `0x82077254` |
+| `advanceRequest` string | `0x8207FBB4` |
+| `createClub` string | `0x8212CE18` |
+| Active patched launcher event | `FUTStartUp` (runtime byte array) |
+
+## Latest successful state
+
+- Native listener state 1 was observed and relayed once to native state 2.
+- Cards root reached `+0x80 == 1`.
+- Cards child objects at `+0x3A08`, `+0x3A0C`, `+0x3A10` and `+0x3A14`
+  were created by the native lifecycle.
+- The auth object had vtable `0x89707078`.
+- The two-site Skip-Blaze patch was active and verified.
+- Selecting FUT no longer immediately displayed the EA server popup.
+- The title displayed the FUT stadium background and a persistent spinner.
+- The FUT loader poll returned available (`1`).
+- `game:\` contained `cards0.big`, `cards0.bh` and `CardsDLLzf.xex.dll`.
+- `pow/auth` invocation count remained zero.
+- A native EnterFUT2 dispatch set loader state `+0x114` to `1` and darkened the
+  loading screen.
+- Direct `createClub`, `advance` and `advanceRequest` navigation probes were
+  accepted by the native dispatch API, but no external FUT screen appeared.
+- Extraction of the archive actually mounted by the title showed one decisive
+  difference from stock: `launchFUTFlow` waits for `FUTStartUp`, not
+  `advanceRequest`.
+- Sending `FUTStartUp` once changed the stadium spinner into a black native
+  `Chargement…` dialog. The Cards root/auth objects remained valid.
+- One subsequent direct `advance` was accepted but left the dialog unchanged.
+
+## Interpretation
+
+The original failure is no longer best described as a blocked UDP endpoint.
+The title can enter the local FUT front-end path and complete the Cards root
+lifecycle. The unresolved boundary is the active navigation flow / external FUT
+view registration and its expected completion event.
+
+The first launcher-state mismatch is now resolved. The next high-value step is
+to dispatch `advance` from the native `powdll_FEThread` tick, then trace the
+`Loader::LoadView` path around `0x82D60748` and the FUT config result handler
+around `0x82782318`. The goal is to distinguish a thread-affinity problem from
+an external-screen load that never publishes its completion event.
+
+## Known non-solutions
+
+- Forcing only the generic login-success event did not exit loading on PC.
+- Patching the broad global byte read by `LoadFUTSkipBlaze` is unsafe because
+  many unrelated code paths consume it.
+- Resetting loader `+0x114` from 1 to 0 is unsafe; it can permit duplicate
+  initialization and has caused freezes.
+- Network packet capture alone cannot reveal proprietary/encrypted internal FUT
+  errors.
+- Repeated blind UI clicks do not provide new evidence.
