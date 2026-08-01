@@ -77,10 +77,12 @@ def build(host: str, service: str) -> bytes:
                     )
                 ],
             ),
+            Field("EEFA", INTEGER, 1),
+            Field("ESRC", STRING, service),
             Field("INST", STRING, service),
             Field("MINR", INTEGER, 0),
             Field("NASP", STRING, "cem_ea_id"),
-            Field("PILD", STRING, ""),
+            Field("PILD", STRING, service),
             Field("PLAT", STRING, "xbox360"),
             Field("PTAG", STRING, ""),
             Field(

@@ -4,14 +4,17 @@ Research toolkit and technical notes for restoring the FIFA 14 Ultimate Team
 front-end on a personally owned Xbox 360 RGH/JTAG after the official services
 were shut down.
 
-> **Status — 2026-08-01:** active research prototype. The game can be moved
-> past its original EA/Blaze failure, initialize the native Cards objects,
-> enter the FUT stadium, consume the patched `FUTStartUp` navigation event and
-> request `external/ion_fut/screens/FutCreateClub`. The requested Create Club
-> asset has been extracted and validated as complete. The project **does not
-> yet reach a usable FUT menu or complete club creation**: execution currently
-> stops on the black native `Chargement…` popup because the asynchronous ION
-> flow does not complete the first external-screen transition.
+> **Status — 2026-08-02:** active research prototype. A local Blaze 3 server
+> now completes the title's native redirector, PreAuth, Authentication2,
+> PostAuth and UserSessions path. Passive Xbox traces observed the retail game
+> publish both `EVENT_BOOT_LOGIN_SUCCESS` and `EVENT_LOGIN_SUCCESS`; this is no
+> longer a frontend-only skip. Selecting Ultimate Team reaches the native
+> bottom-left loader and causes the expected early Blaze/OSDK request burst.
+> The server now implements the concrete public BlazeSDK/Zamboni schemas found
+> in that burst. A first cold Xbox bootstrap consumed the new typed responses,
+> reached the normal main menu and remained connected with periodic pings. The
+> FUT selection phase of that newest run has **not yet been performed**. The
+> project still does not reach a usable FUT menu or persist a club.
 
 This repository contains only original research scripts, documentation and
 non-sensitive example configuration. It does **not** contain FIFA game files,
@@ -26,6 +29,7 @@ packet captures, memory dumps or captured user sessions.
 - [What is not working yet](#what-is-not-working-yet)
 - [Supported build and requirements](#supported-build-and-requirements)
 - [Architecture under investigation](#architecture-under-investigation)
+- [Current local service path](#current-local-service-path)
 - [Safe first run](#safe-first-run)
 - [Reproducing the current research path](#reproducing-the-current-research-path)
 - [Archive and Create Club validation](#archive-and-create-club-validation)
@@ -63,21 +67,24 @@ The investigation has crossed several distinct boundaries:
 | --- | --- |
 | Xbox/XBDM access | Confirmed; stable module, memory and file inspection over TCP 730 |
 | Natural EA traffic | Confirmed; the original failure is not explained by a simple local firewall block |
-| Native Cards lifecycle | Confirmed; root and child objects are created through the title's state-2 path |
-| Initial Blaze gate | Guarded two-site bypass confirmed on the supported build |
-| FUT loader | Available; mounted Cards archives and `CardsDLLzf.xex.dll` observed |
-| FUT stadium | Reached with the native spinner instead of the immediate EA popup |
-| Patched launcher event | `FUTStartUp` consumed by the active flow |
-| First external screen request | `FutCreateClub` is present in live `loadView` state |
-| Create Club archive asset | Extracted, decompressed and validated as a complete inner BIGF package |
-| ION view dispatcher | Live dispatcher, subscribers, route and queued action observed |
+| Local redirector and plaintext sockets | Confirmed through the title's real DirtySock/XNet connect path |
+| Blaze PreAuth | Confirmed; supported build accepts the FIFA 14 Xbox response |
+| Authentication2 | Confirmed; local OAuth code and native Blaze login complete |
+| PostAuth and UserSessions | Confirmed; PostAuth, authenticated user, UserAdded and extended-data notifications are consumed |
+| Native login events | Confirmed passively: boot-login success at title entry and login success after FUT selection |
+| Early OSDK bootstrap | Observed; Util, Messaging, Census, Clubs, Stats, Association Lists, settings and online-pass routes requested |
+| Native FUT transition | Reaches the bottom-left loader instead of immediately failing at the original EA gate |
+| CardHouse/FUT service call | **Not yet observed in the newest native server session** |
+| Typed OSDK response batch | Implemented, covered by tests and served successfully through a cold boot to the main menu; FUT follow-up pending |
+| Earlier Cards/ION research | Preserved as evidence, including validated `FutCreateClub` assets, but no longer used as the primary entry path |
 | Usable FUT/Create Club UI | **Not reached** |
 
-The most advanced visible state is the FUT stadium followed by a black
-`Chargement…` dialog. In one run the stadium background returned after native
-`globalviewmodel` registration, but the loading popup remained. This is useful
-progress: the blocker is now after asset selection and before completion of the
-asynchronous view/flow transition.
+The cleanest current visible state is the normal main menu followed, after one
+FUT selection, by the game's native bottom-left loading indicator. In the same
+run the local server remained connected and received normal 20-second pings,
+while the passive title trace recorded a second native login-success
+publication. The next boundary is therefore between successful account/OSDK
+bootstrap and the first CardHouse request, not the original network gate.
 
 ## What is proven
 
@@ -87,22 +94,48 @@ asynchronous view/flow transition.
   on the surrounding Xbox/Microsoft service path.
 - Packet capture alone cannot reveal the internal FUT error because the useful
   payload is proprietary and/or encrypted.
-- Redirecting endpoints or forcing a socket result changes timeout behavior,
-  but does not by itself construct the native Cards and ION state required by
-  FUT.
+- The supported build can be redirected before title execution to a private
+  LAN server without globally falsifying Xbox Live or EA availability.
+- The redirect patch follows the title's DirtySock `SocketControl('xins')`
+  path for only the local plaintext ports and records the real connect result
+  and same-thread WSA error.
+- The title accepts a complete local PreAuth/Authentication2/PostAuth sequence
+  and continues to send normal pings after login.
+- The local Nucleus-compatible HTTP redirect returns only an offline
+  authorization code; no real credential, profile token or captured session is
+  stored.
 
-### Native Cards/FUT state
+### Native login and FUT entry state
 
-- The Cards root can be initialized through the game's normal state-2
-  lifecycle instead of fabricating object fields.
-- The root reaches its initialized flag and creates the expected auth and child
-  objects with validated vtables.
-- `LoadFUTSkipBlaze` can be patched transactionally at its narrow entry points;
-  the broad shared global flag is deliberately not modified.
-- `EnterFUT2`, the FUT loader and ION navigation interfaces have been resolved
-  and guarded against the supported build.
-- A native `FUTStartUp` dispatch advances the patched launcher from the stadium
-  spinner to the next `Chargement…` state.
+- `Authentication2.Login` returns the exact FIFA 14 session shape and emits
+  authenticated-user, UserAdded and extended-data notifications.
+- `Util.PostAuth` is reached and consumed in the native route; the earlier
+  empty-PostAuth hypothesis is disproven.
+- A passive, build-guarded trace recorded the title's own login-success
+  publisher once in boot state 2 and again in state 1 after selecting FUT.
+- No forced login-success event, `EnterFUT2`, `FUTStartUp`, screen load or popup
+  suppression is used by the current server path.
+- The natural FUT selection produces an OSDK bootstrap request burst and a
+  bottom-left loader. This is application progress, but it is not proof of an
+  initialized FUT session because no CardHouse command has yet followed.
+
+### Public protocol schemas now implemented
+
+The current response batch is derived from the public BlazeSDK types and the
+public Zamboni common components rather than guessed empty replies:
+
+| Component | Routes handled in the current bootstrap |
+| --- | --- |
+| Util (`9`) | config, ping, telemetry (`9:5`), PreAuth, PostAuth and persistent user settings |
+| Messaging (`15`) | fetch count (`MCNT=0`) and empty message retrieval |
+| Rooms/Census | native empty acknowledgements for view updates and census subscription |
+| Association Lists (`25`) | typed empty `LMAP` list |
+| Clubs (`11`) | component settings scalars and typed empty invitations list |
+| Stats (`7`) | typed key-scope map, stat-group list and all fourteen period fields |
+| OSDK Settings (`2249`) | `O_TKfilter` plus its `O_SG_TCKR` setting group |
+| OSDK Online Pass (`2268`) | typed empty feature-gate `LIST` |
+| Sponsored Events (`2076`) | non-empty local events URL |
+| CardHouse (`2148`) | minimal new-user login and no-player response, ready for when the client reaches it |
 
 ### External view and archive state
 
@@ -128,24 +161,25 @@ asynchronous view/flow transition.
 
 ## What is not working yet
 
-The project does not yet implement a complete Blaze/FUT backend, persist a
-local club or render the Create Club screen. The immediate open question is why
-the queued ION screen action does not produce the completion event expected by
-the active flow.
+The project does not yet implement a complete FUT backend, create a server-side
+FUT session, persist a local club or reach the FUT home screen. The newest
+typed OSDK response batch has passed 21 local tests and was consumed during a
+cold console bootstrap through the main menu. Its FUT-selection phase has not
+yet been observed.
 
-The remaining failure is currently narrowed to one of these boundaries:
+At the end of the last completed Xbox observation:
 
-- the queued action reaches the screen executor but no registered handler
-  accepts the controller/action pair;
-- a handler accepts it but the external view fails before publishing its
-  completion event;
-- a required view model remains detached or disabled;
-- the action is dispatched on the wrong front-end phase/thread;
-- a prerequisite configuration/auth state is still missing even though the
-  screen asset itself is valid.
+- native boot login succeeded;
+- native FUT-time login success was published;
+- the local Blaze connection stayed alive;
+- the title remained on the bottom-left loader;
+- no `CardHouse.Login` (`2148:101`) arrived.
 
-The prepared passive flow-dispatch trace targets this distinction. It has not
-yet produced a post-reboot observation, so no stronger claim is made here.
+The next question is whether selecting FUT in that clean session causes the
+corrected telemetry/OSDK path to issue its first CardHouse request. If it does
+not, the correct next step is to passively trace the consumer of those
+responses and the natural FUT-loader availability transition. It is **not** to
+force another frontend event or visually hide the loader.
 
 ## Supported build and requirements
 
@@ -187,22 +221,56 @@ The observed path is not a single “server available” boolean:
 
 ```text
 FUT tile
-  -> EnterFUT2 / initial Blaze gate
-  -> native Cards root lifecycle
-  -> FUT loader and mounted cards0 archives
-  -> mainFeFlow / futLogInFlow navigation
-  -> ION loadView consumer
-  -> event-to-action route
-  -> screen-executor QueueAction
-  -> external FutCreateClub view
-  -> completion event expected by the flow
-  -> Create Club UI
+  -> local redirector / native DirtySock connection
+  -> Blaze PreAuth
+  -> local Nucleus code + Authentication2.Login
+  -> PostAuth + UserSessions notifications
+  -> native BOOT_LOGIN_SUCCESS
+  -> early Util/OSDK bootstrap
+  -> native LOGIN_SUCCESS after FUT selection
+  -> first CardHouse/FUT session request      <-- current unresolved edge
+  -> Cards/FUT account or Create Club state
+  -> FUT user interface
 ```
 
-The current prototype reaches `QueueAction` with a `FutCreateClub` request. The
-next unresolved edge is between that queued action and the completion event.
-This is why more endpoint redirection or repeatedly forcing the same popup
-event is unlikely to solve the current blocker.
+Earlier experiments could drive the Cards/ION frontend as far as a queued
+`FutCreateClub` view, but those experiments mixed real state with forced
+navigation and could not prove a FUT session existed. They remain useful for
+asset and object-layout research, not as the current success path.
+
+## Current local service path
+
+`server/fifa14_blaze_server.py` is the current primary experiment. It is a
+small, observable Blaze 3 service with four TCP listeners, a local identity
+HTTP endpoint and JSONL journaling. Unknown commands are still recorded, but
+the commands already observed during FIFA 14's bootstrap now have typed
+responses.
+
+The paired launcher, `tools/fifa14_early_local_server.py`, waits for XBDM's
+`default.xex` module-load event and applies all volatile changes before the
+title executes. It combines:
+
+- local endpoint redirection for Blaze and identity HTTP;
+- scoped plaintext/unsecure handling for local test sockets;
+- XNet startup handling required by this retail build;
+- passive PostAuth, UserAdded and native login-state traces;
+- strict supported-build and original-byte validation.
+
+It does not patch a permanent title file. A title unload or reboot removes the
+runtime changes.
+
+The last completed native journal contained this broad order:
+
+```text
+PreAuth -> Auth2.Login -> PostAuth -> network/hardware info
+-> account -> messages -> census -> association lists -> clubs settings
+-> OSDK settings -> stats -> sponsored events -> online-pass gates
+-> user settings -> entitlements -> invitations -> periodic ping
+```
+
+That order is evidence from the client, not a claim that every route is
+semantically complete. Raw runtime journals stay under `runtime/` and are
+ignored by Git.
 
 ## Safe first run
 
@@ -229,67 +297,64 @@ not assume addresses are portable across title updates, regions or repacks.
 ## Reproducing the current research path
 
 This is an investigation runbook, not a one-command installer. Read
-[`docs/SAFETY.md`](docs/SAFETY.md) before any mutating step.
+[`docs/SAFETY.md`](docs/SAFETY.md) before any mutating step. Keep the console
+and research computer on the same trusted private LAN.
 
-### 1. Establish the live baseline
+### 1. Start the local server
 
-1. Launch FIFA 14 and wait at the normal main menu.
-2. Record `modules` and `modsections`.
-3. Read Cards and loader status.
-4. Make only one FUT attempt per observation cycle.
-
-### 2. Let the title create Cards objects
-
-The state-1 relay waits for the natural listener state and forwards one failure
-to the native state-2 slot:
+From the repository root, substitute the Mac/research-host IP:
 
 ```bash
-python3 tools/fifa14_state1_failover_slot.py XBOX_IP wait-apply
+python3 server/fifa14_blaze_server.py \
+  --advertise RESEARCH_HOST_IP \
+  --journal runtime/live-blaze.jsonl \
+  --account-state runtime/local-account.json
 ```
 
-Validate the resulting objects before continuing:
+The default listeners are `10041`, `42124`, `42126` and `42127`; the local
+identity endpoint uses `18080`. Do not expose these listeners to the Internet.
+
+### 2. Arm before title execution
+
+Leave FIFA 14 unloaded in XeXMenu, then run:
 
 ```bash
-python3 tools/fifa14_cardsdll_native_init.py XBOX_IP status
+python3 tools/fifa14_early_local_server.py XBOX_IP \
+  --local-ip RESEARCH_HOST_IP \
+  --timeout 300 \
+  --trace-login-flow
 ```
 
-Success means the Cards root is initialized and the auth/child pointers and
-vtables pass the script's guards. Do not manually zero the loader or Cards
-state afterward.
+Wait until it prints `Waiting for default.xex`, then launch FIFA 14 once. The
+script must observe the module-load event and finish with verified patch/trace
+messages before the title is tested.
 
-### 3. Apply only the narrow Skip-Blaze patch
+### 3. Observe title login before FUT
+
+At the main menu, do not click FUT immediately. Confirm that the launcher trace
+contains the boot login-success publication and that the server journal shows
+Authentication2, PostAuth and UserSessions activity.
+
+Read the passive journal without changing game state:
 
 ```bash
-python3 tools/fifa14_skip_blaze_entry_patch.py XBOX_IP apply
+python3 tools/fifa14_ea_login_state_trace.py XBOX_IP read
 ```
 
-The patch verifies expected bytes, applies only the supported two sites and
-owns its restore path. It does not patch the broad shared global byte.
+### 4. Make one natural FUT attempt
 
-### 4. Enter FUT once and inspect
+Select Ultimate Team once. Record the exact visible result and the elapsed
+time. Do not send navigation events or suppress a popup. Then read the passive
+trace again and inspect only the new server journal entries.
 
-Select the FUT tile once, then collect state instead of repeatedly clicking:
+The immediate success criterion for the next run is a first CardHouse request,
+especially `2148:101`. A loader alone is evidence of progress, not completion.
 
-```bash
-python3 tools/fifa14_fut_loader_status.py XBOX_IP
-python3 tools/fifa14_cardsdll_native_init.py XBOX_IP status
-python3 tools/fifa14_send_nav_event.py XBOX_IP FUTStartUp --dry-run
-```
+### 5. End an observation cleanly
 
-If the active patched flow still advertises `FUTStartUp`, dispatch only one
-event and observe the screen and journals before another action. Direct event
-bursts have produced freezes and do not provide clean evidence.
-
-### 5. Restore before changing direction
-
-```bash
-python3 tools/fifa14_skip_blaze_entry_patch.py XBOX_IP restore
-python3 tools/fifa14_state1_failover_slot.py XBOX_IP restore
-```
-
-If a script times out, reconnect and run its `status` action before applying it
-again. Never overwrite a site whose bytes are neither the exact original nor
-the script's exact patch.
+Return to the dashboard before changing hook code or endpoint behavior. Runtime
+patches disappear when the title unloads. Keep `runtime/*.jsonl` locally for
+analysis; the repository safety check prevents publishing them.
 
 The full evidence-oriented procedure is documented in
 [`docs/METHOD.md`](docs/METHOD.md).
@@ -299,6 +364,12 @@ The full evidence-oriented procedure is documented in
 `tools/archive/` contains offline builders and inspectors. They operate only on
 files supplied locally by the researcher. Generated `.big`, `.bh`, `.nav` and
 chunk files are ignored by Git and must not be published.
+
+These tools document an earlier branch of the investigation. Archive-swapping
+and direct navigation experiments are now quarantined from the recommended
+server path. `tools/fifa14_quarantine_data1_experiments.py` can identify that
+state, and `tools/fifa14_restore_original_data1.py` provides the guarded
+recovery path for researcher-owned backups.
 
 The current archive research established that:
 
@@ -325,26 +396,33 @@ archives while FIFA 14 is mapped.
 
 ## Local Blaze harness
 
-The server-side code is intentionally small and inspectable:
+The current server-side code is intentionally small and inspectable:
 
 - `tools/blaze_tdf.py` parses and builds the subset of TDF used in experiments;
-- `tools/fifa14_blaze_listener.py` provides a local listener;
-- `tools/fifa14_build_redirector_response.py` builds a redirector reply;
-- `tools/fifa14_build_preauth_response.py` builds a synthetic pre-auth reply;
-- `tools/fifa14_revive_session.py` orchestrates the experimental path.
+- `server/fifa14_blaze_server.py` provides redirector, Blaze core and local
+  identity services with typed responses and JSONL journaling;
+- `tools/fifa14_early_local_server.py` applies the guarded volatile redirect
+  before title execution and can arm passive login-flow traces;
+- `tools/fifa14_connect_redirect.py` implements the scoped DirtySock/XNet
+  connection redirect and journals native socket results;
+- `tools/fifa14_ea_login_state_trace.py`,
+  `tools/fifa14_postauth_dispatch_trace.py` and
+  `tools/fifa14_useradded_trace.py` observe native state without publishing
+  fake success events;
+- `server/fifa14_xbdm_blaze_bridge.py` and
+  `tools/fifa14_early_blaze_bridge.py` preserve the earlier bridge experiment,
+  but are not required by the current direct local-server runbook.
 
-Example:
+Run the protocol and code-generation tests with:
 
 ```bash
-python3 tools/fifa14_revive_session.py \
-  --xbox XBOX_IP \
-  --local-ip RESEARCH_HOST_IP \
-  --monitor-seconds 1800
+python3 -m unittest discover -s tests -v
 ```
 
-The harness proves parts of routing, framing and response injection. It is not
-a complete EA service clone and is not the current ION-screen fix. Bind it only
-to a trusted private interface; do not expose it to the Internet.
+The current suite contains 21 tests covering redirect code generation, XNet
+startup bytes, passive trace code caves, typed protocol payloads, fragmented
+TCP framing and local HTTP redirect behavior. The server is still a bootstrap,
+not a complete EA or FUT service clone.
 
 ## Tool map
 
@@ -355,11 +433,14 @@ the investigation remains auditable.
 | --- | --- |
 | XBDM files/memory | `xbdm_dirlist.py`, `xbdm_getfile.py`, `xbdm_putfile.py`, `xbdm_dump_range.py`, `xbox360_xbdm_dump.py` |
 | Build and state checks | `fifa14_fut_loader_status.py`, `fifa14_cardsdll_native_init.py`, `fifa14_thread_toc_scan.py` |
-| Network/Blaze | `fifa14_blaze_listener.py`, `fifa14_revive_session.py`, `blaze_tdf.py` |
+| Current local server | `server/fifa14_blaze_server.py`, `fifa14_early_local_server.py`, `fifa14_connect_redirect.py`, `fifa14_xnet_startup_patch.py` |
+| Passive native login traces | `fifa14_ea_login_state_trace.py`, `fifa14_postauth_dispatch_trace.py`, `fifa14_useradded_trace.py`, `fifa14_login_callback_trace.py` |
+| Network/Blaze diagnostics | `fifa14_blaze_listener.py`, `fifa14_revive_session.py`, `blaze_tdf.py`, `fifa14_dirtysock_mode_state.py` |
 | Guarded entry patches | `fifa14_state1_failover_slot.py`, `fifa14_skip_blaze_entry_patch.py` |
 | Native navigation | `fifa14_send_nav_event.py`, `fifa14_enterfut2_action_call.py` |
 | Passive traces | `fifa14_native_enterfut_trace.py`, `fifa14_blaze_frame_dispatch_trace.py`, `fifa14_connection_result_trace.py` |
 | Archive research | `tools/archive/build_fifa14_createclub_patch.py`, `patch_fifa_big_entry.py`, `extract_big_navs.py` |
+| Archive recovery/quarantine | `fifa14_quarantine_data1_experiments.py`, `fifa14_restore_original_data1.py` |
 
 Not every script is part of the recommended runbook. Some are retained solely
 to document disproven hypotheses. Review docstrings and the risk classes in
@@ -385,6 +466,9 @@ Known unsafe or misleading approaches:
 - clearing loader manager `+0x114` to retry initialization;
 - patching the broad shared Skip-Blaze global;
 - assuming a socket timeout proves the intended game path executed;
+- treating a hidden popup, forced navigation event or visual loader transition
+  as proof of a FUT session;
+- mixing a custom `data1` archive with the local-server experiment;
 - forcing events repeatedly without reading the corresponding journal;
 - reusing heap addresses from a previous title session;
 - renaming or replacing archives while the title is loaded.
@@ -393,23 +477,21 @@ See [`docs/SAFETY.md`](docs/SAFETY.md) for recovery procedures.
 
 ## Next research steps
 
-The next useful experiment is deliberately narrow:
+The next useful experiment is one cold run of the completed response batch:
 
-1. cold-launch the supported build and re-establish the guarded Cards/FUT state;
-2. reproduce the black `Chargement…` state once;
-3. install the passive two-site flow-dispatch trace;
-4. capture whether the screen action enters the dispatcher and whether any
-   registered handler matches it;
-5. if a handler matches, trace its completion publication rather than forcing
-   another navigation event;
-6. if no handler matches, identify the missing registration or binding and
-   invoke its native lifecycle on the front-end tick;
-7. only after the Create Club screen renders, design the minimum local data and
-   backend responses needed to create and persist an offline club.
+1. leave the current local server running with a fresh journal boundary;
+2. arm `fifa14_early_local_server.py --trace-login-flow` while FIFA is unloaded;
+3. launch the supported build from XeXMenu and verify native boot-login success;
+4. select FUT once and verify the second native login-success publication;
+5. determine whether the client now sends `CardHouse.Login` (`2148:101`);
+6. if CardHouse is reached, implement only the next real request and the local
+   club/account state it requires;
+7. if CardHouse is not reached, trace the natural OSDK response consumer and
+   FUT-loader availability state without altering frontend navigation.
 
-The success criterion for the next milestone is not a different error popup.
-It is an instantiated `FutCreateClub` screen or a precise native failure point
-with a reproducible journal.
+The next milestone is a real CardHouse session transition, followed by the
+native Create Club flow. A different popup, a hidden popup or a loader without
+the corresponding protocol request is not counted as success.
 
 ## Repository policy
 

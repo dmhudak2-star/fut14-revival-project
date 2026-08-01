@@ -21,6 +21,7 @@ PATTERNS = {
     "console KV-style identifier": re.compile(r"\bXE\.\d{8,}\b"),
     "private key marker": re.compile(r"BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY"),
 }
+LOCAL_ONLY_ROOTS = {"runtime"}
 
 
 def main() -> int:
@@ -29,6 +30,8 @@ def main() -> int:
         if not path.is_file() or ".git" in path.parts:
             continue
         relative = path.relative_to(ROOT)
+        if relative.parts and relative.parts[0] in LOCAL_ONLY_ROOTS:
+            continue
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
             errors.append(f"forbidden artifact: {relative}")
         if path.stat().st_size > 10 * 1024 * 1024:

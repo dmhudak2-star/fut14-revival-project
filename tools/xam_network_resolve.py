@@ -9,6 +9,8 @@ import socket
 
 
 EXPORTS = (
+    (0x07, "NetDll_setsockopt"),
+    (0x0C, "NetDll_connect"),
     (0x0F, "NetDll_select"),
     (0x10, "NetDll_WSAGetOverlappedResult"),
     (0x11, "NetDll_WSACancelOverlappedIO"),
@@ -20,6 +22,10 @@ EXPORTS = (
     (0x17, "NetDll_WSASend"),
     (0x18, "NetDll_sendto"),
     (0x19, "NetDll_WSASendTo"),
+    (0x1B, "NetDll_WSAGetLastError"),
+    (0x1C, "NetDll_WSASetLastError"),
+    (0x33, "NetDll_XNetStartup"),
+    (0x50, "NetDll_XNetStartupEx"),
     (0x3A, "XNetServerToInAddr"),
     (0x3B, "XNetTsAddrToInAddr"),
     (0x3C, "XNetInAddrToXnAddr"),

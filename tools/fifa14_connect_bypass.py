@@ -32,6 +32,7 @@ def build_stub() -> bytes:
         stw(11, 12, 0x00),          # connect call count
         stw(3, 12, 0x04),           # NetDll socket handle
         stw(5, 12, 0x08),           # sockaddr length
+        stw(31, 12, 0x20),          # owning DirtySock socket object
     ]
     for offset in range(0, 0x10, 4):
         words.append(lwz(10, 4, offset))
@@ -73,17 +74,19 @@ def main() -> int:
         print(f"DirtySock connect callsite: {current}")
         if args.action == "status":
             if current == "bypassed":
-                record = client.read(CONNECT_LOG, 0x20)
+                record = client.read(CONNECT_LOG, 0x28)
                 count = int.from_bytes(record[0:4], "big")
                 handle = int.from_bytes(record[4:8], "big")
                 length = int.from_bytes(record[8:12], "big")
                 sockaddr = record[0x10:0x20]
+                owner = int.from_bytes(record[0x20:0x24], "big")
                 ip = ".".join(str(octet) for octet in sockaddr[4:8])
                 port = int.from_bytes(sockaddr[2:4], "big")
                 print(
                     f"Bypassed connect calls: {count}; "
                     f"last handle=0x{handle:08X} "
-                    f"addrlen={length} target={ip}:{port}"
+                    f"owner=0x{owner:08X} addrlen={length} "
+                    f"target={ip}:{port}"
                 )
             return 0
         if args.action == "apply":
@@ -95,7 +98,7 @@ def main() -> int:
             cave = client.read(CONNECT_STUB, len(CONNECT_STUB_BYTES))
             if cave not in (bytes(len(CONNECT_STUB_BYTES)), CONNECT_STUB_BYTES):
                 raise RuntimeError("Connect bypass code cave is not empty")
-            client.write(CONNECT_LOG, bytes(0x20))
+            client.write(CONNECT_LOG, bytes(0x28))
             client.write(CONNECT_STUB, CONNECT_STUB_BYTES)
             if client.read(CONNECT_STUB, len(CONNECT_STUB_BYTES)) != CONNECT_STUB_BYTES:
                 raise RuntimeError("Connect bypass stub verification failed")
