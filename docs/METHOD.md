@@ -133,7 +133,54 @@ accepted but did not visibly leave that dialog.
 The method dispatches synchronously and is not formally proven main-thread
 safe. Do not burst the sequence.
 
-## 9. Archive-based CreateClub experiment
+## 9. Inspect the pending ION view
+
+Read the live load-view consumer before forcing another event. The important
+evidence is the exact requested background, screen, sub-screen and popup state.
+In the latest session the screen request was
+`external/ion_fut/screens/FutCreateClub` and the popup state contained `ToFe`.
+
+The ION investigation then proceeds from request to execution:
+
+1. inspect dispatcher subscribers and event-to-action routes;
+2. passively trace the `LoadView` enqueue sites;
+3. passively trace the screen-executor `QueueAction` bridge;
+4. determine whether the downstream flow-action dispatcher finds a matching
+   handler;
+5. only then inspect or reproduce the expected completion event.
+
+Heap pointers observed in this process are valid only for the current title
+session. Rebooting or unloading the title invalidates them.
+
+## 10. Validate the CreateClub asset
+
+Before treating the black loading popup as a missing file, extract the exact
+entry from the Cards archive mounted by the title and validate every container
+layer:
+
+1. verify the BIG/BH offset and compressed length agree;
+2. decode every XMem/LZX chunk rather than only the first chunk;
+3. verify the decompressed output is a structurally valid inner BIGF archive;
+4. enumerate its entries and search the ActionScript payload for the expected
+   `FutCreateClub`, `CreateUser` and `CREATE_CLUB` symbols.
+
+The observed entry decoded from three chunks to a valid 689,596 byte inner BIGF
+package with ten entries. This rules out a simply missing or truncated
+CreateClub payload, while leaving runtime dependencies and view-model bindings
+open.
+
+## 11. Register missing consumers only through native APIs
+
+The observed `globalviewmodel` object existed but was detached from the live
+dispatcher. Registration through the title's native API produced visible
+front-end activity and restored the stadium background. It did not dismiss the
+loading popup, so registration was necessary evidence but not a complete fix.
+
+Avoid inserting list nodes or fabricating interface objects manually. Resolve
+the manager on the native front-end tick, validate object/vtable relationships,
+call the native register/enable path once, and journal the result.
+
+## 12. Archive-based CreateClub experiment
 
 As a separate, restart-based experiment, build a new `data1.big/.bh` from the
 researcher's own files with:
@@ -149,7 +196,7 @@ The generated pair is intentionally ignored by Git. The console swap helper is
 case-specific: review its expected hashes and filenames before using it on a
 different dump.
 
-## 10. Record evidence
+## 13. Record evidence
 
 For every test, record:
 
