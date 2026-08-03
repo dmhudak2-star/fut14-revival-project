@@ -33,9 +33,10 @@ The following former experiment was intentionally excluded from this
 repository:
 
 - `fifa14_enterfut2_clean_retry.py`: it treated manager `+0x114` as a pending
-  WebSession flag and cleared it. Disassembly shows `+0x114` is the Cards/FUT
-  loader state. Clearing it can duplicate loader initialization and freeze the
-  title.
+  WebSession flag and cleared it. Later disassembly shows `+0x114` is an
+  in-flight state in a broader OSDK/EASW download/configuration object; it is
+  not a proven FUT-ready flag. Clearing it can duplicate initialization and
+  freeze the title.
 
 The earlier `fifa14_cards_ui_init_once.py` was superseded by the guarded v2
 implementation and is also excluded.
@@ -74,4 +75,3 @@ Never commit:
 - console identifiers, profiles, KV data or account details.
 
 Run `python3 scripts/repo_safety_check.py` before every push.
-

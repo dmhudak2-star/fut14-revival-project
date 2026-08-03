@@ -4,17 +4,20 @@ Research toolkit and technical notes for restoring the FIFA 14 Ultimate Team
 front-end on a personally owned Xbox 360 RGH/JTAG after the official services
 were shut down.
 
-> **Status — 2026-08-02:** active research prototype. A local Blaze 3 server
+> **Status — 2026-08-03:** active research prototype. A local Blaze 3 server
 > now completes the title's native redirector, PreAuth, Authentication2,
 > PostAuth and UserSessions path. Passive Xbox traces observed the retail game
 > publish both `EVENT_BOOT_LOGIN_SUCCESS` and `EVENT_LOGIN_SUCCESS`; this is no
 > longer a frontend-only skip. Selecting Ultimate Team reaches the native
-> bottom-left loader and causes the expected early Blaze/OSDK request burst.
+> bottom-left loader after the expected early Blaze/OSDK request burst.
 > The server now implements the concrete public BlazeSDK/Zamboni schemas found
 > in that burst. A first cold Xbox bootstrap consumed the new typed responses,
-> reached the normal main menu and remained connected with periodic pings. The
-> FUT selection phase of that newest run has **not yet been performed**. The
-> project still does not reach a usable FUT menu or persist a club.
+> reached the normal main menu and remained connected with periodic pings.
+> Passive comparison before and after one natural FUT selection now places the
+> newest blocker in the asynchronous ION exit from the main-menu `FluxHub`:
+> the screen is left in an `unload` request with `ToFe`, while `futLauncher`,
+> `FUTStartUp`, CardsDLL loading and the first CardHouse request are not reached.
+> The project still does not reach a usable FUT menu or persist a club.
 
 This repository contains only original research scripts, documentation and
 non-sensitive example configuration. It does **not** contain FIFA game files,
@@ -73,7 +76,8 @@ The investigation has crossed several distinct boundaries:
 | PostAuth and UserSessions | Confirmed; PostAuth, authenticated user, UserAdded and extended-data notifications are consumed |
 | Native login events | Confirmed passively: boot-login success at title entry and login success after FUT selection |
 | Early OSDK bootstrap | Observed; Util, Messaging, Census, Clubs, Stats, Association Lists, settings and online-pass routes requested |
-| Native FUT transition | Reaches the bottom-left loader instead of immediately failing at the original EA gate |
+| Native FUT transition | Begins the main-menu `FluxHub` unload and reaches the bottom-left loader |
+| ION transition completion | **Not reached**; the asynchronous screen exit remains pending before `futLauncher` |
 | CardHouse/FUT service call | **Not yet observed in the newest native server session** |
 | Typed OSDK response batch | Implemented, covered by tests and served successfully through a cold boot to the main menu; FUT follow-up pending |
 | Earlier Cards/ION research | Preserved as evidence, including validated `FutCreateClub` assets, but no longer used as the primary entry path |
@@ -81,10 +85,13 @@ The investigation has crossed several distinct boundaries:
 
 The cleanest current visible state is the normal main menu followed, after one
 FUT selection, by the game's native bottom-left loading indicator. In the same
-run the local server remained connected and received normal 20-second pings,
-while the passive title trace recorded a second native login-success
-publication. The next boundary is therefore between successful account/OSDK
-bootstrap and the first CardHouse request, not the original network gate.
+run the local server remained connected and received only normal 20-second
+pings. The live ION consumer showed `background=load`, `screen=unload` and
+`popup=ToFe`; `CardsDLLzf.xex.dll` remained unmapped. Combined with the retail
+`mainfeflow.nav`, this indicates that the title begins leaving `mainMenu` but
+does not complete the asynchronous screen exit required before entering
+`futLauncher`. The next boundary is therefore the ION unload completion, not
+the original network gate or a missing CardHouse response.
 
 ## What is proven
 
@@ -118,6 +125,13 @@ bootstrap and the first CardHouse request, not the original network gate.
 - The natural FUT selection produces an OSDK bootstrap request burst and a
   bottom-left loader. This is application progress, but it is not proof of an
   initialized FUT session because no CardHouse command has yet followed.
+- A control run with Blaze unavailable until the FUT selection caused a fresh
+  Redirector, PreAuth, OAuth, Authentication2, PostAuth and UserAdded sequence
+  at the click, followed by the same loader. Login timing and reuse of the
+  title-screen session are therefore not the current blocker.
+- In a clean connected run, a 16-site passive FUT/auth/navigation journal and a
+  connected-owner continuation journal remained untouched after the click.
+  The only new network traffic was the existing Util ping cadence.
 
 ### Public protocol schemas now implemented
 
@@ -162,24 +176,26 @@ public Zamboni common components rather than guessed empty replies:
 ## What is not working yet
 
 The project does not yet implement a complete FUT backend, create a server-side
-FUT session, persist a local club or reach the FUT home screen. The newest
-typed OSDK response batch has passed 21 local tests and was consumed during a
-cold console bootstrap through the main menu. Its FUT-selection phase has not
-yet been observed.
+FUT session, persist a local club or reach the FUT home screen. The typed OSDK
+response batch has passed 21 local tests and was consumed during a cold console
+bootstrap through the main menu. Its FUT-selection phase was observed and did
+not produce a CardHouse request.
 
 At the end of the last completed Xbox observation:
 
 - native boot login succeeded;
-- native FUT-time login success was published;
+- native login success and the local `futBoot.xml` were consumed;
 - the local Blaze connection stayed alive;
 - the title remained on the bottom-left loader;
+- ION retained a pending `screen=unload` request with `popup=ToFe`;
+- `CardsDLLzf.xex.dll` was not mapped;
 - no `CardHouse.Login` (`2148:101`) arrived.
 
-The next question is whether selecting FUT in that clean session causes the
-corrected telemetry/OSDK path to issue its first CardHouse request. If it does
-not, the correct next step is to passively trace the consumer of those
-responses and the natural FUT-loader availability transition. It is **not** to
-force another frontend event or visually hide the loader.
+The next question is which stage of the natural ION unload pipeline fails to
+complete. The correct next step is a passive four-point trace of
+`IONLoadViewEnqueue`, `ProcessAction`, `ChangeState` and `PreScreenComplete`.
+It is **not** to force another frontend event, synthesize the completion, or
+visually hide the loader.
 
 ## Supported build and requirements
 
@@ -477,17 +493,17 @@ See [`docs/SAFETY.md`](docs/SAFETY.md) for recovery procedures.
 
 ## Next research steps
 
-The next useful experiment is one cold run of the completed response batch:
+The next useful experiment is one cold passive ION comparison:
 
 1. leave the current local server running with a fresh journal boundary;
 2. arm `fifa14_early_local_server.py --trace-login-flow` while FIFA is unloaded;
 3. launch the supported build from XeXMenu and verify native boot-login success;
-4. select FUT once and verify the second native login-success publication;
-5. determine whether the client now sends `CardHouse.Login` (`2148:101`);
-6. if CardHouse is reached, implement only the next real request and the local
-   club/account state it requires;
-7. if CardHouse is not reached, trace the natural OSDK response consumer and
-   FUT-loader availability state without altering frontend navigation.
+4. at the main menu, arm the four-point ION LoadView pipeline journal;
+5. select FUT once and read the enqueue, action, state and completion records;
+6. identify the first missing native stage without publishing an event or
+   changing a return value;
+7. continue to treat a client-originated `CardHouse.Login` (`2148:101`) as the
+   next protocol success criterion.
 
 The next milestone is a real CardHouse session transition, followed by the
 native Create Club flow. A different popup, a hidden popup or a loader without

@@ -129,6 +129,43 @@ REPLY = 1
 NOTIFICATION = 2
 ERROR_REPLY = 3
 
+# Minimal configuration accepted by the retail Xbox 360 FutCfg parser.
+#
+# The schema and the required non-zero fields were recovered directly from
+# default.xex (0x827F68B8 -> 0x827F07B0 -> 0x827EBFA8).  In particular:
+#
+# * cfgVersion populates FutCfg +0x140;
+# * minorVersion populates +0x11C;
+# * the matching revision/Language dimeUniqueId populates +0x120;
+# * key/dimeUniqueId populates +0x148.
+#
+# All four values are checked before the native async completion is allowed to
+# report success.  bootString names the title's own FUT server-call frontend;
+# it does not skip the subsequent CardHouse/Blaze session.
+FUT_BOOT_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<FutCfg>
+  <cfgVersion>1</cfgVersion>
+  <futDlc>
+    <fut12>
+      <minorVersion>1</minorVersion>
+      <bootString>fe/fut/servercalls</bootString>
+      <futNotAvailable>0</futNotAvailable>
+      <revision>
+        <futSubVersion>1</futSubVersion>
+        <Language>
+          <dimeUniqueId>1</dimeUniqueId>
+          <size>1</size>
+        </Language>
+      </revision>
+      <key>
+        <dimeUniqueId>1</dimeUniqueId>
+        <futKeyType>1</futKeyType>
+      </key>
+    </fut12>
+  </futDlc>
+</FutCfg>
+"""
+
 # Full Blaze value 0x00010864: error ordinal 1 in component 0x0864.
 CARDHOUSE_ERR_NO_PLAYER_INFO_HEADER = 1
 
@@ -319,6 +356,15 @@ class Fifa14Protocol:
                 ("client_id", "fifa14-xbox360-offline"),
                 ("redirect_uri", f"{self.identity_base}/connect/redirect"),
             ]
+        elif name == "OSDK_CLIENT":
+            # The retail client asks the OSDK configuration service whether
+            # an obsolete EASW asset refresh must complete before EnterFUT2.
+            # With the original content host gone, leaving the section empty
+            # keeps FutCfg uninitialised (native status 0x0B) and the FUT
+            # loader never starts.  This is the title's own offline/no-update
+            # switch: it bypasses only the dead asset patcher, while the real
+            # Blaze login and subsequent CardHouse session remain mandatory.
+            values = [("ONLINE/NO_ASSET_UPDATE", "1")]
         return response_frame(
             request,
             encode_fields(
@@ -1082,6 +1128,22 @@ class IdentityHttpService:
                     return
                 if parsed.path == "/health":
                     self.reply(200, b"ok\n", {"Content-Type": "text/plain"})
+                    return
+                if parsed.path == "/futBoot.xml":
+                    owner.journal.event(
+                        "fut_boot_served",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        bytes=len(FUT_BOOT_XML),
+                    )
+                    self.reply(
+                        200,
+                        FUT_BOOT_XML,
+                        {
+                            "Content-Type": "application/xml; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
                     return
                 if parsed.path == "/sponsored-events":
                     # The title only needs a valid non-empty URL during the

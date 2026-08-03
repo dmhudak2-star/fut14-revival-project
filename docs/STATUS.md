@@ -1,6 +1,6 @@
 # Current research status
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-03.
 
 ## Supported title
 
@@ -11,6 +11,108 @@ Last updated: 2026-08-01.
 - `powdllzf.xex.dll` runtime base observed: `0x89700000`
 
 All addresses below are build-specific.
+
+## 2026-08-03 main-menu ION exit checkpoint
+
+Two controlled runs narrowed the newest blocker beyond FutCfg and title login.
+First, the local Blaze listener was unavailable until the user selected FUT.
+That selection caused a new Redirector/PreAuth connection, local OAuth,
+Authentication2, PostAuth, UserAdded, the native state-1 login-success
+publication and a successful `/futBoot.xml` fetch. The title then reached the
+same persistent bottom-left loader. This rules out reuse or timing of the
+title-screen Blaze session as the current cause.
+
+Second, a clean boot with Blaze available established a before/after passive
+baseline. Before FUT selection, the connected-owner continuation counters were
+`entry=0`, `observer=0`. After selection both remained zero, and none of the 16
+FUT/auth/navigation completion probes fired. The server received no new route
+at the click; it continued only its existing 20-second Util pings.
+
+The live ION state during the loader was:
+
+```text
+background.name = load
+background      = game/background/BackgroundFIFA.swf
+screen.name     = unload
+screen          = <empty>
+popup.value1    = ToFe
+ION subscribers = 1
+CardsDLL        = not mapped
+```
+
+The retail `mainfeflow.nav` defines `mainMenu.onExit` as an unload of
+`game/screens/fluxHub/FluxHub`; entering the containing `futLauncher` would
+then execute `sendScreenEvent("FUTStartUp", "")`. The observed unload state,
+together with the untouched `FUTStartUp` action probe, supports the following
+boundary: the natural FUT selection begins the main-menu exit but its
+asynchronous ION unload does not complete, so the target launcher state is not
+entered. This is an inference from the live ION state plus the retail state
+graph, not a synthetic frontend transition.
+
+The next passive experiment journals all four native stages without changing
+their arguments or results:
+
+- `IONLoadViewEnqueue` at `0x82D5DCA8`;
+- `ProcessAction` at `0x82D62138`;
+- `ChangeState` at `0x82D61928`;
+- `PreScreenComplete` at `0x82D62398`.
+
+The goal is to identify the first absent stage in the natural unload. No
+frontend event, screen completion, navigation action or CardHouse request will
+be synthesized.
+
+## 2026-08-02 native FutCfg checkpoint
+
+The newest clean run uses the normal Blaze login and redirects only the native
+`fut` resource lookup to the local HTTP endpoint `/futBoot.xml`. The retail
+client fetched that document through its own resource pipeline and accepted the
+minimal `FutCfg` schema.
+
+The live adapter snapshot showed:
+
+- parser-complete byte `+0x14D == 1`;
+- parser error bytes `+0x13C`, `+0x14E` and `+0x14F` all zero;
+- `futNotAvailable` byte `+0x152 == 0`;
+- all four required parsed values at `+0x11C`, `+0x120`, `+0x140` and `+0x148`
+  nonzero;
+- native status routine `0x82782028` returning `0x1B`.
+
+Static disassembly of `0x82782028` and the EnterFUT handler at `0x828350C8`
+confirms that `0x1B` satisfies the unmodified native entry gate: required bits
+0 and 4 are set while rejection bits 2 and 5 are clear. The local XML and its
+parser are therefore no longer the current blocker.
+
+After selecting FUT, the Blaze connection stayed alive and exchanged normal
+Util pings, but no `CardHouse.Login` (`2148:101`) followed and
+`cardsdllzf.xex.dll` was not mapped. The unresolved edge is now after native
+FutCfg validation/authentication and before CardHouse bootstrap.
+
+The object field `+0x114` must not be described as a proven WebSession or FUT
+readiness flag. `0x82782078` uses it as an in-flight state (`0 -> 1`) and the
+surrounding vtable/strings identify a broader OSDK/EASW download/configuration
+manager. Its return to zero is compatible with a completed or terminated
+operation and is not evidence that FutCfg failed.
+
+### ZamboniUltimateTeam comparison
+
+[`ZamboniUltimateTeam`](https://github.com/ZamboniDevelopment/ZamboniUltimateTeam)
+implements a real CardHouse component for NHL/HUT. It handles the protocol
+after the client initiates component `2148`: login `101`, gamer set/get
+`103`/`104`, configuration `106`, deck information `301`, and the later card,
+squad, store and tournament calls. For a new user it returns an empty login and
+then persists the native `gamerSetInfo` creation flow.
+
+It does not implement FIFA's `FutCfg`, DIME/resource loading or the client-side
+transition that produces the first CardHouse request. Its public PPU patches
+also do not provide that bootstrap. Our existing local server already has the
+same initial `2148:101`, `2148:103` and `2148:104` shape, so importing the NHL
+database layer before FIFA sends its first CardHouse frame would not advance the
+current blocker.
+
+The next passive target is the completion path reached from the adapter's
+download/configuration vtable method `0x82798A68`, together with the native
+authentication callback after `0x82782078`. The success criterion remains an
+actual client-originated `2148:101`, not a frontend transition or forced event.
 
 ## Confirmed native objects and entry points
 

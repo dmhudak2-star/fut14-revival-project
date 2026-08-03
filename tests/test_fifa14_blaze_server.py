@@ -93,6 +93,19 @@ class ProtocolTests(unittest.TestCase):
             "http://192.0.2.35:18080/connect/redirect",
         )
 
+    def test_osdk_client_disables_only_dead_asset_refresh(self) -> None:
+        response = self.protocol.handle(
+            request(9, 1, [Field("CFID", STRING, "OSDK_CLIENT")]),
+            self.state,
+        )[0]
+        decoded = decode_frame(response)
+        config = by_label(decoded, "CONF")
+        self.assertEqual(config.type, MAP)
+        self.assertEqual(
+            dict(config.value[2]),
+            {"ONLINE/NO_ASSET_UPDATE": "1"},
+        )
+
     def test_xbox_login_returns_session_and_user_notification(self) -> None:
         login = request(
             1,
@@ -352,6 +365,43 @@ class ProtocolTests(unittest.TestCase):
 
 
 class TcpServerTests(unittest.TestCase):
+    def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "journal.jsonl"
+            journal = SERVER.Journal(journal_path)
+            identity = SERVER.IdentityHttpService("127.0.0.1", 0, "127.0.0.1", journal)
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("GET", "/futBoot.xml")
+                response = client.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    response.getheader("Content-Type"),
+                    "application/xml; charset=utf-8",
+                )
+                self.assertEqual(body, SERVER.FUT_BOOT_XML)
+                for required in (
+                    b"<FutCfg>",
+                    b"<cfgVersion>1</cfgVersion>",
+                    b"<minorVersion>1</minorVersion>",
+                    b"<bootString>fe/fut/servercalls</bootString>",
+                    b"<futSubVersion>1</futSubVersion>",
+                    b"<Language>",
+                    b"<dimeUniqueId>1</dimeUniqueId>",
+                    b"<key>",
+                    b"<futKeyType>1</futKeyType>",
+                ):
+                    self.assertIn(required, body)
+                client.close()
+
+                journal_text = journal_path.read_text(encoding="utf-8")
+                self.assertIn('"event": "fut_boot_served"', journal_text)
+            finally:
+                identity.stop()
+
     def test_identity_http_redirect(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             journal = SERVER.Journal(Path(temp) / "journal.jsonl")

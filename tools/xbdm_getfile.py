@@ -29,6 +29,11 @@ def main() -> None:
     parser.add_argument("host")
     parser.add_argument("remote")
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--size-only",
+        action="store_true",
+        help="print the remote size and close without downloading the payload",
+    )
     args = parser.parse_args()
 
     sock = socket.create_connection((args.host, 730), timeout=10)
@@ -50,6 +55,9 @@ def main() -> None:
     length = struct.unpack("<I", length_raw)[0]
     if length <= 0 or length > 1024 * 1024 * 1024:
         raise RuntimeError(f"Invalid XBDM file length: {length}")
+    if args.size_only:
+        print(f"0x{length:X} ({length} bytes)")
+        return
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("wb") as output:

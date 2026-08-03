@@ -53,6 +53,9 @@ import fifa14_login_callback_trace as login_callback_trace
 import fifa14_ea_login_state_trace as ea_login_state_trace
 import fifa14_postauth_dispatch_trace as postauth_dispatch_trace
 import fifa14_useradded_trace as useradded_trace
+import fifa14_fut_resource_url_trace as fut_resource_url_trace
+import fifa14_connection_result_trace as connection_result_trace
+import fifa14_connected_owner_path_probe as connected_owner_trace
 
 
 FIFA_PDATA = 'pdata=0x82329200'
@@ -69,9 +72,53 @@ TICKET_STUB_SIZE = TICKET_DUMMY - TICKET_STUB
 TICKET_DUMMY_SIZE = 0x40
 TICKET_VALUE = b"XBL2.0 x=offline;offline-fifa14-token"
 
+AUTH2_CONFIG_SITE = 0x82F401B8
+AUTH2_CONFIG_ORIGINAL = bytes.fromhex("7D8802A6")  # mflr r12
+AUTH2_CONFIG_STUB = 0x83C8DA00
+AUTH2_CONFIG_STUB_SIZE = 0x40
+AUTH2_JOURNAL = 0x83C8DA80
+AUTH2_JOURNAL_SIZE = 0x40
+
+
+def build_auth2_config_stub() -> bytes:
+    words = [
+        addis(12, 0, 0x83C9),
+        addi(12, 12, -0x2580),      # AUTH2_JOURNAL
+        0x816C0000,                 # lwz r11, 0(r12)
+        addi(11, 11, 1),
+        0x916C0000,                 # stw r11, 0(r12)
+        0x906C0004,                 # stw r3, 4(r12)
+        0x908C0008,                 # stw r4, 8(r12)
+        0x90AC000C,                 # stw r5, 0xC(r12)
+        int.from_bytes(AUTH2_CONFIG_ORIGINAL, "big"),
+        branch(AUTH2_CONFIG_STUB + 9 * 4, AUTH2_CONFIG_SITE + 4, False),
+    ]
+    image = b"".join(insn(word) for word in words)
+    return image.ljust(AUTH2_CONFIG_STUB_SIZE, b"\0")
+
+
+AUTH2_CONFIG_STUB_BYTES = build_auth2_config_stub()
+AUTH2_CONFIG_PATCH = insn(branch(
+    AUTH2_CONFIG_SITE,
+    AUTH2_CONFIG_STUB,
+    False,
+))
+
 
 def build_ticket_stub() -> bytes:
     words = [
+        # Share the passive Authentication2 journal with the IdentityParams
+        # entry probe.  The real ticket callback is replaced below only to
+        # supply a placeholder for a null offline XBL token; these stores make
+        # that otherwise hidden native call observable without changing its
+        # arguments or outcome.
+        addis(11, 0, 0x83C9),
+        addi(11, 11, -0x2580),       # auth2 journal 0x83C8DA80
+        addi(10, 0, 1),
+        0x914B0020,                  # stw r10, 0x20(r11)
+        0x906B0024,                  # stw r3, 0x24(r11)
+        0x908B0028,                  # stw r4, 0x28(r11)
+        0x90AB002C,                  # stw r5, 0x2C(r11)
         cmpwi(4, 0),
         0,  # bne original
         cmpwi(5, 0),
@@ -86,7 +133,7 @@ def build_ticket_stub() -> bytes:
     def address(index: int) -> int:
         return TICKET_STUB + index * 4
 
-    for index in (1, 3):
+    for index in (8, 10):
         words[index] = conditional_branch(
             address(index), address(original), 4, 2
         )
@@ -105,7 +152,7 @@ TICKET_DUMMY_BYTES = (TICKET_VALUE + b"\0").ljust(
 
 
 def arm_login_flow_traces(control: Connection) -> None:
-    """Publish both passive login traces while the title is still stopped."""
+    """Publish the passive title-login trace set before execution."""
     for module, label in (
         (postauth_dispatch_trace, "postAuth dispatch"),
         (login_callback_trace, "LoginStateLogin callbacks"),
@@ -129,6 +176,11 @@ def arm_login_flow_traces(control: Connection) -> None:
                 f"native EA-login state site for {probe.name} is not retail: "
                 f"entry={entry_state}, return={return_state}"
             )
+
+    if control.read(AUTH2_CONFIG_SITE, 4) != AUTH2_CONFIG_ORIGINAL:
+        raise RuntimeError("Authentication2 IdentityParams entry is not retail")
+    if control.read(connection_result_trace.SITE, 4) != connection_result_trace.ORIGINAL:
+        raise RuntimeError("Blaze connection-result entry is not retail")
 
     write_chunks(
         control,
@@ -175,6 +227,40 @@ def arm_login_flow_traces(control: Connection) -> None:
         )
         control.write(probe.site, useradded_trace.patch_for(probe))
 
+    # Authentication2's config callback remains fully retail.  The ticket
+    # callback is logged by the local-placeholder shim itself because both
+    # features necessarily own the same entry instruction.
+    write_chunks(
+        control,
+        AUTH2_JOURNAL,
+        bytes(AUTH2_JOURNAL_SIZE),
+    )
+    write_chunks(
+        control,
+        AUTH2_CONFIG_STUB,
+        AUTH2_CONFIG_STUB_BYTES,
+    )
+    control.write(
+        AUTH2_CONFIG_SITE,
+        AUTH2_CONFIG_PATCH,
+    )
+
+    connection_stub = connection_result_trace.build_stub()
+    write_chunks(
+        control,
+        connection_result_trace.JOURNAL,
+        bytes(connection_result_trace.JOURNAL_SIZE),
+    )
+    write_chunks(control, connection_result_trace.STUB, connection_stub)
+    control.write(
+        connection_result_trace.SITE,
+        insn(branch(
+            connection_result_trace.SITE,
+            connection_result_trace.STUB,
+            False,
+        )),
+    )
+
     for index, probe in enumerate(postauth_dispatch_trace.PROBES):
         if control.read(probe.site, 4) != postauth_dispatch_trace.patch_for(index, probe):
             raise RuntimeError(
@@ -191,7 +277,72 @@ def arm_login_flow_traces(control: Connection) -> None:
                 f"UserAdded trace verification failed at 0x{probe.site:08X}"
             )
 
+    if control.read(AUTH2_CONFIG_SITE, 4) != AUTH2_CONFIG_PATCH:
+        raise RuntimeError("Authentication2 IdentityParams trace verification failed")
+    expected_connection_patch = insn(branch(
+        connection_result_trace.SITE,
+        connection_result_trace.STUB,
+        False,
+    ))
+    if control.read(connection_result_trace.SITE, 4) != expected_connection_patch:
+        raise RuntimeError("Blaze connection-result trace verification failed")
+
     ea_login_state_trace.arm(control)
+
+    # Observe the owner that receives the established-connection state and the
+    # gated observer call that is expected to resume a deferred online-mode
+    # request.  This is passive: the original entry instruction and original
+    # observer call target are both preserved by the trace trampolines.
+    entry_stub = connected_owner_trace.build_entry_stub()
+    call_stub = connected_owner_trace.build_call_stub()
+    connected_owner_trace.validate_layout(entry_stub, call_stub)
+    entry_image = entry_stub.ljust(
+        connected_owner_trace.ENTRY_SLOT_END - connected_owner_trace.ENTRY_STUB,
+        b"\0",
+    )
+    call_image = call_stub.ljust(
+        connected_owner_trace.CALL_SLOT_END - connected_owner_trace.CALL_STUB,
+        b"\0",
+    )
+    entry_patch = insn(branch(
+        connected_owner_trace.ENTRY_SITE,
+        connected_owner_trace.ENTRY_STUB,
+        False,
+    ))
+    call_patch = insn(branch(
+        connected_owner_trace.CALL_SITE,
+        connected_owner_trace.CALL_STUB,
+        True,
+    ))
+
+    if control.read(connected_owner_trace.ENTRY_SITE, 4) != connected_owner_trace.ENTRY_ORIGINAL:
+        raise RuntimeError("connected-owner entry is not retail")
+    if control.read(connected_owner_trace.CALL_SITE, 4) != connected_owner_trace.CALL_ORIGINAL:
+        raise RuntimeError("connected-owner observer call is not retail")
+    for address, image in (
+        (connected_owner_trace.ENTRY_STUB, entry_image),
+        (connected_owner_trace.CALL_STUB, call_image),
+    ):
+        current = control.read(address, len(image))
+        if current not in (bytes(len(image)), image):
+            raise RuntimeError(
+                f"connected-owner trace cave 0x{address:08X} is occupied"
+            )
+
+    write_chunks(
+        control,
+        connected_owner_trace.JOURNAL,
+        bytes(connected_owner_trace.JOURNAL_SIZE),
+    )
+    write_chunks(control, connected_owner_trace.ENTRY_STUB, entry_image)
+    write_chunks(control, connected_owner_trace.CALL_STUB, call_image)
+    control.write(connected_owner_trace.ENTRY_SITE, entry_patch)
+    control.write(connected_owner_trace.CALL_SITE, call_patch)
+    if (
+        control.read(connected_owner_trace.ENTRY_SITE, 4) != entry_patch
+        or control.read(connected_owner_trace.CALL_SITE, 4) != call_patch
+    ):
+        raise RuntimeError("connected-owner trace verification failed")
 
 
 def main() -> int:
@@ -204,7 +355,22 @@ def main() -> int:
         action="store_true",
         help="arm passive postAuth and LoginStateLogin traces before execution",
     )
+    parser.add_argument(
+        "--trace-fut-resource",
+        action="store_true",
+        help="capture the native 'fut' resource URL before its temporary string is freed",
+    )
+    parser.add_argument(
+        "--redirect-fut-resource",
+        action="store_true",
+        help="route only native futBoot.xml loading to the local HTTP service",
+    )
     args = parser.parse_args()
+
+    if args.trace_fut_resource and args.redirect_fut_resource:
+        parser.error(
+            "--trace-fut-resource and --redirect-fut-resource are mutually exclusive"
+        )
 
     local_ip = str(ipaddress.IPv4Address(args.local_ip))
     connect_stub = build_connect_stub(int(ipaddress.IPv4Address(local_ip)))
@@ -341,6 +507,13 @@ def main() -> int:
 
             if args.trace_login_flow:
                 arm_login_flow_traces(control)
+            if args.trace_fut_resource:
+                fut_resource_url_trace.arm(control)
+            if args.redirect_fut_resource:
+                fut_resource_url_trace.arm(
+                    control,
+                    f"http://{local_ip}:18080/futBoot.xml",
+                )
 
             print(
                 "Verified: retail hostnames preserved, "
@@ -350,6 +523,14 @@ def main() -> int:
                 + (
                     ", passive login-flow traces=armed"
                     if args.trace_login_flow else ""
+                )
+                + (
+                    ", passive FUT-resource URL trace=armed"
+                    if args.trace_fut_resource else ""
+                )
+                + (
+                    ", native FUT-resource redirect=armed"
+                    if args.redirect_fut_resource else ""
                 )
             )
             control.command("go")
