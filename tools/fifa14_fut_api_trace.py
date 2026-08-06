@@ -17,9 +17,13 @@ from the global at ``0x892213A0`` and calls its second vtable slot.  Whether the
 front-end ever reaches that glue is exactly what separates "the login was
 refused" from "the login was never issued".
 
-This reversible entry hook records the newest sixteen invocations of one chosen
-operation, executes the displaced retail instruction, and resumes.  It never
-changes an argument, a return value, a state flag, an event, or a route.
+Each operation gets its own stub and journal, so the whole path can be armed in
+one pass.  That matters because every FUT entry unloads CardsDLL: measuring one
+operation per run would cost a full navigation cycle each time.
+
+These reversible entry hooks record the newest sixteen invocations of each armed
+operation, execute the displaced retail instruction, and resume.  They never
+change an argument, a return value, a state flag, an event, or a route.
 """
 
 from __future__ import annotations
@@ -69,13 +73,36 @@ OPERATIONS = {
 # The FUT service object LoginToFUT dispatches through.
 SERVICE_GLOBAL = 0x892213A0
 
-# Cave kept clear of the dispatch trace's 0x89044000/0x89045000 pair.
-STUB = 0x89046000
+# Fixed slot order so a journal keeps its meaning across invocations.
+ORDER = (
+    "LoginToFUT",
+    "FirstTimeInit",
+    "GetIdentityData",
+    "GetUserStatsData",
+    "CardsDownloaded",
+    "CreateClub",
+    "CreateMatch",
+    "ServiceQuickMatch",
+    "ServiceCreateSession",
+    "GetRandomOpponent",
+    "FinalShutdown",
+)
+
+# Every operation gets its own stub and journal so the whole path can be armed
+# in one pass: each FUT entry unloads CardsDLL, so measuring one operation per
+# run would cost a full navigation cycle each time.
+SLOT_BASE = 0x89046000  # clear of the dispatch trace's 0x89044000/0x89045000
+SLOT_STRIDE = 0x200
 STUB_SIZE = 0x80
-JOURNAL = 0x89046100
 RECORD_COUNT = 16
 RECORD_SIZE = 0x10
 JOURNAL_SIZE = RECORD_SIZE + RECORD_COUNT * RECORD_SIZE
+
+
+def slot(operation: str) -> tuple[int, int]:
+    """Return the (stub, journal) pair reserved for ``operation``."""
+    base = SLOT_BASE + ORDER.index(operation) * SLOT_STRIDE
+    return base, base + STUB_SIZE
 
 
 def pointer_load(register: int, address: int) -> list[int]:
@@ -84,7 +111,7 @@ def pointer_load(register: int, address: int) -> list[int]:
     return [addis(register, 0, high), addi(register, register, low)]
 
 
-def build_stub(site: int) -> bytes:
+def build_stub(site: int, stub: int, journal: int) -> bytes:
     """Build an ABI-preserving ring recorder for one operation handler.
 
     ``mflr r12`` runs first because every handler's next instruction stores
@@ -92,7 +119,7 @@ def build_stub(site: int) -> bytes:
     and write r10/r11 before reading them.
     """
     words = [int.from_bytes(ORIGINAL, "big")]
-    words.extend(pointer_load(11, JOURNAL))
+    words.extend(pointer_load(11, journal))
     words.extend(
         (
             lwz(10, 11, 0),
@@ -109,7 +136,7 @@ def build_stub(site: int) -> bytes:
             0x7C0004AC,  # sync
         )
     )
-    tail = STUB + len(words) * 4
+    tail = stub + len(words) * 4
     words.append(branch(tail, site + 4, False))
     result = b"".join(insn(word) for word in words)
     if len(result) > STUB_SIZE:
@@ -117,8 +144,8 @@ def build_stub(site: int) -> bytes:
     return result.ljust(STUB_SIZE, b"\0")
 
 
-def site_patch(site: int) -> bytes:
-    return insn(branch(site, STUB, False))
+def site_patch(site: int, stub: int) -> bytes:
+    return insn(branch(site, stub, False))
 
 
 def verify_module(client: Xbdm) -> None:
@@ -134,24 +161,29 @@ def verify_module(client: Xbdm) -> None:
         raise RuntimeError(f"Unexpected or missing {MODULE_NAME}: {module}")
 
 
-def hook_state(client: Xbdm, site: int) -> str:
+def hook_state(client: Xbdm, operation: str) -> str:
+    site = OPERATIONS[operation]
+    stub, journal = slot(operation)
     current = client.read(site, 4)
     if current == ORIGINAL:
         return "original"
-    if current == site_patch(site) and client.read(STUB, STUB_SIZE) == build_stub(site):
+    if current == site_patch(site, stub) and client.read(
+        stub, STUB_SIZE
+    ) == build_stub(site, stub, journal):
         return "armed"
     return "unexpected"
 
 
-def read_journal(client: Xbdm, operation: str) -> None:
-    raw = client.read(JOURNAL, JOURNAL_SIZE)
+def read_journal(client: Xbdm, operation: str) -> int:
+    _, journal = slot(operation)
+    raw = client.read(journal, JOURNAL_SIZE)
     count = int.from_bytes(raw[0:4], "big")
-    print(f"{operation} invocations = {count}")
     if not count:
-        print(f"The front-end never called {operation}.")
-        return
+        print(f"{operation:22s} never called")
+        return 0
+    print(f"{operation:22s} {count} call(s)")
     if count > RECORD_COUNT:
-        print(f"WARNING: only the newest {RECORD_COUNT} records remain.")
+        print(f"  WARNING: only the newest {RECORD_COUNT} records remain.")
     for sequence in range(max(0, count - RECORD_COUNT), count):
         offset = RECORD_SIZE + (sequence % RECORD_COUNT) * RECORD_SIZE
         record = raw[offset : offset + RECORD_SIZE]
@@ -161,30 +193,38 @@ def read_journal(client: Xbdm, operation: str) -> None:
             f"r5=0x{int.from_bytes(record[8:12], 'big'):08X} "
             f"lr=0x{int.from_bytes(record[12:16], 'big'):08X}"
         )
-    service = int.from_bytes(client.read(SERVICE_GLOBAL, 4), "big")
-    print(f"FUT service object = 0x{service:08X}")
+    return count
 
 
-def apply_trace(client: Xbdm, site: int, state: str) -> None:
-    desired = build_stub(site)
-    if state == "armed":
+def apply_trace(client: Xbdm, operation: str) -> None:
+    site = OPERATIONS[operation]
+    stub, journal = slot(operation)
+    desired = build_stub(site, stub, journal)
+    if hook_state(client, operation) == "unexpected":
+        raise RuntimeError(f"Refusing an unexpected {operation} entry")
+    if client.read(site, 4) != ORIGINAL:
         client.write(site, ORIGINAL)
         if client.read(site, 4) != ORIGINAL:
             raise RuntimeError("Could not unpublish the previous trace")
-    existing = client.read(STUB, STUB_SIZE)
+    existing = client.read(stub, STUB_SIZE)
     if existing not in (bytes(STUB_SIZE), desired):
-        raise RuntimeError("FUT API trace cave is not free")
+        raise RuntimeError(f"{operation} trace cave is not free")
 
-    write_chunks(client, JOURNAL, bytes(JOURNAL_SIZE))
-    write_chunks(client, STUB, desired)
-    if client.read(STUB, STUB_SIZE) != desired:
-        raise RuntimeError("FUT API trace stub verification failed")
-    client.write(site, site_patch(site))
-    if hook_state(client, site) != "armed":
-        raise RuntimeError("FUT API trace hook verification failed")
+    write_chunks(client, journal, bytes(JOURNAL_SIZE))
+    write_chunks(client, stub, desired)
+    if client.read(stub, STUB_SIZE) != desired:
+        raise RuntimeError(f"{operation} stub verification failed")
+    client.write(site, site_patch(site, stub))
+    if hook_state(client, operation) != "armed":
+        raise RuntimeError(f"{operation} hook verification failed")
 
 
-def arm_on_load(host: str, operation: str, site: int, timeout: float) -> int:
+def apply_all(client: Xbdm, operations: list[str]) -> None:
+    for operation in operations:
+        apply_trace(client, operation)
+
+
+def arm_on_load(host: str, operations: list[str], timeout: float) -> int:
     """Arm the trace on the CardsDLL modload notification.
 
     CardsDLL is mapped only when the title enters FUT, and the first
@@ -218,9 +258,10 @@ def arm_on_load(host: str, operation: str, site: int, timeout: float) -> int:
             print(f"Module event: {event}", flush=True)
             control.command("stop")
             stopped = True
-            apply_trace(control, site, hook_state(control, site))
+            apply_all(control, operations)
             print(
-                f"Verified: passive {operation} trace armed at module load.",
+                "Verified: passive traces armed at module load: "
+                + ", ".join(operations),
                 flush=True,
             )
             control.command("go")
@@ -243,40 +284,49 @@ def main() -> int:
         choices=("status", "apply", "restore", "read", "arm-on-load"),
     )
     parser.add_argument(
-        "--operation", choices=sorted(OPERATIONS), default="LoginToFUT"
+        "--operation",
+        action="append",
+        choices=sorted(OPERATIONS),
+        help="repeat to trace several operations at once (default: all)",
     )
     parser.add_argument("--timeout", type=float, default=600)
     args = parser.parse_args()
 
-    site = OPERATIONS[args.operation]
+    operations = args.operation or list(ORDER)
     if args.action == "arm-on-load":
-        return arm_on_load(args.host, args.operation, site, args.timeout)
+        return arm_on_load(args.host, operations, args.timeout)
+
     client = Xbdm(args.host)
     try:
         verify_module(client)
-        state = hook_state(client, site)
-        print(f"{args.operation} trace: {state}")
 
         if args.action == "status":
+            for operation in operations:
+                print(f"{operation:22s} {hook_state(client, operation)}")
             return 0
         if args.action == "read":
-            if state != "armed":
-                raise RuntimeError("Trace is not armed")
-            read_journal(client, args.operation)
+            total = 0
+            for operation in operations:
+                if hook_state(client, operation) != "armed":
+                    print(f"{operation:22s} not armed")
+                    continue
+                total += read_journal(client, operation)
+            service = int.from_bytes(client.read(SERVICE_GLOBAL, 4), "big")
+            print(f"FUT service object = 0x{service:08X}")
+            print(f"total recorded calls = {total}")
             return 0
-        if state == "unexpected":
-            raise RuntimeError(f"Refusing an unexpected {args.operation} entry")
-
         if args.action == "restore":
-            if state == "armed":
-                client.write(site, ORIGINAL)
-                if client.read(site, 4) != ORIGINAL:
-                    raise RuntimeError(f"{args.operation} restore failed")
-            print(f"Verified: original {args.operation} handler restored.")
+            for operation in operations:
+                site = OPERATIONS[operation]
+                if hook_state(client, operation) == "armed":
+                    client.write(site, ORIGINAL)
+                    if client.read(site, 4) != ORIGINAL:
+                        raise RuntimeError(f"{operation} restore failed")
+            print("Verified: original FUT operation handlers restored.")
             return 0
 
-        apply_trace(client, site, state)
-        print(f"Verified: passive {args.operation} trace armed.")
+        apply_all(client, operations)
+        print("Verified: passive traces armed: " + ", ".join(operations))
         return 0
     finally:
         client.close()
