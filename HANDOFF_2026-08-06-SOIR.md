@@ -159,6 +159,32 @@ Corrélé côté réseau, sur toute la session : une seule connexion Blaze, aucu
 frame du composant 2148, aucune requête HTTP après `accountinfo`, aucune route
 non gérée. Le client n'émet rien et attend.
 
+## Vérifications supplémentaires, toutes négatives
+
+Trois pistes plausibles ont été fermées par la mesure, pour éviter qu'une
+prochaine session les rouvre :
+
+- **Le contrat de réponse `/pow/auth`.** La table de chaînes du parser Xbox dans
+  `powdllzf.xex.dll`, à `0x897107BC`, contient exactement et seulement
+  `lastOnlineTime`, `serverTime`, `sid`, à côté de `text/json` et de l'en-tête
+  `Accept: application/json`. C'est précisément ce que le serveur renvoie.
+- **Une connexion CardHouse séparée.** Le journal du hook `connect` compte cinq
+  appels sur toute la session, le dernier vers `192.168.1.36:18080`. CardsDLL
+  n'ouvre aucune connexion propre : il réutiliserait la connexion Blaze
+  existante, sur laquelle il n'envoie jamais rien.
+- **Une clé de configuration manquante.** Les seules clés de config que
+  `CardsDLLzf.xex.dll` sait lire sont `CARDS/DIRECTED_BLAZEENV`,
+  `FUT/MODULE_BASEURL_%s`, `FUT/SINGLE_BASEURL_%s`, `FUT/IS_RETURNING_USER`,
+  `FUT/FORCE_TUTORIALS`, `FUT/DISABLE_TUTORIALS`,
+  `FUT/ALWAYS_SHOW_SMART_TUTORIALS`, `FUT/ALWAYS_SHOW_QUESTS_PANEL`,
+  `FUT/FUT_STAT_TUNING` et `FUT/LOG_RPUPS`. Le serveur fournit déjà toutes
+  celles qui ne sont pas de simples réglages d'affichage.
+
+À noter pour la suite : `/pow/auth` et `accountinfo` partent pendant le boot du
+titre, avant tout clic FUT, et le menu affiche malgré tout « EAS FC non
+connecté ». Le sous-système EASFC de `powdllzf` et le bootstrap FUT de
+`CardsDLLzf` sont donc deux clients distincts du même serveur local.
+
 ## Prochaine correction recommandée
 
 La question n'est plus « pourquoi le login échoue » mais « pourquoi le login
