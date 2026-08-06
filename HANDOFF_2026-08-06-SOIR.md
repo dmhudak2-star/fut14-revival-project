@@ -145,15 +145,34 @@ handler invocations = 0
 ```
 
 Le dispatcher **n'est jamais atteint**. Aucun message `0x65` n'arrive, ni en
-succès ni en échec. Le popup vient donc du second appelant : le compteur expire.
+succès ni en échec.
 
-Ce compteur est un **watchdog fixe**. Il est initialisé une seule fois dans les
-constructeurs CardsDLL (`0x8909E0B8` et `0x8909EAE8`, avec le reste de l'objet),
-décrémenté en `0x8909FB00`, et jamais réarmé. Le délai observé entre
-`accountinfo` et le popup est d'environ 65 secondes.
+### Ce qui reste à vérifier sur ce chemin
 
-Conclusion : le bootstrap FUT ne reçoit **jamais** son résultat de login
-CardHouse. Ce n'est pas un login refusé, c'est un login qui n'aboutit pas.
+Il serait tentant d'en conclure que le popup vient forcément du second appelant,
+donc du compteur qui expire. **Cette conclusion n'est pas établie** et deux
+éléments la contredisent :
+
+- les deux constructeurs initialisent `this+0x48` à `-1`, et le tick traite
+  toute valeur négative par un saut qui n'affiche rien et ne décrémente pas ;
+  il faudrait donc qu'un tiers arme le compte à rebours, et ce tiers n'a pas
+  été trouvé ;
+- surtout, le traceur de localisation résout `Unknown_FCC_Error` depuis une
+  adresse de **heap** (`0xBE0EA9A4`), pas depuis la chaîne rdata de CardsDLL
+  (`0x8900B16C`). Le dialogue affiché peut donc provenir du front-end FUT
+  résolvant la même clé, sans passer par `0x8909F448`.
+
+L'outil `tools/fifa14_cards_message_dispatch_trace.py` trace désormais aussi
+`0x8909F448` et rapporte `ServerFatalError popup calls`. Un compteur à zéro
+lors d'une reproduction prouvera que le chemin C++ CardsDLL n'est pas celui
+emprunté, et renverra l'enquête vers le front-end.
+
+### Ce qui est solidement établi
+
+Le bootstrap FUT ne reçoit jamais de résultat de login CardHouse : le
+dispatcher n'est pas atteint, aucune frame du composant 2148 n'est émise,
+aucune requête HTTP ne suit `accountinfo`, aucune route non gérée n'est
+demandée, et le hook `connect` ne compte aucune connexion supplémentaire.
 
 Corrélé côté réseau, sur toute la session : une seule connexion Blaze, aucune
 frame du composant 2148, aucune requête HTTP après `accountinfo`, aucune route

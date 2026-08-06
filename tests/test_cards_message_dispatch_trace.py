@@ -78,3 +78,28 @@ def test_login_message_is_the_recovered_fatal_case() -> None:
     assert trace.FATAL_MESSAGE == 0x65
     assert "2148:101" in trace.describe_message(0x65)
     assert "not handled" in trace.describe_message(0x1234)
+
+
+def test_popup_stub_is_a_separate_recorder_in_its_own_cave() -> None:
+    stub = trace.build_popup_stub()
+    assert len(stub) == trace.STUB_SIZE
+    assert words(stub)[0] == int.from_bytes(trace.ORIGINAL, "big")
+    assert (
+        trace.POPUP_STUB + trace.STUB_SIZE <= trace.POPUP_JOURNAL
+        or trace.POPUP_JOURNAL + trace.JOURNAL_SIZE <= trace.POPUP_STUB
+    )
+    for start, size in (
+        (trace.POPUP_STUB, trace.STUB_SIZE),
+        (trace.POPUP_JOURNAL, trace.JOURNAL_SIZE),
+    ):
+        assert start + size <= trace.STUB or trace.JOURNAL + trace.JOURNAL_SIZE <= start
+
+
+def test_popup_stub_resumes_after_its_patched_site() -> None:
+    encoded = words(trace.build_popup_stub())
+    tail = next(index for index, word in enumerate(encoded) if (word >> 26) == 18)
+    displacement = encoded[tail] & 0x03FFFFFC
+    if displacement & 0x02000000:
+        displacement -= 0x04000000
+    assert trace.POPUP_STUB + tail * 4 + displacement == trace.POPUP_SITE + 4
+    assert encoded[tail] & 1 == 0

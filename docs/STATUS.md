@@ -51,15 +51,27 @@ reaches zero.
 
 A trace armed on the `CardsDLLzf.xex.dll` modload notification, so it captures
 the very first FUT attempt, reports `handler invocations = 0`. The dispatcher is
-never reached: no `0x65` result arrives, neither success nor failure. The popup
-comes from the watchdog, which the constructors at `0x8909E0B8` and `0x8909EAE8`
-initialise once and nothing ever rearms. Roughly 65 seconds elapse between
-`accountinfo` and the popup.
+never reached: no `0x65` result arrives, neither success nor failure.
 
-The FUT bootstrap therefore never receives a CardHouse login result at all. The
-open question is no longer why the login fails but why it is never issued: the
-console opens a single Blaze connection, sends no component 2148 frame, issues
-no HTTP after `accountinfo`, and requests no unmodelled route.
+Attributing the dialog to the watchdog instead is *not* established. Both
+constructors initialise `this+0x48` to `-1`, which the tick treats as disabled,
+and no code that arms a positive countdown has been found. More importantly the
+localization trace resolves `Unknown_FCC_Error` from a heap address
+(`0xBE0EA9A4`) rather than from the CardsDLL rdata string at `0x8900B16C`, so
+the dialog may come from the FUT front-end resolving the same key without
+`0x8909F448` running at all. The dispatch trace now also records that routine,
+so the next reproduction settles it.
+
+What is solid is that the FUT bootstrap never receives a CardHouse login result:
+the dispatcher is not reached, the console opens a single Blaze connection,
+sends no component 2148 frame, issues no HTTP after `accountinfo`, requests no
+unmodelled route, and the connect hook counts no additional connection.
+
+One further live observation separates two distinct end states. Applying the TU3
+`helperFunctions` patch before selecting FUT leads to the error dialog; when the
+patch landed only after the selection, the title instead sat on the FUT stadium
+loader with a persistent spinner and `CardsDLLzf.xex.dll` was never mapped. The
+patch is therefore what carries the flow far enough to fail.
 
 Two hypotheses were tested and eliminated with live evidence: an incomplete
 response schema, and a persona-name mismatch between the Blaze session and the

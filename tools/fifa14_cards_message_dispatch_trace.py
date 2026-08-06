@@ -53,6 +53,13 @@ RECORD_COUNT = 16
 RECORD_SIZE = 0x10
 JOURNAL_SIZE = RECORD_SIZE + RECORD_COUNT * RECORD_SIZE
 
+# The routine that renders ServerFatalError/Unknown_FCC_Error.  Tracing it
+# alongside the dispatcher settles whether the retail popup comes from this
+# CardsDLL path at all, or from the FUT front-end resolving the same key.
+POPUP_SITE = 0x8909F448
+POPUP_STUB = 0x89045000
+POPUP_JOURNAL = 0x89045100
+
 # Switch labels recovered statically from the handler at 0x8911A998.
 MESSAGES = {
     0x15: "0x15",
@@ -71,6 +78,36 @@ def pointer_load(register: int, address: int) -> list[int]:
     high = (address + 0x8000) >> 16
     low = address - (high << 16)
     return [addis(register, 0, high), addi(register, register, low)]
+
+
+def build_popup_stub() -> bytes:
+    """Build the same recorder for the single-argument popup routine."""
+    words = [int.from_bytes(ORIGINAL, "big")]
+    words.extend(pointer_load(11, POPUP_JOURNAL))
+    words.extend(
+        (
+            lwz(10, 11, 0),
+            addi(10, 10, 1),
+            stw(10, 11, 0),
+            addi(10, 10, -1),
+            rlwinm(10, 10, 0, 28, 31),
+            rlwinm(10, 10, 4, 24, 27),
+            add(11, 11, 10),
+            stw(3, 11, RECORD_SIZE + 0x0),
+            stw(12, 11, RECORD_SIZE + 0x4),
+            0x7C0004AC,  # sync
+        )
+    )
+    tail = POPUP_STUB + len(words) * 4
+    words.append(branch(tail, POPUP_SITE + 4, False))
+    result = b"".join(insn(word) for word in words)
+    if len(result) > STUB_SIZE:
+        raise AssertionError("Cards popup stub exceeds its cave")
+    return result.ljust(STUB_SIZE, b"\0")
+
+
+def popup_site_patch() -> bytes:
+    return insn(branch(POPUP_SITE, POPUP_STUB, False))
 
 
 def build_stub() -> bytes:
@@ -159,6 +196,25 @@ def read_journal(client: Xbdm) -> None:
         )
         print(f"          {describe_message(identifier)}")
 
+    popup = client.read(POPUP_JOURNAL, JOURNAL_SIZE)
+    shown = int.from_bytes(popup[0:4], "big")
+    print(f"ServerFatalError popup calls = {shown}")
+    for sequence in range(max(0, shown - RECORD_COUNT), shown):
+        offset = RECORD_SIZE + (sequence % RECORD_COUNT) * RECORD_SIZE
+        this = int.from_bytes(popup[offset : offset + 4], "big")
+        caller = int.from_bytes(popup[offset + 4 : offset + 8], "big")
+        origin = {
+            0x8909FAF8: "watchdog tick 0x8909FA50 (this+0x48 reached zero)",
+            0x8911B0D8: "message dispatcher, message 0x65",
+        }.get(caller, "unknown call site")
+        print(f"  {sequence:4d}  this=0x{this:08X} lr=0x{caller:08X}  {origin}")
+    if not shown:
+        print(
+            "  The CardsDLL popup routine never ran: the retail dialog comes "
+            "from elsewhere, most likely the FUT front-end resolving the same "
+            "Unknown_FCC_Error key."
+        )
+
 
 def apply_trace(client: Xbdm, state: str) -> None:
     desired = build_stub()
@@ -177,6 +233,16 @@ def apply_trace(client: Xbdm, state: str) -> None:
     client.write(SITE, site_patch())
     if hook_state(client) != "armed":
         raise RuntimeError("Cards message dispatch hook verification failed")
+
+    if client.read(POPUP_SITE, 4) == ORIGINAL:
+        popup = build_popup_stub()
+        write_chunks(client, POPUP_JOURNAL, bytes(JOURNAL_SIZE))
+        write_chunks(client, POPUP_STUB, popup)
+        if client.read(POPUP_STUB, STUB_SIZE) != popup:
+            raise RuntimeError("Cards popup stub verification failed")
+        client.write(POPUP_SITE, popup_site_patch())
+        if client.read(POPUP_SITE, 4) != popup_site_patch():
+            raise RuntimeError("Cards popup hook verification failed")
 
 
 def arm_on_load(host: str, timeout: float) -> int:
