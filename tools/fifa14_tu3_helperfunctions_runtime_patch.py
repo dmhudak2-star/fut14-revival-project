@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import socket
 import time
+from pathlib import Path
 
 
 APT_SIZE = 0x6E0C
@@ -148,6 +150,30 @@ class Xbdm:
 # many minutes over XBDM, which is enough to dominate a whole measurement cycle.
 OBSERVED_APT_NEIGHBOURHOOD = 0xBDD78000
 DEFAULT_HINT_WINDOW = 0x00400000
+
+# A hard-coded hint goes stale as soon as the heap moves, and then every run
+# pays for the full sweep again.  Remembering where the APT actually turned up
+# lets the next run start from a hint that tracks the console instead.
+DEFAULT_HINT_FILE = (
+    Path(__file__).resolve().parents[1] / "runtime" / "helperfunctions-apt.json"
+)
+
+
+def remembered_hint(path: Path) -> int | None:
+    try:
+        recorded = json.loads(path.read_text())["address"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return recorded if isinstance(recorded, int) else None
+
+
+def remember_hint(path: Path, address: int) -> None:
+    """Record a confirmed APT address, but never fail the patch over it."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"address": address}) + "\n")
+    except OSError:
+        pass
 
 
 def candidates(client: Xbdm) -> list[tuple[int, int, int]]:
@@ -292,7 +318,20 @@ def main() -> int:
         default=DEFAULT_HINT_WINDOW,
         help="size of that first pass; 0 disables it",
     )
+    parser.add_argument(
+        "--hint-file",
+        type=Path,
+        default=DEFAULT_HINT_FILE,
+        help="where the last confirmed APT address is remembered",
+    )
     args = parser.parse_args()
+
+    hints_to_try = []
+    recalled = remembered_hint(args.hint_file)
+    if recalled is not None:
+        hints_to_try.append(recalled)
+    if args.hint not in hints_to_try:
+        hints_to_try.append(args.hint)
 
     if args.address is not None:
         client = Xbdm(args.host)
@@ -331,22 +370,30 @@ def main() -> int:
             client = Xbdm(args.host)
             hits = []
             if args.hint_window:
-                narrowed = clip_to_window(
-                    candidates(client), args.hint, args.hint_window
-                )
-                if narrowed:
+                # The remembered address first: it reflects this console's
+                # current heap, whereas the built-in one only ever reflects
+                # where the APT used to sit.
+                for hint in hints_to_try:
+                    narrowed = clip_to_window(
+                        candidates(client), hint, args.hint_window
+                    )
+                    if not narrowed:
+                        continue
                     hits = scan_once(client, args.chunk_size, narrowed)
                     if hits:
                         print(
-                            f"Found in the hinted window around "
-                            f"0x{args.hint:08X}.",
+                            f"Found in the hinted window around 0x{hint:08X}.",
                             flush=True,
                         )
+                        break
             if not hits:
                 hits = scan_once(client, args.chunk_size)
             for address in hits:
                 state = classify(client, address)
                 print(f"TU3 helperFunctions APT 0x{address:08X}: {state}", flush=True)
+                # classify() has validated the header, length and all three
+                # branch contexts, so this address is worth hinting from.
+                remember_hint(args.hint_file, address)
                 if args.restore:
                     if state == "patched":
                         restore(client, address)
