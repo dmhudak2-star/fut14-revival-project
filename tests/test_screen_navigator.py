@@ -151,3 +151,12 @@ def test_a_blank_dark_frame_is_not_mistaken_for_the_dimmed_dialog() -> None:
 def test_contrast_measures_the_spread_of_a_signature() -> None:
     assert navigator.contrast(bytes(navigator.SIGNATURE_LENGTH)) == 0
     assert navigator.contrast(bytes([0, 255])) == 255
+
+
+def test_the_navigator_waits_for_a_screen_to_settle() -> None:
+    # A frame caught mid-fade can match a neighbouring screen, so acting on a
+    # single observation is what let a dimmed chooser be treated as a dialog.
+    source = (TOOLS / "fifa14_screen_navigator.py").read_text()
+    body = source[source.index("def navigate("):]
+    assert "confirmed" in body
+    assert body.index("if screen != confirmed") < body.index("press(host")

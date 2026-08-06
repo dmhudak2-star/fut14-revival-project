@@ -235,8 +235,18 @@ def navigate(
     deadline = time.monotonic() + timeout
     last_seen = None
     attempts = 0
+    confirmed = None
     while time.monotonic() < deadline:
         screen, measured = observe(host)
+        # Act only on a screen seen twice running.  A frame caught mid-fade
+        # sits between two screens and can match the wrong one: a dimmed
+        # profile chooser reads as the dimmed FUT dialog, and pressing that
+        # screen's button starts a sign-in this setup cannot finish.  A settled
+        # screen confirms on the next poll; a transition does not.
+        if screen != confirmed:
+            confirmed = screen
+            time.sleep(SKIP_INTERVAL if screen == "unknown" else 1.0)
+            continue
         if screen != last_seen:
             print(f"screen = {screen} (distance {measured})", flush=True)
             last_seen = screen
