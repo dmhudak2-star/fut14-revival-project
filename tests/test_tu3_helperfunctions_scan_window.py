@@ -40,3 +40,26 @@ def test_window_is_centred_on_the_observed_neighbourhood() -> None:
 
 def test_window_stays_far_smaller_than_a_full_sweep() -> None:
     assert patch.DEFAULT_HINT_WINDOW <= 0x1000000
+
+
+class RegionListing:
+    def __init__(self, regions):
+        self._regions = regions
+
+    def regions(self):
+        return self._regions
+
+
+def test_small_regions_are_searched_before_the_big_heap() -> None:
+    listing = RegionListing(
+        [
+            (0xB3430000, 0x0C820000, 4),
+            (0xBFE00000, 0x00200000, 4),
+            (0xA6110000, 0x006A0000, 4),
+        ]
+    )
+    ordered = patch.candidates(listing)
+    above, below = ordered[:2], ordered[2:]
+    assert [size for _, size, _ in above] == sorted(size for _, size, _ in above)
+    assert above[0][0] == 0xBFE00000
+    assert below[0][0] == 0xA6110000

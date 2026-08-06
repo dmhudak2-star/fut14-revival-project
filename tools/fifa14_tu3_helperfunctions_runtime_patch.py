@@ -157,7 +157,10 @@ def candidates(client: Xbdm) -> list[tuple[int, int, int]]:
         if 0xA0000000 <= region[0] < 0xE0000000
         and 0 < region[1] <= 0x10000000
     ]
-    return sorted(regions, key=lambda region: (region[0] < 0xB0000000, -region[1]))
+    # Cheap regions first: the small ones take seconds each, while the single
+    # ~200 MiB heap block takes minutes, so paying for them up front costs
+    # almost nothing and wins outright whenever the APT happens to live there.
+    return sorted(regions, key=lambda region: (region[0] < 0xB0000000, region[1]))
 
 
 def clip_to_window(
