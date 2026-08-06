@@ -46,8 +46,10 @@ def test_signature_distinguishes_a_changed_region() -> None:
 
 
 def test_every_embedded_signature_has_the_expected_length() -> None:
-    for name, reference in navigator.SIGNATURES.items():
-        assert len(reference) == navigator.SIGNATURE_LENGTH, name
+    for name, references in navigator.SIGNATURES.items():
+        assert references, name
+        for reference in references:
+            assert len(reference) == navigator.SIGNATURE_LENGTH, name
 
 
 def test_embedded_signatures_stay_separable_by_a_wide_margin() -> None:
@@ -55,28 +57,50 @@ def test_embedded_signatures_stay_separable_by_a_wide_margin() -> None:
     # pair above twice the match threshold means drift can never reach a
     # neighbouring class.
     for first, second in itertools.combinations(navigator.SIGNATURES, 2):
-        measured = navigator.distance(
-            navigator.SIGNATURES[first], navigator.SIGNATURES[second]
-        )
-        assert measured > 2 * navigator.MATCH_THRESHOLD, (first, second, measured)
+        for left in navigator.SIGNATURES[first]:
+            for right in navigator.SIGNATURES[second]:
+                measured = navigator.distance(left, right)
+                assert measured > 2 * navigator.MATCH_THRESHOLD, (
+                    first,
+                    second,
+                    measured,
+                )
 
 
 def test_classify_returns_the_exact_screen_for_a_known_signature() -> None:
-    for name, reference in navigator.SIGNATURES.items():
-        assert navigator.classify(reference) == (name, 0)
+    for name, references in navigator.SIGNATURES.items():
+        for reference in references:
+            assert navigator.classify(reference) == (name, 0)
+
+
+def test_a_screen_may_carry_several_references() -> None:
+    # The dimmed dialog is far enough from the bright one that a single
+    # reference cannot cover both.
+    bright, dim = navigator.SIGNATURES["fut_error"]
+    assert navigator.distance(bright, dim) > navigator.MATCH_THRESHOLD
 
 
 def test_classify_tolerates_drift_up_to_the_threshold() -> None:
-    reference = navigator.SIGNATURES["main_menu"]
-    drift = navigator.MATCH_THRESHOLD
-    nudged = bytes(min(255, value + drift) for value in reference)
-    name, measured = navigator.classify(nudged)
+    # Real drift moves individual cells while the frame keeps its overall
+    # light-to-dark range, so nudge a mid-range cell and leave the extremes.
+    reference = navigator.SIGNATURES["main_menu"][0]
+    low, high = min(reference), max(reference)
+    index = next(
+        position
+        for position, value in enumerate(reference)
+        if low < value - navigator.MATCH_THRESHOLD
+        and value + navigator.MATCH_THRESHOLD < high
+    )
+    nudged = bytearray(reference)
+    nudged[index] = reference[index] + navigator.MATCH_THRESHOLD
+    name, measured = navigator.classify(bytes(nudged))
     assert name == "main_menu"
-    assert measured <= drift
+    assert measured == navigator.MATCH_THRESHOLD
 
 
 def test_classify_reports_unknown_for_an_unrelated_frame() -> None:
-    name, measured = navigator.classify(bytes(navigator.SIGNATURE_LENGTH))
+    mid_grey = bytes([128]) * navigator.SIGNATURE_LENGTH
+    name, measured = navigator.classify(mid_grey)
     assert name == "unknown"
     assert measured > navigator.MATCH_THRESHOLD
 
@@ -104,3 +128,17 @@ def test_attract_frames_are_rechecked_faster_than_settled_screens() -> None:
     # the settled cadence would skip the next video instead and loop forever.
     assert navigator.SKIP_INTERVAL < 4
     assert navigator.ACTIONS["unknown"] == "START"
+
+
+def test_a_blank_dark_frame_is_not_mistaken_for_the_dimmed_dialog() -> None:
+    _, dim = navigator.SIGNATURES["fut_error"]
+    # Close in absolute terms, but with none of the dialog's bright band.
+    assert navigator.distance(bytes(navigator.SIGNATURE_LENGTH), dim) < (
+        navigator.MATCH_THRESHOLD
+    )
+    assert navigator.classify(bytes(navigator.SIGNATURE_LENGTH))[0] == "unknown"
+
+
+def test_contrast_measures_the_spread_of_a_signature() -> None:
+    assert navigator.contrast(bytes(navigator.SIGNATURE_LENGTH)) == 0
+    assert navigator.contrast(bytes([0, 255])) == 255
