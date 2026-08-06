@@ -163,6 +163,36 @@ def build_stub(original: bytes) -> bytes:
     return b"".join(insn(word) for word in words)
 
 
+def pulse(client: Xbdm, button: str, frames: int) -> None:
+    """Hold ``button`` for ``frames`` input polls through the armed hook.
+
+    The packet number is preserved so the title keeps seeing a monotonically
+    consistent controller state across pulses.
+    """
+    if button not in BUTTONS:
+        raise RuntimeError(f"Unknown button {button}")
+    if not 1 <= frames <= 120:
+        raise RuntimeError("frames must be between 1 and 120")
+    current = client.read(MAILBOX, MAILBOX_SIZE)
+    packet = int.from_bytes(current[4:8], "big")
+    client.write(
+        MAILBOX,
+        struct.pack(
+            ">IIHBBhhhhI8x",
+            1,
+            packet,
+            BUTTONS[button],
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            frames,
+        ),
+    )
+
+
 def verify_xam(client: Xbdm) -> None:
     module = next(
         (
@@ -274,25 +304,8 @@ def main() -> int:
 
         if args.button is None:
             raise RuntimeError("The press action requires a button name")
-        if not 1 <= args.frames <= 120:
-            raise RuntimeError("--frames must be between 1 and 120")
 
-        old = client.read(MAILBOX, MAILBOX_SIZE)
-        packet = int.from_bytes(old[4:8], "big")
-        mailbox = struct.pack(
-            ">IIHBBhhhhI8x",
-            1,
-            packet,
-            BUTTONS[args.button],
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            args.frames,
-        )
-        client.write(MAILBOX, mailbox)
+        pulse(client, args.button, args.frames)
         print(
             f"Pressed {args.button} for {args.frames} input polls "
             f"(mask=0x{BUTTONS[args.button]:04X})."
