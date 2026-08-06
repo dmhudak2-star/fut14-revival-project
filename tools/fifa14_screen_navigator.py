@@ -103,6 +103,18 @@ SIGNATURES = {
         "0405060405060405060405060405060405060405060405060405060405060405"
         "06040506040506040506040506040506"
     )),
+    # The dashboard profile chooser.  Pressing A here starts an Xbox Live
+    # sign-in this setup cannot complete, so recognising it lets a run report
+    # "the console needs signing in" instead of mashing buttons at it.  Only
+    # the lit form is listed: while it fades it collapses to within 34 of the
+    # dimmed FUT dialog, too close for this grid to call either way.
+    "profile_chooser": (bytes.fromhex(
+        "2415252515262211232211232111222818292F2030291B2A1D0F1E2413231F10"
+        "202010211F0F201D0F1F2112221E111F270F263D2B35270F283C2E3F290E294F"
+        "3D4E291029483648280A283620372C0B2D3C2943321032422941341234392138"
+        "1F0821230925280A2B280B2A270A29220A24280A2A250B271D0E20241026220D"
+        "26220D27210C251D0B211A0A1D1C0B1F"
+    ),),
     "fut_loader": (bytes.fromhex(
         "AEBBC7D6DFE8E1E9F1E8ECF3EEF2F6E4EAF1D9E4EDC1CBD5818A94CED7DED6E0"
         "E8DAE3EBE6EDF3E4EDF3A3AFB9545D6B606E7A7C8A98A7B3BFC0CFD9CBD8E189"
@@ -119,6 +131,7 @@ ACTIONS = {
     "storage": "A",
     "notice": "A",
     "fut_error": "A",
+    "profile_chooser": None,
     "main_menu": None,
     "fut_loader": None,
     "unknown": "START",
@@ -130,7 +143,7 @@ ACTIONS = {
 UNKNOWN_BUTTONS = ("START", "A")
 
 # Screens the title reaches on its own; pressing at them only restarts a video.
-PATIENT = {"main_menu", "fut_loader"}
+PATIENT = {"main_menu", "fut_loader", "profile_chooser"}
 
 # Skipping an attract video reveals the title screen for only a couple of
 # seconds before the next one starts.  Polling at the settled cadence lands

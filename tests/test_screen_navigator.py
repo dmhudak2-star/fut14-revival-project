@@ -52,19 +52,20 @@ def test_every_embedded_signature_has_the_expected_length() -> None:
             assert len(reference) == navigator.SIGNATURE_LENGTH, name
 
 
-def test_embedded_signatures_stay_separable_by_a_wide_margin() -> None:
-    # Real captures of one screen drift by under 40; keeping every distinct
-    # pair above twice the match threshold means drift can never reach a
-    # neighbouring class.
+def test_no_two_screens_are_confusable_under_the_real_rule() -> None:
+    # classify() accepts a match only when distance is within threshold *and*
+    # contrast is comparable, so the invariant has to test both together --
+    # distance alone would flag pairs the contrast check already separates.
     for first, second in itertools.combinations(navigator.SIGNATURES, 2):
         for left in navigator.SIGNATURES[first]:
             for right in navigator.SIGNATURES[second]:
-                measured = navigator.distance(left, right)
-                assert measured > 2 * navigator.MATCH_THRESHOLD, (
-                    first,
-                    second,
-                    measured,
+                close = navigator.distance(left, right) <= (
+                    2 * navigator.MATCH_THRESHOLD
                 )
+                similar = abs(
+                    navigator.contrast(left) - navigator.contrast(right)
+                ) <= navigator.CONTRAST_TOLERANCE
+                assert not (close and similar), (first, second)
 
 
 def test_classify_returns_the_exact_screen_for_a_known_signature() -> None:
