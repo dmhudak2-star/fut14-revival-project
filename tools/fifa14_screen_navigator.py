@@ -25,11 +25,11 @@ GRID_X, GRID_Y = 8, 6
 SIGNATURE_LENGTH = GRID_X * GRID_Y * 3
 
 # Recovered from captures of this build.  Repeated captures of one screen drift
-# by at most 37, while the closest distinct pair sits at 91, so a threshold
+# by at most 37, while the closest distinct pair sits at 88, so a threshold
 # below half that separation cannot confuse two screens even at full drift.
 # Anything further away is reported as "unknown", which is what the attract
 # videos between screens look like.
-MATCH_THRESHOLD = 45
+MATCH_THRESHOLD = 43
 
 # A dimmed dialog sits close to a plain dark frame in absolute terms, so
 # distance alone would call a black loading screen a dialog.  Requiring similar
@@ -40,6 +40,7 @@ CONTRAST_TOLERANCE = 15
 
 def contrast(image: bytes) -> int:
     return max(image) - min(image)
+
 
 SIGNATURES = {
     "title": (bytes.fromhex(
@@ -56,13 +57,24 @@ SIGNATURES = {
         "292D2F989D9ECED3D5CED3D5CED3D5CED3D59DA2A31113142327293A3F404445"
         "47404445373B3D2F33352428290F1112"
     ),),
-    "autosave": (bytes.fromhex(
+    # Informational dialogs whose only action is OK/Continuer: the autosave
+    # notice and the "sign in to Xbox Live" notice after a console reboot.
+    # They are grey panels over the same backdrop and sit only 57 apart, which
+    # this grid cannot separate -- but they take the same button, so the
+    # navigator does not need to tell them apart.
+    "notice": (bytes.fromhex(
         "3A434B384047474E54595E635E64675C63674B5358484F52434B5251585C5E62"
         "656065675E6366585F624E555951575A61686C6165689A9EA1A3A6AAA0A4A7A9"
         "ADB05E64675B6264646A6E6166699B9FA0ACAFB2ACAFB2B2B5B8575E624C5256"
         "5D656A5E64675C61645A5F6253585D464D52394147363C40545D63575E635A61"
         "65575E634A51573A42492F373D30363B"
-    ),),
+    ), bytes.fromhex(
+        "3A434B384147484F54595F635F64675C63674B5358484F52444C5353595D6165"
+        "6863676A6065685B616451585C545A5C5D666A61656886898C8A8E908A8E918E"
+        "929562676A5F64675F676B5F64677478797C7F82797D80797D80555C60484E52"
+        "545E64565D625B61645A60644F565B40484E2C343A272D314852594D565C535B"
+        "6050585D40494F2F383F232C31242A2E"
+    )),
     "main_menu": (bytes.fromhex(
         "AEB9C4D3D7E0E2E9F2E8EDF3EEF1F6D9DEE4D4DDE3C0C9D17880878F969A9CA6"
         "AB92A1A7CDD4D9D2DADEBCC5CB737B8632424A1929304F66688C7E48BFC5C9C2"
@@ -98,12 +110,17 @@ SIGNATURES = {
 ACTIONS = {
     "title": "START",
     "storage": "A",
-    "autosave": "A",
+    "notice": "A",
     "fut_error": "A",
     "main_menu": None,
     "fut_loader": None,
     "unknown": "START",
 }
+
+# An unrecognised frame is usually an attract video, which START skips, but it
+# can also be a dialog this build shows only in some states -- those need A.
+# Alternating covers both without having to enumerate every dialog in advance.
+UNKNOWN_BUTTONS = ("START", "A")
 
 # Screens the title reaches on its own; pressing at them only restarts a video.
 PATIENT = {"main_menu", "fut_loader"}
@@ -197,6 +214,7 @@ def navigate(
 ) -> int:
     deadline = time.monotonic() + timeout
     last_seen = None
+    attempts = 0
     while time.monotonic() < deadline:
         screen, measured = observe(host)
         if screen != last_seen:
@@ -205,10 +223,16 @@ def navigate(
         if screen == target:
             print(f"Reached {target}.", flush=True)
             return 0
+        if screen == "unknown":
+            press(host, UNKNOWN_BUTTONS[attempts % len(UNKNOWN_BUTTONS)], frames)
+            attempts += 1
+            time.sleep(SKIP_INTERVAL)
+            continue
+        attempts = 0
         button = ACTIONS.get(screen)
         if button is not None:
             press(host, button, frames)
-        time.sleep(SKIP_INTERVAL if screen == "unknown" else interval)
+        time.sleep(interval)
     raise TimeoutError(f"{target} was not reached before timeout")
 
 

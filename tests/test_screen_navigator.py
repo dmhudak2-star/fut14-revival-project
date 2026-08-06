@@ -107,6 +107,8 @@ def test_classify_reports_unknown_for_an_unrelated_frame() -> None:
 
 def test_every_known_screen_has_an_action_entry() -> None:
     assert set(navigator.ACTIONS) == set(navigator.SIGNATURES) | {"unknown"}
+    for button in navigator.UNKNOWN_BUTTONS:
+        assert button in virtual_input.BUTTONS
     for screen in navigator.PATIENT:
         assert navigator.ACTIONS[screen] is None
     for screen, button in navigator.ACTIONS.items():
@@ -128,6 +130,12 @@ def test_attract_frames_are_rechecked_faster_than_settled_screens() -> None:
     # the settled cadence would skip the next video instead and loop forever.
     assert navigator.SKIP_INTERVAL < 4
     assert navigator.ACTIONS["unknown"] == "START"
+
+
+def test_unknown_frames_alternate_skip_and_confirm() -> None:
+    # An unrecognised frame may be an attract video or a dialog this build only
+    # shows in some states, so both buttons have to be tried.
+    assert set(navigator.UNKNOWN_BUTTONS) == {"START", "A"}
 
 
 def test_a_blank_dark_frame_is_not_mistaken_for_the_dimmed_dialog() -> None:
