@@ -104,8 +104,9 @@ for run in $(seq 1 $RUNS); do
         done
     fi
 
+    # Not "status": zsh reserves it, and assigning to it aborts the driver.
     zsh tools/fifa14_measurement_cycle.sh > "$log" 2>&1
-    status=$?
-    print "-- cycle exited $status"
+    cycle_status=$?
+    print "-- cycle exited $cycle_status"
     grep -E 'call\(s\)|never called|notifications carrying|^screen =|CYCLE_DONE' "$log" | tail -20
 done
