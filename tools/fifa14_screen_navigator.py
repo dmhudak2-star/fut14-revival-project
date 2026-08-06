@@ -145,6 +145,14 @@ UNKNOWN_BUTTONS = ("START", "A")
 # Screens the title reaches on its own; pressing at them only restarts a video.
 PATIENT = {"main_menu", "fut_loader", "profile_chooser"}
 
+# A screen whose own button never moves it on was not that screen: the attract
+# videos are mostly black frames and can match a dimmed dialog, whose A does
+# nothing to a video that only START skips.  Rather than loosen the match and
+# risk confusing two real dialogs, treat a screen that will not budge as
+# unrecognised and fall back to alternating buttons.  Three tries is past any
+# genuine dialog, which yields on the first press.
+STALL_LIMIT = 3
+
 # Skipping an attract video reveals the title screen for only a couple of
 # seconds before the next one starts.  Polling at the settled cadence lands
 # mid-video every time and loops forever, so unknown frames are re-checked
@@ -236,6 +244,7 @@ def navigate(
     last_seen = None
     attempts = 0
     confirmed = None
+    stalled = 0
     while time.monotonic() < deadline:
         screen, measured = observe(host)
         # Act only on a screen seen twice running.  A frame caught mid-fade
@@ -250,6 +259,7 @@ def navigate(
         if screen != last_seen:
             print(f"screen = {screen} (distance {measured})", flush=True)
             last_seen = screen
+            stalled = 0
         if screen == target:
             print(f"Reached {target}.", flush=True)
             return 0
@@ -260,9 +270,20 @@ def navigate(
             continue
         attempts = 0
         button = ACTIONS.get(screen)
-        if button is not None:
-            press(host, button, frames)
-        time.sleep(interval)
+        if button is None:
+            time.sleep(interval)
+            continue
+        if stalled >= STALL_LIMIT:
+            button = UNKNOWN_BUTTONS[(stalled - STALL_LIMIT) % len(UNKNOWN_BUTTONS)]
+            if stalled == STALL_LIMIT:
+                print(
+                    f"{screen} did not respond to its own button; "
+                    "treating it as unrecognised.",
+                    flush=True,
+                )
+        press(host, button, frames)
+        stalled += 1
+        time.sleep(SKIP_INTERVAL if stalled >= STALL_LIMIT else interval)
     raise TimeoutError(f"{target} was not reached before timeout")
 
 
