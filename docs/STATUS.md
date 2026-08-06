@@ -2,6 +2,54 @@
 
 Last updated: 2026-08-06.
 
+## 2026-08-06 the client walks its own path once the configuration is served
+
+The FUT settings belong in `OSDK_CORE`, which this server returned empty. Two
+keys there decide whether CardsDLL ever speaks: without
+`OSDK_EASW_ALLOWED_LOCALES` the native gate falls back to `----` and refuses to
+build its authentication request at all, and without `OSDK_EASW_AUTH_URL` it has
+nowhere to send it. The allow-list echoes the four-byte locale the console
+reports in PreAuth -- this one sends `LANG` `0x66724652`, literally `frFR`.
+
+That reframes the earlier approach. Writing `EASW-Session` and `EASW-Token`
+straight into the JSON builder's registers satisfied one constructor and made
+`Authentication` return 1, but the session behind them never existed, which fits
+every symptom up to that point: a gate opens and the step after it never fires.
+
+With the configuration served the console issued routes never seen before:
+
+```text
+POST /authentication360            signed form, gamertag/xuid/locale/skuid
+POST /ut/auth                      CardsDLL's own auth route
+GET  /ut/game/fifa14/phishing/trusteddevice
+GET  /ut/game/fifa14/phishing/question      the security question
+POST /ut/game/fifa14/phishing/validate      accepted
+GET  /ut/game/fifa14/settings
+GET  /fut/loc/XBox360/leaderboards.FRE_FR.xml
+PUT  /ut/game/fifa14/match/reset
+GET  /ut/game/fifa14/user
+GET  /ut/game/fifa14/userdata
+GET  /tutorials
+```
+
+`/pow/auth` disappeared from the flow entirely. The retail error dialog is gone
+and the title now sits on the native `Chargement...` popup -- step 2 of the
+objective -- with no unhandled route behind it.
+
+What it waits on next is the completion of `FirstTimeInit`'s operation `0xDF`.
+The submit trace resolves that call at runtime:
+
+```text
+submissions = 1
+     0  request=0xB630A120 operation=0xDF submit=0x83593B28
+          request vtable = 0x8218A330
+```
+
+Both the submit method and the request vtable live in `default.xex`, not in
+CardsDLL, so the submission crosses into the title's own service layer. After it
+the console sends only Blaze Util pings: no component 2148 frame, no further
+HTTP. Hooking `0x83593B28` is the next measurement.
+
 ## 2026-08-06 the FUT bootstrap stops after FirstTimeInit
 
 Arming every traced operation of the CardsDLL FUT API on the module's `modload`
