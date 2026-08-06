@@ -566,6 +566,13 @@ class ProtocolTests(unittest.TestCase):
             finally:
                 identity.stop()
 
+    def test_every_fut_route_answers_with_valid_json(self) -> None:
+        # Each body must parse: a malformed one would reach the native parser
+        # as a failure rather than as "nothing yet".
+        for path, body in SERVER.FUT_ROUTES.items():
+            self.assertTrue(path.startswith("/ut/"), path)
+            __import__("json").loads(body)
+
     def test_first_use_fan_out_routes_return_parser_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             journal = SERVER.Journal(Path(temp) / "journal.jsonl")
@@ -575,7 +582,7 @@ class ProtocolTests(unittest.TestCase):
             identity.start()
             try:
                 port = identity.server.server_address[1]
-                for path in sorted(SERVER.FUT_EMPTY_OBJECT_ROUTES):
+                for path in sorted(SERVER.FUT_ROUTES):
                     client = http.client.HTTPConnection(
                         "127.0.0.1", port, timeout=2
                     )
@@ -583,7 +590,9 @@ class ProtocolTests(unittest.TestCase):
                     response = client.getresponse()
                     self.assertEqual(response.status, 200, path)
                     self.assertEqual(
-                        __import__("json").loads(response.read()), {}, path
+                        response.read().strip(),
+                        SERVER.FUT_ROUTES[path],
+                        path,
                     )
                     client.close()
             finally:

@@ -288,21 +288,51 @@ class PersistentAccountStore:
 # its own EASW-* signature headers.  Accept both.
 EASW_AUTH_PATHS = ("/authentication360", "/v2/authenticationNucleusPersona")
 
-# Routes whose FIFA 14 parsers initialise every field and treat all JSON
-# members as optional, so an empty object preserves their own defaults rather
-# than fabricating a club, inventory, currency, squad or progression.  Each was
-# recovered from a working local implementation of the same title, alongside
-# the static analysis of the parser it feeds.
-FUT_EMPTY_OBJECT_ROUTES = {
-    "/ut/game/fifa14/userdata",
-    "/ut/game/fifa14/clientdata/tutorialpopups",
-    "/ut/game/fifa14/clientdata/userHubData",
-    "/ut/game/fifa14/clientdata/pileSize",
-    "/ut/game/fifa14/clientdata/managerquest",
-    "/ut/game/fifa14/eventfeed",
-    "/ut/game/fifa14/hub",
-    "/ut/game/fifa14/leaderboards/options",
-    "/ut/delete/auth",
+# The FUT HTTP surface, keyed by exact path.  Every body here is the response
+# the corresponding FIFA 14 parser treats as "nothing yet": empty collections
+# and absent optional members, so the client keeps its own zeroed defaults
+# instead of being handed a fabricated club, inventory, currency or squad.  The
+# paths and the parser analysis behind them come from a working local
+# implementation of this same title.
+FUT_ROUTES: dict[str, bytes] = {
+    "/ut/delete/auth": b"{}",
+    "/ut/game/fifa14/user": b"{}",
+    "/ut/game/fifa14/userdata": b"{}",
+    "/ut/game/fifa14/user/credits": b"{}",
+    "/ut/game/fifa14/user/historical": b"{}",
+    "/ut/game/fifa14/match": b"{}",
+    "/ut/game/fifa14/match/ready": b"{}",
+    "/ut/game/fifa14/match/end": b"{}",
+    "/ut/game/fifa14/clientdata/tutorialpopups": b"{}",
+    "/ut/game/fifa14/clientdata/userHubData": b"{}",
+    "/ut/game/fifa14/clientdata/pileSize": b"{}",
+    "/ut/game/fifa14/clientdata/totw": b"{}",
+    "/ut/game/fifa14/clientdata/managerquest": b'{"entries":[]}',
+    "/ut/game/fifa14/eventfeed": b"{}",
+    "/ut/game/fifa14/hub": b"{}",
+    "/ut/game/fifa14/leaderboards/options": b"{}",
+    "/ut/game/fifa14/utStats": b"{}",
+    "/ut/game/fifa14/clubUser": b'{"users":[]}',
+    "/ut/game/fifa14/club/stats/staff": b'{"bonus":[]}',
+    "/ut/game/fifa14/club/stats/year": b'{"entries":[]}',
+    "/ut/game/fifa14/club/stats/consumables": b'{"entries":[]}',
+    "/ut/game/fifa14/club/stats/newcards": b'{"entries":[]}',
+    "/ut/game/fifa14/item": b'{"itemData":[]}',
+    "/ut/delete/game/fifa14/item": b"{}",
+    "/ut/game/fifa14/purchased/items": b'{"duplicateItemIdList":[],"itemData":[]}',
+    "/ut/game/fifa14/tradePile": b'{"auctionInfo":[]}',
+    "/ut/game/fifa14/squad/list": b'{"squad":[]}',
+    "/ut/game/fifa14/squad/active": b'{"squad":[]}',
+    "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
+    "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
+    # A visible-but-invalid single entry keeps the store screen constructible
+    # without offering anything purchasable.
+    "/ut/game/fifa14/store": b'{"purchase":[],"timestamp":2147483647}',
+    "/ut/game/fifa14/store/purchasegroup/all": (
+        b'{"purchase":[{"id":1,"actionType":"CREATEPACK",'
+        b'"packType":"INVALID","visible":0}],"timestamp":2147483647}'
+    ),
+    "/ut/v2/game/fifa14/store/transaction": b'{"state":"NOTRANSACTION"}',
 }
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
@@ -1503,16 +1533,16 @@ class IdentityHttpService:
                         path=parsed.path,
                     )
                     return
-                if normalized_path in FUT_EMPTY_OBJECT_ROUTES:
+                if normalized_path in FUT_ROUTES:
                     owner.journal.event(
-                        "fut_empty_object_request",
+                        "fut_route_request",
                         peer=self.client_address[0],
                         method=self.command,
                         path=parsed.path,
                     )
                     self.reply(
                         200,
-                        b"{}\n",
+                        FUT_ROUTES[normalized_path] + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -1552,7 +1582,7 @@ class IdentityHttpService:
                         },
                     )
                     return
-                if parsed.path.startswith("/fut/loc/"):
+                if parsed.path.startswith(("/fut/loc/", "/fut/packs/loc/")):
                     # Localisation bundles for the FUT leaderboard and pack
                     # screens.  The client only needs a well-formed document;
                     # an empty string table keeps the retail labels in place.
