@@ -96,3 +96,49 @@ observed was `0xB5AA3018` with vtable `0x89008E90`:
 | `0x288` | `GetOpponentFutTeamId` | `0x89107230` |
 | `0x294` | `IsFutCustomTeam` | `0x89107268` |
 | `0x2A0` | `GetLegendStats` | `0x891072C0` |
+
+## Route table
+
+CardsDLL carries its own HTTP route table, separate from the `pow/auth` that
+`powdllzf.xex.dll` uses for EA Sports Football Club. The `%s` is the game
+segment, so `ut/%s/club` resolves to `ut/game/fifa14/club`.
+
+Notably CardsDLL's own authentication route is `ut/auth`, and it has never been
+observed on the wire: the only auth request the local server receives is
+powdllzf's `pow/auth`. Whatever stalls the FUT bootstrap does so before
+CardsDLL issues any request of its own.
+
+| Name | Route |
+| --- | --- |
+| `V2STORE` | `ut/v2/%s/store` |
+| `PHISHING` | `ut/%s/phishing` |
+| `DELETE_AUTH` | `ut/delete/auth` |
+| `AUTH` | `ut/auth` |
+| `CLIENTDATA` | `ut/%s/clientdata` |
+| `DELETETRADE` | `ut/delete/%s/trade` |
+| `TRADE` | `ut/%s/trade` |
+| `TRADEPILE` | `ut/%s/tradePile` |
+| `DELETEWATCHLIST` | `ut/delete/%s/watchList` |
+| `WATCHLIST` | `ut/%s/watchList` |
+| `STORE` | `ut/%s/store` |
+| `PURCHASED` | `ut/%s/purchased` |
+| `SEASONRESET` | `ut/%s/season/%%s/reset` |
+| `SEASONUSER_ALTER` | `ut/%s/season/%%s/user` |
+| `SEASONUSER` | `ut/%s/season/user` |
+| `SEASON` | `ut/%s/season` |
+| `TOURNAMENTDELETE` | `ut/delete/%s/tournament/user` |
+| `TOURNAMENTUSER` | `ut/%s/tournament/user` |
+| `TOURNAMENT` | `ut/%s/tournament` |
+| `DELETEITEMS` | `ut/delete/%s/item` |
+| `ITEMS_BY_RES` | `ut/%s/item/resource` |
+| `ITEMS` | `ut/%s/item` |
+| `DELETEUSER` | `ut/delete/%s/user` |
+| `USER` | `ut/%s/user` |
+| `UT` | `ut/%s` |
+| `PAFPRACTICE` | `ut/%s/activeMessage` |
+| `LBDEFAULT` | `ut/%s/leaderboards` |
+| `LBOPTIONS` | `ut/%s/leaderboards/options` |
+| `DELETE_SQUAD` | `ut/delete/%s/squad` |
+| `SQUAD` | `ut/%s/squad` |
+| `CLUB_USER` | `ut/%s/clubUser` |
+| `AUCTIONHOUSE` | `ut/%s/auctionhouse` |
