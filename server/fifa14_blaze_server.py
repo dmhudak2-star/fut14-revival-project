@@ -18,6 +18,7 @@ import http.server
 import json
 import signal
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -148,7 +149,7 @@ FUT_BOOT_XML = b"""<?xml version="1.0" encoding="utf-8"?>
   <futDlc>
     <fut12>
       <minorVersion>1</minorVersion>
-      <bootString>fe/fut/servercalls</bootString>
+      <bootString>fut12</bootString>
       <futNotAvailable>0</futNotAvailable>
       <revision>
         <futSubVersion>1</futSubVersion>
@@ -158,8 +159,8 @@ FUT_BOOT_XML = b"""<?xml version="1.0" encoding="utf-8"?>
         </Language>
       </revision>
       <key>
-        <dimeUniqueId>1</dimeUniqueId>
-        <futKeyType>1</futKeyType>
+        <dimeUniqueId>2</dimeUniqueId>
+        <futKeyType>0</futKeyType>
       </key>
     </fut12>
   </futDlc>
@@ -221,11 +222,12 @@ class PersistentAccountStore:
             # FIFA writes this exact value after completing its first-login UI.
             "user_settings": {"FirstTimeFlag": "0"},
             "account": {"OPTQ": 0, "OPTS": 0},
+            "identity": {"persona_id": 1_000_001, "persona_name": "OfflineFUT"},
         }
         if path is not None and path.exists():
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
-                for section in ("user_settings", "account"):
+                for section in ("user_settings", "account", "identity"):
                     value = loaded.get(section)
                     if isinstance(value, dict):
                         self.data[section].update(value)
@@ -245,6 +247,13 @@ class PersistentAccountStore:
         with self.lock:
             return str(self.data["user_settings"].get(key, ""))
 
+    def load_all_settings(self) -> list[tuple[str, str]]:
+        with self.lock:
+            return sorted(
+                (str(key), str(value))
+                for key, value in self.data["user_settings"].items()
+            )
+
     def save_setting(self, key: str, value: str) -> None:
         with self.lock:
             self.data["user_settings"][key] = value
@@ -254,6 +263,70 @@ class PersistentAccountStore:
         with self.lock:
             self.data["account"].update({"OPTQ": optq, "OPTS": opts})
             self._save_locked()
+
+    def save_identity(self, persona_id: int, persona_name: str) -> None:
+        with self.lock:
+            self.data["identity"].update(
+                {"persona_id": int(persona_id), "persona_name": str(persona_name)}
+            )
+            self._save_locked()
+
+    def load_identity(self) -> tuple[int, str]:
+        with self.lock:
+            identity = self.data["identity"]
+            return int(identity["persona_id"]), str(identity["persona_name"])
+
+
+REQUEST_BODY_PREVIEW_LIMIT = 4096
+
+
+def request_body_preview(body: bytes) -> str | None:
+    """Return a bounded, journal-safe rendering of a client request body.
+
+    The retail Xbox client posts small JSON documents whose exact schema is
+    the evidence needed to model a response.  Binary or oversized bodies are
+    summarised instead of being decoded so the journal stays readable.
+    """
+    if not body:
+        return None
+    truncated = body[:REQUEST_BODY_PREVIEW_LIMIT]
+    try:
+        text = truncated.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"<{len(body)} non-utf8 bytes> {truncated[:64].hex().upper()}"
+    if len(body) > len(truncated):
+        return text + f"...<truncated, {len(body)} bytes total>"
+    return text
+
+
+def auth_request_identity(body: bytes) -> tuple[int, str] | None:
+    """Return the persona the FUT auth request itself presents, when present.
+
+    The retail Xbox client posts its own Nucleus id and profile display name
+    to ``pow/auth``.  Answering ``accountinfo`` with a different persona name
+    makes the client describe an account it never asked about, so prefer the
+    identity carried by the request over any stored placeholder.
+    """
+    if not body:
+        return None
+    try:
+        document = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    nucleus = document.get("nuc")
+    display_name = document.get("nucleusPersonaDisplayName")
+    if not isinstance(nucleus, int) or isinstance(nucleus, bool) or nucleus <= 0:
+        return None
+    if not isinstance(display_name, str) or not display_name:
+        return None
+    persona = document.get("nucleusPersonaId")
+    # A zero persona id means the client has no FUT persona yet and expects
+    # the server to name one.  Keep it tied to the Nucleus id in that case.
+    if isinstance(persona, int) and not isinstance(persona, bool) and persona > 0:
+        return persona, display_name
+    return nucleus, display_name
 
 
 def find_field(fields: list[Field], label: str) -> Field | None:
@@ -364,7 +437,57 @@ class Fifa14Protocol:
             # loader never starts.  This is the title's own offline/no-update
             # switch: it bypasses only the dead asset patcher, while the real
             # Blaze login and subsequent CardHouse session remain mandatory.
-            values = [("ONLINE/NO_ASSET_UPDATE", "1")]
+            #
+            # DLC_USE_REAL_DLL_LOAD is equally important on retail builds.
+            # When it is absent/zero, the DLC wrapper reports success without
+            # calling the XEX loader.  FUT then waits forever because
+            # CardsDLLzf.xex.dll was never mapped and cannot open CardHouse.
+            fut_base = f"{self.identity_base}/"
+            values = [
+                ("ONLINE/NO_ASSET_UPDATE", "1"),
+                ("DLC_USE_REAL_DLL_LOAD", "1"),
+                # Exact CardsDLLzf.xex.dll configuration names recovered from
+                # the active Xbox 360 TU3 image.  The platform formatter uses
+                # the literal suffix "XBox360" on this build.
+                ("FUTBOOTCFGFILE_URL", f"{self.identity_base}/futBoot.xml"),
+                ("FUT_URI", fut_base),
+                ("FUT_RS4_BASE_URL", fut_base),
+                # These are present in the verified PC flow before CardsDLL
+                # accepts its static localization assets and naturally starts
+                # the Authentication WebSession.  CardsDLLzf.xex.dll contains
+                # the directed-environment key verbatim; the deployment
+                # language is consumed by the FIFA-side Cards bridge.
+                ("CARDS/DIRECTED_BLAZEENV", "prod"),
+                ("FCC/FUT_DEPLOY_LANGUAGE", "en_US"),
+                ("FUT/SINGLE_BASEURL_XBox360", fut_base),
+                ("FUT_RS4_URL_XBox360", fut_base),
+                ("FUT_RS4_APIURL_XBox360", fut_base),
+                ("FUT/MODULE_BASEURL_XBox360", fut_base),
+                ("FUTDYNAMICMESSAGES_URL_BASE", self.identity_base),
+                ("FUTDYNAMICMESSAGES_URL_GET_MESSAGES", "/messages"),
+                ("ONLINE/FUTDYNAMICMESSAGES_TUTORIAL_MSG_URL", "/tutorials"),
+                ("FUTDYNAMICMESSAGES_REQUEST_TIMEOUT", "5000"),
+                ("FUTDYNAMICMESSAGES_REFRESH_INTERVAL", "300000"),
+                ("FUT_ENABLE_MENU", "1"),
+                ("ONLINE/NO_AUTO_SQUAD", "0"),
+                ("FUT/FORCE_TUTORIALS", "1"),
+                ("FUT/DISABLE_TUTORIALS", "0"),
+                ("FUT/ALWAYS_SHOW_SMART_TUTORIALS", "1"),
+                ("FUT/IS_RETURNING_USER", "0"),
+                ("FUT_SKIP_ICEBREAKER_FLOW", "0"),
+            ]
+        elif name == "OSDK_ROSTER":
+            # FIFA's Xbox retail LoadRosterConfig reads these four exact
+            # names.  An empty section never publishes the roster-ready event
+            # consumed by helperFunctions::checkForFUTRosters.  Version 1.0
+            # denotes the shipped/base roster and avoids fabricating a roster
+            # download; URL remains local if this build still elects to check.
+            values = [
+                ("ROSTER_URL", f"{self.identity_base}/roster"),
+                ("ROSTER_VER", "1.0"),
+                ("ROSTER_LKR", ""),
+                ("ROSTER_CSUM", ""),
+            ]
         return response_frame(
             request,
             encode_fields(
@@ -630,6 +753,14 @@ class Fifa14Protocol:
         if external_id and isinstance(external_id.value, int) and external_id.value:
             state.xuid = external_id.value
         state.authenticated = True
+        # Authentication2 carries no GTAG, so this login knows no display name
+        # of its own.  The FUT auth request does carry the console's real one,
+        # so reuse the stored persona instead of overwriting it with the
+        # placeholder and advertising a name the client never presented.
+        stored_id, stored_name = self.account_store.load_identity()
+        if state.gamertag == ClientState.gamertag and stored_id == state.xuid:
+            state.gamertag = stored_name
+        self.account_store.save_identity(state.xuid, state.gamertag)
 
         now = int(time.time())
         persona = [
@@ -925,7 +1056,20 @@ class Fifa14Protocol:
         if route == (UTIL, UTIL_FETCH_CONFIG):
             return [self.fetch_config(request, decoded["fields"])]
         if route == (UTIL, UTIL_USER_SETTINGS_LOAD_ALL):
-            return [response_frame(request, encode_fields([empty_map("SMAP")]))]
+            settings = self.account_store.load_all_settings()
+            self.logger.event(
+                "user_settings_load_all",
+                connection=state.connection_id,
+                settings=dict(settings),
+            )
+            return [
+                response_frame(
+                    request,
+                    encode_fields(
+                        [Field("SMAP", MAP, (STRING, STRING, settings))]
+                    ),
+                )
+            ]
         if route in {
             (UTIL, UTIL_SET_CLIENT_DATA),
             (UTIL, UTIL_SET_CLIENT_METRICS),
@@ -1061,11 +1205,13 @@ class IdentityHttpService:
         port: int,
         advertise: str,
         journal: "Journal",
+        account_store: PersistentAccountStore | None = None,
     ):
         self.listen = listen
         self.port = port
         self.advertise = advertise
         self.journal = journal
+        self.account_store = account_store or PersistentAccountStore()
         self.server: http.server.ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -1100,12 +1246,17 @@ class IdentityHttpService:
 
             def serve_identity(self) -> None:
                 parsed = urllib.parse.urlsplit(self.path)
+                content_length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(content_length) if content_length else b""
                 owner.journal.event(
                     "identity_http_request",
                     peer=self.client_address[0],
                     method=self.command,
                     path=parsed.path,
                     query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
+                    bytes=len(body),
+                    headers={name: value for name, value in self.headers.items()},
+                    body=request_body_preview(body),
                 )
                 if parsed.path == "/connect/auth":
                     location = (
@@ -1129,6 +1280,16 @@ class IdentityHttpService:
                 if parsed.path == "/health":
                     self.reply(200, b"ok\n", {"Content-Type": "text/plain"})
                     return
+                if parsed.path == "/roster":
+                    owner.journal.event(
+                        "roster_endpoint_requested",
+                        peer=self.client_address[0],
+                        method=self.command,
+                    )
+                    # The advertised version identifies the already installed
+                    # base roster, so no replacement archive is transferred.
+                    self.reply(204)
+                    return
                 if parsed.path == "/futBoot.xml":
                     owner.journal.event(
                         "fut_boot_served",
@@ -1145,17 +1306,303 @@ class IdentityHttpService:
                         },
                     )
                     return
+                normalized_path = parsed.path
+                if normalized_path.startswith("/fut/ut/"):
+                    normalized_path = normalized_path[4:]
+                # The Xbox CardsDLL names Authentication ``pow/auth`` while
+                # the PC client uses ``ut/auth``. Both instantiate the same
+                # native response parser and must receive the same SID
+                # contract. Other Xbox Cards operations omit the leading
+                # ``/ut`` from their path, so normalize those here as well.
+                if normalized_path == "/pow/auth":
+                    normalized_path = "/ut/auth"
+                elif normalized_path.startswith("/game/fifa14/"):
+                    normalized_path = "/ut" + normalized_path
+                if normalized_path == "/ut/auth":
+                    sid = "LOCAL-XBOX360-FIFA14-SID"
+                    presented = auth_request_identity(body)
+                    if presented is not None:
+                        persona_id, persona_name = presented
+                        owner.account_store.save_identity(persona_id, persona_name)
+                        owner.journal.event(
+                            "fut_auth_identity_adopted",
+                            peer=self.client_address[0],
+                            persona_id=persona_id,
+                            persona_name=persona_name,
+                        )
+                    document = {
+                        "sid": sid,
+                        "serverTime": time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                        ),
+                        "lastOnlineTime": "1970-01-01T00:00:00Z",
+                    }
+                    payload = (
+                        json.dumps(document, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_ut_auth_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        bytes=len(body),
+                        content_type=self.headers.get("Content-Type"),
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                            "X-UT-SID": sid,
+                        },
+                    )
+                    return
+                if normalized_path == "/ut/game/fifa14/user/accountinfo":
+                    persona_id, persona_name = owner.account_store.load_identity()
+                    document = {
+                        "userAccountInfo": {
+                            "personas": [
+                                {
+                                    "personaId": persona_id,
+                                    "personaName": persona_name,
+                                    "returningUser": 0,
+                                    "onlineAccess": True,
+                                    "trial": False,
+                                    "userState": None,
+                                    "userClubList": [],
+                                    "trialFree": False,
+                                }
+                            ]
+                        }
+                    }
+                    payload = (
+                        json.dumps(document, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_account_info_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        persona_id=persona_id,
+                        persona_name=persona_name,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                lowered_path = normalized_path.lower()
+                if lowered_path == "/ut/game/fifa14/phishing/trusteddevice":
+                    # A first-use console has no trusted-device record yet.
+                    # CardsDLL accepts the empty object and continues into the
+                    # native security-question path.
+                    payload = b"{}\n"
+                    owner.journal.event(
+                        "fut_trusted_device_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if lowered_path in (
+                    "/ut/game/fifa14/phishing",
+                    "/ut/game/fifa14/phishing/question",
+                ):
+                    document = {
+                        "question": 0,
+                        "attempts": 5,
+                        "recoverAttempts": 20,
+                    }
+                    payload = (
+                        json.dumps(document, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_phishing_question_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if lowered_path == "/ut/game/fifa14/phishing/validate":
+                    document = {
+                        "debug": "Answer is correct.",
+                        "string": "OK",
+                        "code": "200",
+                        "reason": "Answer is correct.",
+                        "token": "LOCAL-FIFA14-PHISHING",
+                    }
+                    payload = (
+                        json.dumps(document, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_phishing_validation_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                            "Set-Cookie": (
+                                "FUTWebPhishing=LOCAL-FIFA14-PHISHING; "
+                                "Path=/; HttpOnly"
+                            ),
+                        },
+                    )
+                    return
+                if lowered_path == "/ut/game/fifa14/user/action":
+                    # GetUserActionServerResponse is a collection. A new local
+                    # identity has no completed onboarding actions yet.
+                    payload = b'{"userActionList":[]}\n'
+                    owner.journal.event(
+                        "fut_user_actions_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if lowered_path.startswith("/ut/game/fifa14/user/action/"):
+                    # UpdateUserActionServerResponse has no parsed payload.
+                    payload = b"{}\n"
+                    owner.journal.event(
+                        "fut_user_action_update",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        effective_method=self.headers.get(
+                            "X-HTTP-Method-Override", self.command
+                        ).upper(),
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if lowered_path.endswith(
+                    "/fut/packs/icebreaker/icebreakerpacklist.json"
+                ) or lowered_path.endswith(
+                    "/packs/icebreaker/icebreakerpacklist.json"
+                ):
+                    document = {
+                        "packList": [
+                            {"id": 0, "image": 0},
+                            {"id": 1, "image": 1},
+                            {"id": 2, "image": 2},
+                            {"id": 3, "image": 3},
+                        ]
+                    }
+                    payload = (
+                        json.dumps(document, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_icebreaker_packlist_served",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if (
+                    lowered_path.endswith("/loc/xbox360/leaderboards.eng_us.xml")
+                    or lowered_path.endswith("/loc/xbox360/icebreaker.eng_us.xml")
+                ):
+                    payload = (
+                        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+                        b'<message_set target="fut-locstrings">\n'
+                        b'  <locstring id="FUT_IB_CAPTAINNAME_0">FALCAO</locstring>\n'
+                        b'  <locstring id="FUT_IB_CAPTAINNAME_1">MESSI</locstring>\n'
+                        b'  <locstring id="FUT_IB_CAPTAINNAME_2">EL SHAARAWY</locstring>\n'
+                        b'  <locstring id="FUT_IB_CAPTAINNAME_3">ALABA</locstring>\n'
+                        b'</message_set>\n'
+                    )
+                    owner.journal.event(
+                        "fut_locstrings_served",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {"Content-Type": "application/xml; charset=utf-8"},
+                    )
+                    return
+                if normalized_path in ("/messages", "/tutorials", "/fut/messages", "/fut/tutorials"):
+                    self.reply(
+                        200,
+                        b'<?xml version="1.0" encoding="UTF-8"?>\n<MESSAGES>\n</MESSAGES>\n',
+                        {"Content-Type": "application/xml; charset=utf-8"},
+                    )
+                    return
                 if parsed.path == "/sponsored-events":
                     # The title only needs a valid non-empty URL during the
                     # global online bootstrap.  Keep the local target benign
                     # in case a menu later opens it in the embedded browser.
                     self.reply(204)
                     return
+                # An unhandled route is the clearest signal that the retail
+                # client expects a document this server does not model yet.
+                owner.journal.event(
+                    "identity_http_unhandled",
+                    peer=self.client_address[0],
+                    method=self.command,
+                    path=parsed.path,
+                    normalized_path=normalized_path,
+                    query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
+                    body=request_body_preview(body),
+                )
                 self.reply(404, b"not found\n", {"Content-Type": "text/plain"})
 
             do_GET = serve_identity
             do_HEAD = serve_identity
             do_POST = serve_identity
+            do_PUT = serve_identity
+            do_DELETE = serve_identity
 
         self.server = http.server.ThreadingHTTPServer((self.listen, self.port), Handler)
         self.thread = threading.Thread(
@@ -1226,11 +1673,15 @@ class BlazeService:
         ports: list[int],
         protocol: Fifa14Protocol,
         journal: Journal,
+        tls_context: ssl.SSLContext | None = None,
+        tls_ports: set[int] | None = None,
     ):
         self.listen = listen
         self.ports = ports
         self.protocol = protocol
         self.journal = journal
+        self.tls_context = tls_context
+        self.tls_ports = tls_ports or set()
         self.stop_event = threading.Event()
         self.listeners: list[socket.socket] = []
         self.threads: list[threading.Thread] = []
@@ -1258,7 +1709,12 @@ class BlazeService:
             )
             thread.start()
             self.threads.append(thread)
-            self.journal.event("listening", address=self.listen, port=port)
+            self.journal.event(
+                "listening",
+                address=self.listen,
+                port=port,
+                transport="tls" if port in self.tls_ports else "plaintext",
+            )
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -1295,6 +1751,39 @@ class BlazeService:
             peer=f"{state.peer[0]}:{state.peer[1]}",
             local_port=state.local_port,
         )
+        if state.local_port in self.tls_ports:
+            if self.tls_context is None:
+                self.journal.event(
+                    "tls_configuration_error",
+                    connection=state.connection_id,
+                    local_port=state.local_port,
+                )
+                client.close()
+                return
+            try:
+                client.settimeout(8.0)
+                client = self.tls_context.wrap_socket(client, server_side=True)
+                cipher = client.cipher()
+                self.journal.event(
+                    "tls_connected",
+                    connection=state.connection_id,
+                    local_port=state.local_port,
+                    version=client.version(),
+                    cipher=cipher[0] if cipher else None,
+                )
+            except (OSError, ssl.SSLError) as error:
+                self.journal.event(
+                    "tls_handshake_error",
+                    connection=state.connection_id,
+                    local_port=state.local_port,
+                    error=f"{type(error).__name__}: {error}",
+                )
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                return
+
         client.settimeout(0.5)
         buffer = bytearray()
         try:
@@ -1370,6 +1859,19 @@ def parse_ports(value: str) -> list[int]:
     return result
 
 
+def build_redirector_tls_context(cert: Path, key: Path) -> ssl.SSLContext:
+    """Build the TLS 1.0 context expected by the retail ProtoSSL client."""
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1
+    context.maximum_version = ssl.TLSVersion.TLSv1
+    # FIFA 14's ProtoSSL predates modern AEAD suites.  SECLEVEL=0 is required
+    # for its TLS 1.0/RSA handshake and the deliberately 1024-bit test key.
+    context.set_ciphers("AES128-SHA:AES256-SHA:@SECLEVEL=0")
+    context.load_cert_chain(certfile=str(cert), keyfile=str(key))
+    return context
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen", default="0.0.0.0")
@@ -1392,7 +1894,45 @@ def main() -> int:
         type=Path,
         default=REPOSITORY / "runtime" / "local-account.json",
     )
+    parser.add_argument(
+        "--redirector-tls-ports",
+        type=parse_ports,
+        default=parse_ports("42127"),
+        help=(
+            "comma-separated Blaze redirector ports to wrap in native TLS "
+            "(default: 42127)"
+        ),
+    )
+    parser.add_argument(
+        "--redirector-tls-cert",
+        type=Path,
+        help="PEM certificate using the old ProtoSSL signature-OID workaround",
+    )
+    parser.add_argument(
+        "--redirector-tls-key",
+        type=Path,
+        help="PEM private key for --redirector-tls-cert",
+    )
     args = parser.parse_args()
+
+    if (args.redirector_tls_cert is None) != (args.redirector_tls_key is None):
+        parser.error(
+            "--redirector-tls-cert and --redirector-tls-key must be used together"
+        )
+    tls_context = None
+    tls_ports: set[int] = set()
+    if args.redirector_tls_cert is not None:
+        missing_tls_ports = set(args.redirector_tls_ports).difference(args.ports)
+        if missing_tls_ports:
+            parser.error(
+                "every --redirector-tls-ports value must also be present in "
+                f"--ports (missing: {sorted(missing_tls_ports)})"
+            )
+        tls_context = build_redirector_tls_context(
+            args.redirector_tls_cert,
+            args.redirector_tls_key,
+        )
+        tls_ports.update(args.redirector_tls_ports)
 
     journal = Journal(args.journal)
     account_store = PersistentAccountStore(args.account_state)
@@ -1403,12 +1943,20 @@ def main() -> int:
         identity_port=args.identity_port,
         account_store=account_store,
     )
-    service = BlazeService(args.listen, args.ports, protocol, journal)
+    service = BlazeService(
+        args.listen,
+        args.ports,
+        protocol,
+        journal,
+        tls_context=tls_context,
+        tls_ports=tls_ports,
+    )
     identity = IdentityHttpService(
         args.listen,
         args.identity_port,
         args.advertise,
         journal,
+        account_store,
     )
 
     def stop(_signum: int, _frame: object) -> None:
@@ -1423,6 +1971,8 @@ def main() -> int:
         advertise=args.advertise,
         core_port=args.core_port,
         identity_base=protocol.identity_base,
+        redirector_transport=("tls" if tls_ports else "plaintext"),
+        redirector_tls_ports=(sorted(tls_ports) if tls_ports else []),
         components=COMPONENT_IDS,
     )
     try:

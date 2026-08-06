@@ -1,5 +1,78 @@
 # Current research status
 
+Last updated: 2026-08-06.
+
+## 2026-08-06 FUT security first-use checkpoint
+
+The native Xbox Cards Authentication boundary is closed. A controlled run with
+the deterministic entry hook at `0x897381E8` produced, in order, a real
+`POST /pow/auth` on the local server, the client's own
+`Easw-Session-Data-Nucleus-Id`, and a real
+`GET /ut/game/fifa14/user/accountinfo`. The hook reports
+`invocation_count = 1` with both REST URL slots local.
+
+The request body recovered from that exchange is the exact Xbox contract:
+
+```json
+{"isReadOnly":false,"sku":"FFA14XBX","clientVersion":1,
+ "nuc":2535469248587161,"nucleusPersonaId":0,
+ "nucleusPersonaDisplayName":"Imskobogota6z","locale":"fr-FR",
+ "method":"cas","priorityLevel":5,
+ "identification":{"EASW-Session":"...","EASW-Token":"..."}}
+```
+
+The `/ut/auth` and `accountinfo` response schemas match the Loopizzle PC
+reference exactly, so the remaining failure is not a JSON contract.
+
+Selecting FUT then raises the retail connection-error popup with no server
+traffic at all. The localization-key ring trace names the failing step:
+
+```text
+TXT_EASFC_SERVER_ERROR        (powdllzf.xex.dll string at 0x8970E780)
+FUT_SECURITY_TITLE
+FUT_SECURITY_TIP
+FUT_SECURITY_CHOOSE_QUESTION
+Unknown_FCC_Error
+```
+
+The client therefore enters the real FUT first-use path and builds the security
+question screen before failing on an FCC error code it has no label for. The
+correlated native state is: FUT loader `state = 1` and `available = 1`,
+`IONUnloadViewEnqueue` and `IONActionDispatch28` at 8 invocations each,
+`ViewManagerEnterFlow` and `ScreenFlowConstructor` still at 0, and no Blaze
+component 2148 frame ever sent.
+
+Disassembling `CardsDLLzf.xex.dll` — mapped at `0x89000000` only once FUT is
+entered — resolved that popup exactly. It is emitted by `0x8909F448`, which has
+two callers: the message dispatcher `0x8911A998`, whose `0x65` case (CardHouse
+`Login`, component 2148 command 101) branches straight to it, and the FUT tick
+`0x8909FA50`, which decrements a watchdog at `this+0x48` and fires when it
+reaches zero.
+
+A trace armed on the `CardsDLLzf.xex.dll` modload notification, so it captures
+the very first FUT attempt, reports `handler invocations = 0`. The dispatcher is
+never reached: no `0x65` result arrives, neither success nor failure. The popup
+comes from the watchdog, which the constructors at `0x8909E0B8` and `0x8909EAE8`
+initialise once and nothing ever rearms. Roughly 65 seconds elapse between
+`accountinfo` and the popup.
+
+The FUT bootstrap therefore never receives a CardHouse login result at all. The
+open question is no longer why the login fails but why it is never issued: the
+console opens a single Blaze connection, sends no component 2148 frame, issues
+no HTTP after `accountinfo`, and requests no unmodelled route.
+
+Two hypotheses were tested and eliminated with live evidence: an incomplete
+response schema, and a persona-name mismatch between the Blaze session and the
+FUT identity. The mismatch was real and is fixed — Blaze now advertises the same
+`DSNM` the client presents to FUT — but the popup is unchanged.
+
+Transport note: the retail Redirector negotiates OldProtoSSL, which Python's
+OpenSSL rejects with `WRONG_VERSION_NUMBER`. The plaintext redirector profile
+(`standardInsecure_v3`, XNet `global-nosecure`) is the transport that reaches a
+local login end to end.
+
+## Earlier status
+
 Last updated: 2026-08-03.
 
 ## Supported title

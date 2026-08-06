@@ -93,7 +93,7 @@ class ProtocolTests(unittest.TestCase):
             "http://192.0.2.35:18080/connect/redirect",
         )
 
-    def test_osdk_client_disables_only_dead_asset_refresh(self) -> None:
+    def test_osdk_client_bypasses_dead_refresh_and_enables_real_dlc_load(self) -> None:
         response = self.protocol.handle(
             request(9, 1, [Field("CFID", STRING, "OSDK_CLIENT")]),
             self.state,
@@ -101,10 +101,37 @@ class ProtocolTests(unittest.TestCase):
         decoded = decode_frame(response)
         config = by_label(decoded, "CONF")
         self.assertEqual(config.type, MAP)
+        values = dict(config.value[2])
+        self.assertEqual(values["ONLINE/NO_ASSET_UPDATE"], "1")
+        self.assertEqual(values["DLC_USE_REAL_DLL_LOAD"], "1")
+        self.assertEqual(values["FUT_RS4_BASE_URL"], "http://192.0.2.35:18080/")
+        for key in (
+            "FUT/SINGLE_BASEURL_XBox360",
+            "FUT_RS4_URL_XBox360",
+            "FUT_RS4_APIURL_XBox360",
+            "FUT/MODULE_BASEURL_XBox360",
+        ):
+            self.assertEqual(values[key], "http://192.0.2.35:18080/")
         self.assertEqual(
-            dict(config.value[2]),
-            {"ONLINE/NO_ASSET_UPDATE": "1"},
+            values["FUTDYNAMICMESSAGES_URL_BASE"],
+            "http://192.0.2.35:18080",
         )
+        self.assertEqual(values["CARDS/DIRECTED_BLAZEENV"], "prod")
+        self.assertEqual(values["FCC/FUT_DEPLOY_LANGUAGE"], "en_US")
+        self.assertEqual(values["FUT/FORCE_TUTORIALS"], "1")
+        self.assertEqual(values["FUT/DISABLE_TUTORIALS"], "0")
+
+    def test_osdk_roster_declares_local_base_roster(self) -> None:
+        response = self.protocol.handle(
+            request(9, 1, [Field("CFID", STRING, "OSDK_ROSTER")]),
+            self.state,
+        )[0]
+        decoded = decode_frame(response)
+        values = dict(by_label(decoded, "CONF").value[2])
+        self.assertEqual(values["ROSTER_URL"], "http://192.0.2.35:18080/roster")
+        self.assertEqual(values["ROSTER_VER"], "1.0")
+        self.assertIn("ROSTER_LKR", values)
+        self.assertIn("ROSTER_CSUM", values)
 
     def test_xbox_login_returns_session_and_user_notification(self) -> None:
         login = request(
@@ -129,6 +156,58 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(added["command"], 2)
         self.assertEqual(added["message_type"], 2)
         self.assertEqual(by_label(added, "NAME").value, "TestGamer")
+
+    def test_authentication2_reuses_the_persona_fut_auth_adopted(self) -> None:
+        external_id = 2535469248587161
+        self.protocol.account_store.save_identity(external_id, "Imskobogota6z")
+        login = request(
+            35,
+            10,
+            [
+                Field("AUTH", STRING, "offline-fifa14-auth"),
+                Field("EXTI", INTEGER, external_id),
+            ],
+        )
+        response = self.protocol.handle(login, self.state)[0]
+        persona = by_label(decode_frame(response), "PDTL")
+        self.assertEqual(persona.value[0].value, "Imskobogota6z")
+        self.assertEqual(self.state.gamertag, "Imskobogota6z")
+        self.assertEqual(
+            self.protocol.account_store.load_identity(),
+            (external_id, "Imskobogota6z"),
+        )
+
+    def test_authentication2_keeps_a_gamertag_the_client_supplied(self) -> None:
+        external_id = 2535469248587161
+        self.protocol.account_store.save_identity(external_id, "StoredName")
+        self.state.gamertag = "LiveGamertag"
+        login = request(
+            35,
+            10,
+            [
+                Field("AUTH", STRING, "offline-fifa14-auth"),
+                Field("EXTI", INTEGER, external_id),
+            ],
+        )
+        response = self.protocol.handle(login, self.state)[0]
+        persona = by_label(decode_frame(response), "PDTL")
+        self.assertEqual(persona.value[0].value, "LiveGamertag")
+
+    def test_authentication2_ignores_a_persona_stored_for_another_account(
+        self,
+    ) -> None:
+        self.protocol.account_store.save_identity(42, "OtherAccount")
+        login = request(
+            35,
+            10,
+            [
+                Field("AUTH", STRING, "offline-fifa14-auth"),
+                Field("EXTI", INTEGER, 2535469248587161),
+            ],
+        )
+        response = self.protocol.handle(login, self.state)[0]
+        persona = by_label(decode_frame(response), "PDTL")
+        self.assertEqual(persona.value[0].value, "OfflineFUT")
 
     def test_authentication2_login_uses_exact_fifa14_schema(self) -> None:
         external_id = 2535469248587161
@@ -324,6 +403,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(by_label(gates, "LIST").value, (STRUCT, []))
 
     def test_first_time_setting_is_loaded_and_saved(self) -> None:
+        loaded_all = decode_frame(
+            self.protocol.handle(request(9, 12), self.state)[0]
+        )
+        settings_map = by_label(loaded_all, "SMAP")
+        self.assertEqual(settings_map.type, MAP)
+        self.assertEqual(
+            dict(settings_map.value[2]),
+            {"FirstTimeFlag": "0"},
+        )
+
         loaded = decode_frame(
             self.protocol.handle(
                 request(
@@ -387,12 +476,13 @@ class TcpServerTests(unittest.TestCase):
                     b"<FutCfg>",
                     b"<cfgVersion>1</cfgVersion>",
                     b"<minorVersion>1</minorVersion>",
-                    b"<bootString>fe/fut/servercalls</bootString>",
+                    b"<bootString>fut12</bootString>",
                     b"<futSubVersion>1</futSubVersion>",
                     b"<Language>",
                     b"<dimeUniqueId>1</dimeUniqueId>",
                     b"<key>",
-                    b"<futKeyType>1</futKeyType>",
+                    b"<dimeUniqueId>2</dimeUniqueId>",
+                    b"<futKeyType>0</futKeyType>",
                 ):
                     self.assertIn(required, body)
                 client.close()
@@ -419,6 +509,273 @@ class TcpServerTests(unittest.TestCase):
                 )
                 response.read()
                 client.close()
+            finally:
+                identity.stop()
+
+    def test_fut_auth_and_first_use_account_info(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "journal.jsonl"
+            journal = SERVER.Journal(journal_path)
+            account_store = SERVER.PersistentAccountStore()
+            account_store.save_identity(0x123456789, "MatchedPersona")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal, account_store
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "POST",
+                    "/ut/auth",
+                    body=b'{"isReadOnly":false}',
+                    headers={"Content-Type": "application/json"},
+                )
+                response = client.getresponse()
+                auth = __import__("json").loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(auth["sid"], "LOCAL-XBOX360-FIFA14-SID")
+                self.assertIn("serverTime", auth)
+                self.assertIn("lastOnlineTime", auth)
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "POST",
+                    "/pow/auth",
+                    body=b'{"EASW-Session":"LOCAL"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                response = client.getresponse()
+                xbox_auth = __import__("json").loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    response.getheader("X-UT-SID"),
+                    "LOCAL-XBOX360-FIFA14-SID",
+                )
+                self.assertEqual(xbox_auth["sid"], "LOCAL-XBOX360-FIFA14-SID")
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("GET", "/ut/game/fifa14/user/accountinfo")
+                response = client.getresponse()
+                account = __import__("json").loads(response.read())
+                personas = account["userAccountInfo"]["personas"]
+                self.assertEqual(response.status, 200)
+                self.assertEqual(len(personas), 1)
+                self.assertEqual(personas[0]["personaId"], 0x123456789)
+                self.assertEqual(personas[0]["personaName"], "MatchedPersona")
+                self.assertEqual(personas[0]["userClubList"], [])
+                client.close()
+            finally:
+                identity.stop()
+
+    def test_identity_http_journal_records_request_body_and_unhandled_route(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "journal.jsonl"
+            journal = SERVER.Journal(journal_path)
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "POST",
+                    "/pow/auth",
+                    body=b'{"EASW-Session":"LOCAL-FIFA14-EASW-SESSION"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(client.getresponse().status, 200)
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "POST",
+                    "/ut/game/fifa14/unmodelled",
+                    body=b'{"probe":1}',
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(client.getresponse().status, 404)
+                client.close()
+            finally:
+                identity.stop()
+
+            events = [
+                __import__("json").loads(line)
+                for line in journal_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            requests = [
+                event
+                for event in events
+                if event["event"] == "identity_http_request"
+            ]
+            self.assertEqual(
+                requests[0]["body"],
+                '{"EASW-Session":"LOCAL-FIFA14-EASW-SESSION"}',
+            )
+            unhandled = next(
+                event
+                for event in events
+                if event["event"] == "identity_http_unhandled"
+            )
+            self.assertEqual(unhandled["path"], "/ut/game/fifa14/unmodelled")
+            self.assertEqual(unhandled["body"], '{"probe":1}')
+
+    def test_fut_auth_adopts_the_persona_the_client_presents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "journal.jsonl"
+            journal = SERVER.Journal(journal_path)
+            account_store = SERVER.PersistentAccountStore()
+            account_store.save_identity(1_000_001, "OfflineFUT")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal, account_store
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "POST",
+                    "/pow/auth",
+                    body=__import__("json").dumps(
+                        {
+                            "isReadOnly": False,
+                            "sku": "FFA14XBX",
+                            "nuc": 2535469248587161,
+                            "nucleusPersonaId": 0,
+                            "nucleusPersonaDisplayName": "Imskobogota6z",
+                            "method": "cas",
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(client.getresponse().status, 200)
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("GET", "/ut/game/fifa14/user/accountinfo")
+                response = client.getresponse()
+                persona = __import__("json").loads(response.read())
+                persona = persona["userAccountInfo"]["personas"][0]
+                self.assertEqual(persona["personaName"], "Imskobogota6z")
+                self.assertEqual(persona["personaId"], 2535469248587161)
+                self.assertEqual(persona["userClubList"], [])
+                client.close()
+            finally:
+                identity.stop()
+
+            self.assertIn(
+                '"event": "fut_auth_identity_adopted"',
+                journal_path.read_text(encoding="utf-8"),
+            )
+
+    def test_auth_request_identity_rejects_incomplete_documents(self) -> None:
+        self.assertIsNone(SERVER.auth_request_identity(b""))
+        self.assertIsNone(SERVER.auth_request_identity(b"not json"))
+        self.assertIsNone(
+            SERVER.auth_request_identity(b'{"nuc":123}')
+        )
+        self.assertIsNone(
+            SERVER.auth_request_identity(b'{"nucleusPersonaDisplayName":"X"}')
+        )
+        self.assertIsNone(
+            SERVER.auth_request_identity(
+                b'{"nuc":0,"nucleusPersonaDisplayName":"X"}'
+            )
+        )
+        self.assertEqual(
+            SERVER.auth_request_identity(
+                b'{"nuc":7,"nucleusPersonaId":9,"nucleusPersonaDisplayName":"X"}'
+            ),
+            (9, "X"),
+        )
+
+    def test_request_body_preview_bounds_and_binary(self) -> None:
+        self.assertIsNone(SERVER.request_body_preview(b""))
+        self.assertEqual(SERVER.request_body_preview(b'{"a":1}'), '{"a":1}')
+        oversized = b"x" * (SERVER.REQUEST_BODY_PREVIEW_LIMIT + 10)
+        preview = SERVER.request_body_preview(oversized)
+        self.assertTrue(preview.startswith("x" * 64))
+        self.assertIn(f"{len(oversized)} bytes total", preview)
+        binary = SERVER.request_body_preview(b"\xff\xfe\x00\x01")
+        self.assertTrue(binary.startswith("<4 non-utf8 bytes>"))
+
+    def test_fut_first_use_security_and_icebreaker_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+
+                def request_json(method: str, path: str, body: bytes | None = None):
+                    client = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=2
+                    )
+                    client.request(method, path, body=body)
+                    response = client.getresponse()
+                    document = __import__("json").loads(response.read())
+                    status = response.status
+                    headers = dict(response.getheaders())
+                    client.close()
+                    return status, headers, document
+
+                status, _, trusted = request_json(
+                    "GET", "/ut/game/fifa14/phishing/trusteddevice"
+                )
+                self.assertEqual((status, trusted), (200, {}))
+
+                status, _, question = request_json(
+                    "GET", "/ut/game/fifa14/phishing/question"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    question,
+                    {"question": 0, "attempts": 5, "recoverAttempts": 20},
+                )
+
+                status, headers, validation = request_json(
+                    "POST",
+                    "/ut/game/fifa14/phishing/validate",
+                    b'{"answer":"offline"}',
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(validation["token"], "LOCAL-FIFA14-PHISHING")
+                self.assertIn("FUTWebPhishing=", headers["Set-Cookie"])
+
+                status, _, actions = request_json(
+                    "GET", "/ut/game/fifa14/user/action"
+                )
+                self.assertEqual((status, actions), (200, {"userActionList": []}))
+
+                status, _, updated = request_json(
+                    "PUT", "/ut/game/fifa14/user/action/firstUse", b"{}"
+                )
+                self.assertEqual((status, updated), (200, {}))
+
+                status, _, pack_list = request_json(
+                    "GET",
+                    "/fut/packs/icebreaker/icebreakerpacklist.json",
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    pack_list,
+                    {
+                        "packList": [
+                            {"id": 0, "image": 0},
+                            {"id": 1, "image": 1},
+                            {"id": 2, "image": 2},
+                            {"id": 3, "image": 3},
+                        ]
+                    },
+                )
             finally:
                 identity.stop()
 

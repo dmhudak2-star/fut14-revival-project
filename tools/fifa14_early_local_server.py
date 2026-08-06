@@ -4,9 +4,10 @@
 The title module is stopped on its XBDM modload notification, before game code
 starts.  The original EA hostnames are intentionally preserved so the title's
 resolver follows its normal path.  A narrow DirtySock connect hook redirects
-only Blaze ports to the local server, and the Redirector connection profile is
-set to unencrypted Blaze.  All changes are volatile and disappear when the
-title unloads.
+only Blaze ports to the local server.  The Redirector can retain the retail
+Xbox TLS profile for an OldProtoSSL-compatible local listener, or use the
+earlier plaintext diagnostic mode.  All changes are volatile and disappear
+when the title unloads.
 """
 
 from __future__ import annotations
@@ -56,6 +57,17 @@ import fifa14_useradded_trace as useradded_trace
 import fifa14_fut_resource_url_trace as fut_resource_url_trace
 import fifa14_connection_result_trace as connection_result_trace
 import fifa14_connected_owner_path_probe as connected_owner_trace
+import fifa14_provider_publication_trace as provider_publication_trace
+import fifa14_ion_unload_trace as ion_unload_trace
+import fifa14_fut_launcher_transition_trace as fut_launcher_transition_trace
+import fifa14_ion_action_pipeline_trace as ion_action_pipeline_trace
+import fifa14_ux_async_completion_trace as ux_async_completion_trace
+import fifa14_fut_auth_completion_trace as fut_auth_completion_trace
+import fifa14_ux_lua_error_trace as ux_lua_error_trace
+import fifa14_nav_transition_dispatch_trace as nav_transition_dispatch_trace
+import fifa14_unload_completion_trace as unload_completion_trace
+import fifa14_lua_file_loader_trace as lua_file_loader_trace
+import fifa14_dlc_loader_trace as dlc_loader_trace
 
 
 FIFA_PDATA = 'pdata=0x82329200'
@@ -345,11 +357,37 @@ def arm_login_flow_traces(control: Connection) -> None:
         raise RuntimeError("connected-owner trace verification failed")
 
 
+def launch_title_command(directory: str) -> str:
+    """Return the XBDM command that boots ``directory\\default.xex``.
+
+    The retail launch path is what the modload listener expects, so the title
+    and directory are quoted exactly as XeXMenu would present them.
+    """
+    normalized = directory.replace("/", "\\").rstrip("\\")
+    if not normalized:
+        raise ValueError("Title directory must not be empty")
+    if '"' in normalized:
+        raise ValueError("Title directory must not contain a quote")
+    return (
+        f'magicboot title="{normalized}\\default.xex" '
+        f'directory="{normalized}"'
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("host", help="Xbox IP address")
     parser.add_argument("--local-ip", required=True, help="Mac/server IPv4")
     parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument(
+        "--redirector-transport",
+        choices=("plaintext", "tls"),
+        default="plaintext",
+        help=(
+            "transport exposed by the local 42127 redirector; tls preserves "
+            "the title's native xbox360Secure_v3 ProtoSSL profile"
+        ),
+    )
     parser.add_argument(
         "--trace-login-flow",
         action="store_true",
@@ -365,11 +403,105 @@ def main() -> int:
         action="store_true",
         help="route only native futBoot.xml loading to the local HTTP service",
     )
+    parser.add_argument(
+        "--trace-provider-publication",
+        action="store_true",
+        help=(
+            "passively trace native KeyValueDataProvider registration, "
+            "publication and ION delivery from the first title instruction"
+        ),
+    )
+    parser.add_argument(
+        "--trace-ion-unload",
+        action="store_true",
+        help="passively trace native ION UnloadView through EnterFlow creation",
+    )
+    parser.add_argument(
+        "--trace-fut-launcher-transition",
+        action="store_true",
+        help=(
+            "passively trace the ION action bridge and screen-unload "
+            "notification callback; combine with provider trace for event text"
+        ),
+    )
+    parser.add_argument(
+        "--trace-ion-action-pipeline",
+        action="store_true",
+        help=(
+            "passively trace ION ProcessAction, ChangeState and "
+            "PreScreenComplete after screen publication"
+        ),
+    )
+    parser.add_argument(
+        "--trace-ux-async-completion",
+        action="store_true",
+        help=(
+            "passively trace the UXFunction asynchronous completion supplied "
+            "by the FUT screen callback"
+        ),
+    )
+    parser.add_argument(
+        "--trace-fut-auth-completion",
+        action="store_true",
+        help="passively trace native FUT authentication/configuration stages",
+    )
+    parser.add_argument(
+        "--trace-ux-lua-errors",
+        action="store_true",
+        help="passively trace UXLua missing-function/module error branches",
+    )
+    parser.add_argument(
+        "--trace-nav-transition-dispatch",
+        action="store_true",
+        help=(
+            "passively correlate _global.NavTransitionEnd with the native "
+            "flow-action router entry, handler match and dispatch return"
+        ),
+    )
+    parser.add_argument(
+        "--trace-unload-completion",
+        action="store_true",
+        help=(
+            "passively trace provider unload notifications, screen payload "
+            "construction, completion actions and Handle_NavTransitionEnd result"
+        ),
+    )
+    parser.add_argument(
+        "--trace-lua-file-loader",
+        action="store_true",
+        help=(
+            "passively journal native fileexists/loadfileasync paths and "
+            "the concrete asynchronous request path"
+        ),
+    )
+    parser.add_argument(
+        "--trace-dlc-loader",
+        action="store_true",
+        help=(
+            "passively trace the retail DLC initialization callback, "
+            "LoadDLL action and final XEX-loader path"
+        ),
+    )
+    parser.add_argument(
+        "--launch-title",
+        metavar="DIRECTORY",
+        help=(
+            "boot DIRECTORY\\default.xex over XBDM once the modload listener "
+            "is armed, instead of waiting for a manual XeXMenu launch"
+        ),
+    )
     args = parser.parse_args()
 
     if args.trace_fut_resource and args.redirect_fut_resource:
         parser.error(
             "--trace-fut-resource and --redirect-fut-resource are mutually exclusive"
+        )
+    if args.trace_lua_file_loader and (
+        args.trace_ion_action_pipeline or args.trace_ux_lua_errors
+    ):
+        parser.error(
+            "--trace-lua-file-loader shares its diagnostic page with "
+            "--trace-ion-action-pipeline and --trace-ux-lua-errors"
         )
 
     local_ip = str(ipaddress.IPv4Address(args.local_ip))
@@ -385,7 +517,17 @@ def main() -> int:
         notify.command("notify reconnectport=1", expected=205)
         control = Connection(args.host)
 
-        print("Waiting for default.xex. Launch FIFA 14 now.", flush=True)
+        if args.launch_title:
+            # Boot only after the notification listener is armed, so the
+            # modload event cannot be missed between launch and subscribe.
+            launcher = Connection(args.host)
+            try:
+                launcher.command(launch_title_command(args.launch_title))
+            finally:
+                launcher.sock.close()
+            print(f"Launched {args.launch_title}\\default.xex.", flush=True)
+        else:
+            print("Waiting for default.xex. Launch FIFA 14 now.", flush=True)
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
             readable, _, _ = select.select([notify.sock], [], [], 1)
@@ -424,15 +566,25 @@ def main() -> int:
                 raise RuntimeError(
                     "FIFA nosecure branches are not the supported retail image"
                 )
-            control.write(NOSECURE_MODE_BRANCH, NOSECURE_MODE_PATCHED)
-            control.write(XNET_BYPASS_BRANCH, XNET_BYPASS_PATCHED)
-            if (
-                control.read(NOSECURE_MODE_BRANCH, 4) != NOSECURE_MODE_PATCHED
-                or control.read(XNET_BYPASS_BRANCH, 4) != XNET_BYPASS_PATCHED
-            ):
-                control.write(NOSECURE_MODE_BRANCH, NOSECURE_MODE_ORIGINAL)
-                control.write(XNET_BYPASS_BRANCH, XNET_BYPASS_ORIGINAL)
-                raise RuntimeError("Full nosecure mode publication failed")
+            if args.redirector_transport == "plaintext":
+                control.write(NOSECURE_MODE_BRANCH, NOSECURE_MODE_PATCHED)
+                control.write(XNET_BYPASS_BRANCH, XNET_BYPASS_PATCHED)
+                if (
+                    control.read(NOSECURE_MODE_BRANCH, 4)
+                    != NOSECURE_MODE_PATCHED
+                    or control.read(XNET_BYPASS_BRANCH, 4)
+                    != XNET_BYPASS_PATCHED
+                ):
+                    control.write(NOSECURE_MODE_BRANCH, NOSECURE_MODE_ORIGINAL)
+                    control.write(XNET_BYPASS_BRANCH, XNET_BYPASS_ORIGINAL)
+                    raise RuntimeError("Full nosecure mode publication failed")
+                xnet_mode = "global-nosecure"
+            else:
+                # Native ProtoSSL must see the retail XNet startup mode.
+                # The connect stub still applies DirtySock 'xins' narrowly to
+                # each redirected LAN socket, so raw local addressing works
+                # without globally disabling TLS on the redirector profile.
+                xnet_mode = "retail-global/scoped-xins"
 
             current_call = control.read(CONNECT_CALLSITE, 4)
             if current_call != ORIGINAL_CONNECT_CALL:
@@ -471,12 +623,17 @@ def main() -> int:
                 raise RuntimeError(
                     f"Unexpected Redirector profile 0x{current_profile:08X}"
                 )
-            if current_profile != STANDARD_INSECURE:
-                control.write(PROFILE_POINTER, encoded(STANDARD_INSECURE))
+            target_profile = (
+                XBOX360_SECURE
+                if args.redirector_transport == "tls"
+                else STANDARD_INSECURE
+            )
+            if current_profile != target_profile:
+                control.write(PROFILE_POINTER, encoded(target_profile))
             verified_profile = int.from_bytes(
                 control.read(PROFILE_POINTER, 4), "big"
             )
-            if verified_profile != STANDARD_INSECURE:
+            if verified_profile != target_profile:
                 raise RuntimeError("Redirector profile verification failed")
 
             ticket_entry = control.read(TICKET_SITE, 4)
@@ -514,12 +671,35 @@ def main() -> int:
                     control,
                     f"http://{local_ip}:18080/futBoot.xml",
                 )
+            if args.trace_provider_publication:
+                provider_publication_trace.arm(control)
+            if args.trace_ion_unload:
+                ion_unload_trace.arm(control)
+            if args.trace_fut_launcher_transition:
+                fut_launcher_transition_trace.arm(control)
+            if args.trace_ion_action_pipeline:
+                ion_action_pipeline_trace.arm(control)
+            if args.trace_ux_async_completion:
+                ux_async_completion_trace.arm(control)
+            if args.trace_fut_auth_completion:
+                fut_auth_completion_trace.arm(control)
+            if args.trace_ux_lua_errors:
+                ux_lua_error_trace.arm(control)
+            if args.trace_nav_transition_dispatch:
+                nav_transition_dispatch_trace.arm(control)
+            if args.trace_unload_completion:
+                unload_completion_trace.arm(control)
+            if args.trace_lua_file_loader:
+                lua_file_loader_trace.arm(control)
+            if args.trace_dlc_loader:
+                dlc_loader_trace.arm(control)
 
             print(
                 "Verified: retail hostnames preserved, "
-                f"Blaze connect={local_ip}, profile=standardInsecure_v3, "
-                "DirtySock=-nosecure, XNetStartup=bypass-security, "
-                "socket=unencrypted, empty-XBL-ticket=local-placeholder"
+                f"Blaze connect={local_ip}, profile={state(verified_profile)}, "
+                f"redirector-transport={args.redirector_transport}, "
+                f"XNet={xnet_mode}, "
+                "local-socket=xins, empty-XBL-ticket=local-placeholder"
                 + (
                     ", passive login-flow traces=armed"
                     if args.trace_login_flow else ""
@@ -531,6 +711,50 @@ def main() -> int:
                 + (
                     ", native FUT-resource redirect=armed"
                     if args.redirect_fut_resource else ""
+                )
+                + (
+                    ", passive provider/publication trace=armed"
+                    if args.trace_provider_publication else ""
+                )
+                + (
+                    ", passive ION unload-to-EnterFlow trace=armed"
+                    if args.trace_ion_unload else ""
+                )
+                + (
+                    ", passive FUT launcher transition trace=armed"
+                    if args.trace_fut_launcher_transition else ""
+                )
+                + (
+                    ", passive ION action-pipeline trace=armed"
+                    if args.trace_ion_action_pipeline else ""
+                )
+                + (
+                    ", passive UX async-completion trace=armed"
+                    if args.trace_ux_async_completion else ""
+                )
+                + (
+                    ", passive FUT auth/config completion trace=armed"
+                    if args.trace_fut_auth_completion else ""
+                )
+                + (
+                    ", passive UXLua error trace=armed"
+                    if args.trace_ux_lua_errors else ""
+                )
+                + (
+                    ", passive NavTransitionEnd flow-dispatch trace=armed"
+                    if args.trace_nav_transition_dispatch else ""
+                )
+                + (
+                    ", passive unload-completion trace=armed"
+                    if args.trace_unload_completion else ""
+                )
+                + (
+                    ", passive Lua file-loader trace=armed"
+                    if args.trace_lua_file_loader else ""
+                )
+                + (
+                    ", passive retail DLC/LoadDLL trace=armed"
+                    if args.trace_dlc_loader else ""
                 )
             )
             control.command("go")
