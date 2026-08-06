@@ -287,6 +287,23 @@ class PersistentAccountStore:
 # build posts a form to ``/authentication360`` with a ``version`` query and
 # its own EASW-* signature headers.  Accept both.
 EASW_AUTH_PATHS = ("/authentication360", "/v2/authenticationNucleusPersona")
+
+# Routes whose FIFA 14 parsers initialise every field and treat all JSON
+# members as optional, so an empty object preserves their own defaults rather
+# than fabricating a club, inventory, currency, squad or progression.  Each was
+# recovered from a working local implementation of the same title, alongside
+# the static analysis of the parser it feeds.
+FUT_EMPTY_OBJECT_ROUTES = {
+    "/ut/game/fifa14/userdata",
+    "/ut/game/fifa14/clientdata/tutorialpopups",
+    "/ut/game/fifa14/clientdata/userHubData",
+    "/ut/game/fifa14/clientdata/pileSize",
+    "/ut/game/fifa14/clientdata/managerquest",
+    "/ut/game/fifa14/eventfeed",
+    "/ut/game/fifa14/hub",
+    "/ut/game/fifa14/leaderboards/options",
+    "/ut/delete/auth",
+}
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
@@ -1484,6 +1501,22 @@ class IdentityHttpService:
                         peer=self.client_address[0],
                         method=self.command,
                         path=parsed.path,
+                    )
+                    return
+                if normalized_path in FUT_EMPTY_OBJECT_ROUTES:
+                    owner.journal.event(
+                        "fut_empty_object_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
                     )
                     return
                 if normalized_path == "/ut/game/fifa14/settings":

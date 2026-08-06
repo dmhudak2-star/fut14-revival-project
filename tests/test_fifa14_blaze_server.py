@@ -566,6 +566,49 @@ class ProtocolTests(unittest.TestCase):
             finally:
                 identity.stop()
 
+    def test_first_use_fan_out_routes_return_parser_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                for path in sorted(SERVER.FUT_EMPTY_OBJECT_ROUTES):
+                    client = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=2
+                    )
+                    client.request("GET", path)
+                    response = client.getresponse()
+                    self.assertEqual(response.status, 200, path)
+                    self.assertEqual(
+                        __import__("json").loads(response.read()), {}, path
+                    )
+                    client.close()
+            finally:
+                identity.stop()
+
+    def test_match_reset_acknowledges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("PUT", "/ut/game/fifa14/match/reset")
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    __import__("json").loads(response.read()), {"reset": True}
+                )
+                client.close()
+            finally:
+                identity.stop()
+
 
 class TcpServerTests(unittest.TestCase):
     def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:
