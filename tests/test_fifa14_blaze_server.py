@@ -534,6 +534,38 @@ class ProtocolTests(unittest.TestCase):
                 journal_path.read_text(encoding="utf-8"),
             )
 
+    def test_fut_settings_and_locstrings_are_served(self) -> None:
+        # The console walked security to completion and then died on these two
+        # 404s before logging out again.
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("GET", "/ut/game/fifa14/settings")
+                response = client.getresponse()
+                settings = __import__("json").loads(response.read())
+                self.assertEqual(response.status, 200)
+                # Zero lets a brand-new account create its club immediately.
+                self.assertEqual(settings["clubCreateThreshold"], 0)
+                self.assertIn("maximumTradePileSize", settings)
+                self.assertIn("getOperationTimeoutSec", settings)
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("GET", "/fut/loc/XBox360/leaderboards.FRE_FR.xml")
+                response = client.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertTrue(body.startswith(b"<?xml"))
+                client.close()
+            finally:
+                identity.stop()
+
 
 class TcpServerTests(unittest.TestCase):
     def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:

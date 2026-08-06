@@ -1445,6 +1445,59 @@ class IdentityHttpService:
                         },
                     )
                     return
+                if normalized_path == "/ut/game/fifa14/settings":
+                    # Field names recovered from FIFA 14's FutSettings parser.
+                    # clubCreateThreshold stays at zero so a brand-new account
+                    # is allowed to create its club immediately.
+                    payload = (
+                        json.dumps(
+                            {
+                                "maximumTradePileSize": 30,
+                                "getOperationTimeoutSec": 60,
+                                "clubCreateThreshold": 0,
+                                "fifaPointsCancelTransactionFix": 1,
+                                "tokenRedemptionEnabled": 0,
+                                "enableWorldCupMode": 0,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                    owner.journal.event(
+                        "fut_settings_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if parsed.path.startswith("/fut/loc/"):
+                    # Localisation bundles for the FUT leaderboard and pack
+                    # screens.  The client only needs a well-formed document;
+                    # an empty string table keeps the retail labels in place.
+                    owner.journal.event(
+                        "fut_locstring_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(
+                        200,
+                        b'<?xml version="1.0" encoding="utf-8"?>\n'
+                        b"<localization>\n</localization>\n",
+                        {
+                            "Content-Type": "application/xml; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path == "/ut/game/fifa14/user/accountinfo":
                     persona_id, persona_name = owner.account_store.load_identity()
                     document = {
