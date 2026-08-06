@@ -143,6 +143,13 @@ class Xbdm:
         self.command(f"setmem addr=0x{address:08X} data={data.hex().upper()}")
 
 
+# Every run that located the APT found it in the same neighbourhood, so a
+# bounded first pass there answers in seconds.  A full sweep of the heap costs
+# many minutes over XBDM, which is enough to dominate a whole measurement cycle.
+OBSERVED_APT_NEIGHBOURHOOD = 0xBDD78000
+DEFAULT_HINT_WINDOW = 0x00400000
+
+
 def candidates(client: Xbdm) -> list[tuple[int, int, int]]:
     regions = [
         region
@@ -153,10 +160,29 @@ def candidates(client: Xbdm) -> list[tuple[int, int, int]]:
     return sorted(regions, key=lambda region: (region[0] < 0xB0000000, -region[1]))
 
 
-def scan_once(client: Xbdm, chunk_size: int) -> list[int]:
+def clip_to_window(
+    regions: list[tuple[int, int, int]], centre: int, window: int
+) -> list[tuple[int, int, int]]:
+    """Restrict regions to the span around ``centre``, dropping the rest."""
+    low, high = centre - window // 2, centre + window // 2
+    clipped = []
+    for base, size, protection in regions:
+        start, end = max(base, low), min(base + size, high)
+        if start < end:
+            clipped.append((start, end - start, protection))
+    return clipped
+
+
+def scan_once(
+    client: Xbdm,
+    chunk_size: int,
+    regions: list[tuple[int, int, int]] | None = None,
+) -> list[int]:
     hits: list[int] = []
     overlap = len(SIGNATURE) - 1
-    for base, size, _protection in candidates(client):
+    for base, size, _protection in (
+        candidates(client) if regions is None else regions
+    ):
         tail = b""
         offset = 0
         while offset < size:
@@ -250,6 +276,18 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--chunk-size", type=lambda value: int(value, 0), default=0x400000)
+    parser.add_argument(
+        "--hint",
+        type=lambda value: int(value, 0),
+        default=OBSERVED_APT_NEIGHBOURHOOD,
+        help="address to search around before sweeping the whole heap",
+    )
+    parser.add_argument(
+        "--hint-window",
+        type=lambda value: int(value, 0),
+        default=DEFAULT_HINT_WINDOW,
+        help="size of that first pass; 0 disables it",
+    )
     args = parser.parse_args()
 
     if args.address is not None:
@@ -287,7 +325,21 @@ def main() -> int:
         client: Xbdm | None = None
         try:
             client = Xbdm(args.host)
-            hits = scan_once(client, args.chunk_size)
+            hits = []
+            if args.hint_window:
+                narrowed = clip_to_window(
+                    candidates(client), args.hint, args.hint_window
+                )
+                if narrowed:
+                    hits = scan_once(client, args.chunk_size, narrowed)
+                    if hits:
+                        print(
+                            f"Found in the hinted window around "
+                            f"0x{args.hint:08X}.",
+                            flush=True,
+                        )
+            if not hits:
+                hits = scan_once(client, args.chunk_size)
             for address in hits:
                 state = classify(client, address)
                 print(f"TU3 helperFunctions APT 0x{address:08X}: {state}", flush=True)
