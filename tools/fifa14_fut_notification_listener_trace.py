@@ -8,14 +8,22 @@ notification bus at ``0x8278F228``:
 ```text
 0x8278F228  cmpwi cr6, r4, 0xA8   ; <- hooked here
 ...                               ; 0xA8 and 0x46 have dedicated handling
-0x8278F274  lwz r11, 0x10(r3)     ; the registered listener slot
+0x8278F274  lwz r11, 0x10(r3)     ; index of the registered listener
 0x8278F278  cmpwi cr6, r11, -1
 0x8278F27C  beqlr cr6             ; -1 means nobody is listening: return
-0x8278F284  lwzx r10, r11, r3     ; otherwise dispatch through the vtable
+0x8278F280  slwi r11, r11, 2
+0x8278F284  lwzx r10, r11, r3     ; the listener at r3 + index * 4
+0x8278F288  cmplwi cr6, r10, 0
+0x8278F28C  beqlr cr6             ; an empty slot returns just as quietly
+0x8278F29C  mtctr r11             ; otherwise dispatch through its vtable
+0x8278F2A0  bctr
 ```
 
-So an operation whose listener slot holds ``-1`` is accepted and silently
-dropped, which matches a submission that never completes.
+So there are two ways for a notification to be accepted and silently dropped:
+no index, or an index pointing at an empty slot.  Either matches a submission
+that never completes.  ``0x10`` holds an index, not a pointer, so the slot it
+selects is resolved from the host at read time -- resolving it in the stub
+would mean reading ``[r3 - 4]`` whenever the index is ``-1``.
 
 This bus is shared by the whole engine, though: an unfiltered hook here fires
 hundreds of thousands of times per session and any ring buffer ends up holding
@@ -174,11 +182,35 @@ def hook_state(client: Xbdm) -> str:
     return "armed" if client.read(STUB, STUB_SIZE) == build_stub() else "stale"
 
 
-def describe(operation: int, listener: int) -> str:
+def describe(operation: int, index: int, slot: int | None = None) -> str:
+    """Say whether this notification could have been dispatched at all.
+
+    ``slot`` is the value the bus would have loaded from ``r3 + index * 4``,
+    read back from the host; ``None`` when it could not be read.
+    """
     name = OPERATION_NAMES.get(operation, f"operation 0x{operation:X}")
-    if listener == NO_LISTENER:
-        return f"{name}: no listener, the bus returns without dispatching"
-    return f"{name}: listener slot {listener}"
+    if index == NO_LISTENER:
+        return f"{name}: no listener registered, the bus returns immediately"
+    if slot is None:
+        return f"{name}: listener index {index}, slot unread"
+    if slot == 0:
+        return (
+            f"{name}: listener index {index} selects an empty slot, "
+            "so the bus returns without dispatching"
+        )
+    return f"{name}: dispatched to the listener at 0x{slot:08X}"
+
+
+def resolve_slot(client: Xbdm, bus: int, index: int) -> int | None:
+    """Read the listener slot the bus would have selected for this index."""
+    if index == NO_LISTENER:
+        return None
+    try:
+        return int.from_bytes(client.read(bus + index * 4, 4), "big")
+    except Exception:
+        # The bus object may already be gone by the time we read it; that is
+        # worth reporting as unknown rather than failing the whole readout.
+        return None
 
 
 def read_journal(client: Xbdm) -> None:
@@ -198,13 +230,13 @@ def read_journal(client: Xbdm) -> None:
         record = raw[offset : offset + RECORD_SIZE]
         bus = int.from_bytes(record[0:4], "big")
         operation = int.from_bytes(record[4:8], "big")
-        listener = int.from_bytes(record[8:12], "big")
+        index = int.from_bytes(record[8:12], "big")
         caller = int.from_bytes(record[12:16], "big")
         print(
             f"  {sequence:4d}  bus=0x{bus:08X} operation=0x{operation:X} "
-            f"listener=0x{listener:08X} lr=0x{caller:08X}"
+            f"index=0x{index:08X} lr=0x{caller:08X}"
         )
-        print(f"          {describe(operation, listener)}")
+        print(f"          {describe(operation, index, resolve_slot(client, bus, index))}")
 
 
 def apply_trace(client: Xbdm) -> None:

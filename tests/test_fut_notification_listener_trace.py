@@ -144,5 +144,48 @@ def test_site_patch_branches_into_the_stub() -> None:
 
 def test_a_missing_listener_is_called_out() -> None:
     assert "no listener" in trace.describe(0xDF, trace.NO_LISTENER)
-    assert "no listener" not in trace.describe(0xDF, 2)
-    assert "FirstTimeInit" in trace.describe(0xDF, 0)
+    assert "FirstTimeInit" in trace.describe(0xDF, trace.NO_LISTENER)
+
+
+def test_an_empty_slot_is_called_out_as_its_own_silent_drop() -> None:
+    # The index being present is not enough: the bus returns just as quietly
+    # when the slot that index selects holds null.
+    described = trace.describe(0xDF, 1, slot=0)
+    assert "empty slot" in described
+    assert "without dispatching" in described
+
+
+def test_a_live_slot_reads_as_dispatched() -> None:
+    described = trace.describe(0xDF, 1, slot=0xB5C3EBD0)
+    assert "dispatched" in described
+    assert "0xB5C3EBD0" in described
+
+
+def test_an_unread_slot_is_not_reported_as_either() -> None:
+    described = trace.describe(0xDF, 1, slot=None)
+    assert "unread" in described
+    assert "dispatched" not in described
+    assert "empty" not in described
+
+
+def test_no_slot_is_resolved_for_a_missing_index() -> None:
+    # index -1 would resolve to [bus - 4]; nothing should read that.
+    class Refuses:
+        def read(self, *_args):
+            raise AssertionError("must not read a slot for a missing index")
+
+    assert trace.resolve_slot(Refuses(), 0xB5C3EBD0, trace.NO_LISTENER) is None
+
+
+def test_the_slot_is_resolved_at_index_times_four() -> None:
+    class Memory:
+        def __init__(self):
+            self.asked = None
+
+        def read(self, address, length):
+            self.asked = (address, length)
+            return (0xDEADBEEF).to_bytes(4, "big")
+
+    memory = Memory()
+    assert trace.resolve_slot(memory, 0xB5C3EBD0, 3) == 0xDEADBEEF
+    assert memory.asked == (0xB5C3EBD0 + 12, 4)
