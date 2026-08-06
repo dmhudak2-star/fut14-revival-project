@@ -77,3 +77,19 @@ def test_a_screen_with_no_button_is_left_alone(monkeypatch) -> None:
     except TimeoutError:
         pass
     assert console.presses == []
+
+
+def test_start_is_tried_before_risking_the_sign_in_blade() -> None:
+    # A at the title screen opens an Xbox Live sign-in this setup cannot
+    # finish, so it must never be the first guess at an unknown screen.
+    assert navigator.UNKNOWN_BUTTONS[0] == "START"
+    assert navigator.UNKNOWN_BUTTONS.count("A") == 1
+    assert navigator.UNKNOWN_BUTTONS[-1] == "A"
+
+
+def test_an_unknown_dialog_needing_A_is_still_reached(monkeypatch) -> None:
+    console = Console(
+        [("unknown", "A", "main_menu"), ("main_menu", None, "main_menu")]
+    )
+    assert run(console, "main_menu", monkeypatch) == 0
+    assert ("unknown", "A") in console.presses

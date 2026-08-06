@@ -139,8 +139,13 @@ ACTIONS = {
 
 # An unrecognised frame is usually an attract video, which START skips, but it
 # can also be a dialog this build shows only in some states -- those need A.
-# Alternating covers both without having to enumerate every dialog in advance.
-UNKNOWN_BUTTONS = ("START", "A")
+# Cycling covers both without having to enumerate every dialog in advance.
+#
+# A is weighted down because it is the expensive guess: pressing it at the
+# title screen with no profile signed in opens the Xbox Live sign-in blade,
+# which covers the game for a while and cannot be completed on this setup.
+# START costs nothing anywhere, so try it three times before risking one A.
+UNKNOWN_BUTTONS = ("START", "START", "START", "A")
 
 # Screens the title reaches on its own; pressing at them only restarts a video.
 PATIENT = {"main_menu", "fut_loader", "profile_chooser"}
