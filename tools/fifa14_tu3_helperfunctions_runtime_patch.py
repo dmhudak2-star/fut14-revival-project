@@ -183,18 +183,19 @@ def scan_once(
     for base, size, _protection in (
         candidates(client) if regions is None else regions
     ):
+        # Walk the region from its top.  The heap is one ~200 MiB block and
+        # every APT sighting so far sat in its last sixth, so starting at the
+        # bottom spends minutes on memory that has never held it.
         tail = b""
-        offset = 0
-        while offset < size:
+        for offset in reversed(range(0, size, chunk_size)):
             amount = min(chunk_size, size - offset)
             try:
                 chunk = client.read(base + offset, amount)
             except Exception:
                 tail = b""
-                offset += amount
                 continue
-            window = tail + chunk
-            window_base = base + offset - len(tail)
+            window = chunk + tail
+            window_base = base + offset
             cursor = 0
             while True:
                 found = window.find(SIGNATURE, cursor)
@@ -204,8 +205,8 @@ def scan_once(
                 if apt >= base and apt + APT_SIZE <= base + size and apt not in hits:
                     hits.append(apt)
                 cursor = found + 1
-            tail = window[-overlap:]
-            offset += amount
+            # Overlap the *lower* neighbour, since we are moving downwards.
+            tail = window[:overlap]
     return hits
 
 
