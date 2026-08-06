@@ -1445,6 +1445,47 @@ class IdentityHttpService:
                         },
                     )
                     return
+                if (
+                    normalized_path == "/ut/game/fifa14/user"
+                    and self.command == "GET"
+                ):
+                    # FutGetUserInfoServerResponse zeroes every account field
+                    # and treats all members as optional, so an empty object
+                    # keeps its no-user defaults without inventing a club,
+                    # inventory, currency or squad.  Matching stays
+                    # method-specific: a later create-user POST to the same
+                    # path must remain unhandled until it is observed.
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    owner.journal.event(
+                        "fut_user_info_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    return
+                if normalized_path == "/ut/game/fifa14/match/reset":
+                    self.reply(
+                        200,
+                        b'{"reset":true}\n',
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    owner.journal.event(
+                        "fut_match_reset_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    return
                 if normalized_path == "/ut/game/fifa14/settings":
                     # Field names recovered from FIFA 14's FutSettings parser.
                     # clubCreateThreshold stays at zero so a brand-new account
