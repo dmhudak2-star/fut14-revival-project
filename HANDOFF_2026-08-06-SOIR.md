@@ -169,10 +169,55 @@ emprunté, et renverra l'enquête vers le front-end.
 
 ### Ce qui est solidement établi
 
-Le bootstrap FUT ne reçoit jamais de résultat de login CardHouse : le
-dispatcher n'est pas atteint, aucune frame du composant 2148 n'est émise,
-aucune requête HTTP ne suit `accountinfo`, aucune route non gérée n'est
-demandée, et le hook `connect` ne compte aucune connexion supplémentaire.
+Le dispatcher de résultats n'est pas atteint, aucune frame du composant 2148
+n'est émise, aucune requête HTTP ne suit `accountinfo`, aucune route non gérée
+n'est demandée, et le hook `connect` ne compte aucune connexion supplémentaire.
+
+En revanche — et cela corrige une affirmation antérieure de ce document — **le
+login est bien émis**. Voir la section suivante.
+
+## La table d'API native FUT, et le login effectivement appelé
+
+L'initialiseur `0x89107480` construit la surface FUT de CardsDLL sous forme
+d'enregistrements de 12 octets `{?, handler, nom}`. Reconstruite statiquement
+depuis l'image du module, elle donne **75 opérations nommées**, dont toute la
+route vers un premier match :
+
+| Opération | Handler |
+| --- | --- |
+| `LoginToFUT` | `0x89105D18` |
+| `FirstTimeInit` | `0x89105D50` |
+| `GetIdentityData` | `0x89105EA0` |
+| `CardsDownloaded` | `0x89105E68` |
+| `CreateClub` | `0x891061E0` |
+| `CreateMatch` | `0x89106218` |
+| `ServiceQuickMatch` | `0x89106130` |
+| `MatchReady` | `0x89226270` |
+
+`tools/fifa14_fut_api_trace.py` trace n'importe laquelle de ces opérations par
+son nom, avec un mode `arm-on-load` qui s'arme sur la notification `modload` de
+CardsDLL pour ne pas rater le premier appel.
+
+Mesure en direct :
+
+```text
+LoginToFUT invocations = 1
+     0  r3=0xBD9DE7B0 r4=0x00000000 r5=0xBD9DE744 lr=0x824112FC
+FUT service object = 0xB5AA3018
+```
+
+Le front-end appelle donc bien `LoginToFUT`, une fois, depuis `0x824112FC` dans
+`default.xex`. Le service vivant est `0xB5AA3018`, de vtable `0x89008E90`, et
+`LoginToFUT` en invoque le slot `+0x04`, soit `0x8908D350`.
+
+Le désassemblage de `0x8908D350` montre une méthode **synchrone** : elle monte
+l'état local via `0x8909EA30`, `0x8909DD90` et `0x8909EBD8` — les mêmes routines
+que celles qui entourent le constructeur du manager FUT — puis émet un
+enregistrement de télémétrie `_global` / `LoginToFUT`. Elle n'attend aucune
+réponse serveur.
+
+Autrement dit, `LoginToFUT` est une initialisation locale, et l'opération en
+ligne qui devrait suivre est ailleurs dans cette même table.
 
 Corrélé côté réseau, sur toute la session : une seule connexion Blaze, aucune
 frame du composant 2148, aucune requête HTTP après `accountinfo`, aucune route
@@ -206,23 +251,19 @@ connecté ». Le sous-système EASFC de `powdllzf` et le bootstrap FUT de
 
 ## Prochaine correction recommandée
 
-La question n'est plus « pourquoi le login échoue » mais « pourquoi le login
-n'est jamais émis ». Le point de mesure suivant est donc l'émetteur, pas le
-récepteur.
+La table d'API rend la suite mécanique plutôt qu'exploratoire. `LoginToFUT`
+passe ; il faut maintenant savoir quelle opération suivante est appelée, et
+laquelle ne revient pas.
 
-1. Trouver qui **devrait** poster le message `0x65` au dispatcher `0x8911A998`.
-   Le dispatcher est un consommateur de résultats ; son producteur est
-   l'opération CardHouse `Login`. Repérer la méthode qui construit cette
-   opération dans CardsDLL et y poser un hook passif du même type que
-   `tools/fifa14_cards_message_dispatch_trace.py`, pour savoir si elle est
-   appelée, et si oui où elle s'arrête avant d'atteindre le transport Blaze.
-2. Vérifier comment CardsDLL obtient son point de connexion CardHouse. Le
-   composant 2148 est bien annoncé dans notre `CIDS`, mais aucune frame ne part
-   et aucune seconde connexion Blaze n'est ouverte. Si CardsDLL attend une
-   valeur de configuration (`fetch_config`) ou une adresse que le serveur local
-   ne fournit pas, l'opération peut ne jamais être construite.
-   `ZamboniUltimateTeam` implémente ce composant pour NHL/HUT et reste la
-   référence la plus proche du protocole attendu.
+1. Tracer dans l'ordre, avec `arm-on-load`, les opérations qui suivent le login :
+   `FirstTimeInit`, `GetIdentityData`, `CardsDownloaded`. La première qui n'est
+   jamais appelée, ou qui est appelée sans jamais rendre la main, désigne le
+   blocage exactement. C'est une mesure par opération, sans rétro-ingénierie
+   supplémentaire.
+2. Le service FUT vivant est `0xB5AA3018`, vtable `0x89008E90`. Ses seize
+   premiers slots sont relevés dans `docs/STATUS.md` ; le slot `+0x04` est le
+   login. Les slots voisins couvrent le reste du cycle et se tracent de la même
+   façon si besoin.
 3. Le compteur `this+0x48` ne doit pas être neutralisé pour faire disparaître le
    popup : il ne ferait que masquer l'attente sans la résoudre.
 

@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import argparse
 import re
+import select
+import time
 
+from fifa14_early_redirector_patch import Connection
 from fifa14_plain_send_hook import (
     Xbdm,
     add,
@@ -162,16 +165,92 @@ def read_journal(client: Xbdm, operation: str) -> None:
     print(f"FUT service object = 0x{service:08X}")
 
 
+def apply_trace(client: Xbdm, site: int, state: str) -> None:
+    desired = build_stub(site)
+    if state == "armed":
+        client.write(site, ORIGINAL)
+        if client.read(site, 4) != ORIGINAL:
+            raise RuntimeError("Could not unpublish the previous trace")
+    existing = client.read(STUB, STUB_SIZE)
+    if existing not in (bytes(STUB_SIZE), desired):
+        raise RuntimeError("FUT API trace cave is not free")
+
+    write_chunks(client, JOURNAL, bytes(JOURNAL_SIZE))
+    write_chunks(client, STUB, desired)
+    if client.read(STUB, STUB_SIZE) != desired:
+        raise RuntimeError("FUT API trace stub verification failed")
+    client.write(site, site_patch(site))
+    if hook_state(client, site) != "armed":
+        raise RuntimeError("FUT API trace hook verification failed")
+
+
+def arm_on_load(host: str, operation: str, site: int, timeout: float) -> int:
+    """Arm the trace on the CardsDLL modload notification.
+
+    CardsDLL is mapped only when the title enters FUT, and the first
+    ``LoginToFUT`` call follows within moments.  Stopping the title on the
+    module notification is the only way to observe that first call rather than
+    the state a second attempt sees.
+    """
+    notify = Connection(host)
+    control: Connection | None = None
+    stopped = False
+    try:
+        notify.command(
+            'debugger connect override name="FIFAFutApiTrace" user="CodexMac"'
+        )
+        notify.command("notify reconnectport=1", expected=205)
+        control = Connection(host)
+        print(f"Waiting for {MODULE_NAME}. Select FUT now.", flush=True)
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([notify.sock], [], [], 1)
+            if not readable:
+                continue
+            event = notify.line()
+            lowered = event.lower()
+            if "modload" not in lowered or "cardsdllzf.xex.dll" not in lowered:
+                continue
+            if f"base=0x{MODULE_BASE:08x}" not in lowered:
+                raise RuntimeError(f"Unexpected {MODULE_NAME} base: {event}")
+
+            print(f"Module event: {event}", flush=True)
+            control.command("stop")
+            stopped = True
+            apply_trace(control, site, hook_state(control, site))
+            print(
+                f"Verified: passive {operation} trace armed at module load.",
+                flush=True,
+            )
+            control.command("go")
+            stopped = False
+            return 0
+        raise TimeoutError(f"{MODULE_NAME} modload was not observed")
+    finally:
+        if stopped and control is not None:
+            control.command("go")
+        if control is not None:
+            control.sock.close()
+        notify.sock.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("host")
-    parser.add_argument("action", choices=("status", "apply", "restore", "read"))
+    parser.add_argument(
+        "action",
+        choices=("status", "apply", "restore", "read", "arm-on-load"),
+    )
     parser.add_argument(
         "--operation", choices=sorted(OPERATIONS), default="LoginToFUT"
     )
+    parser.add_argument("--timeout", type=float, default=600)
     args = parser.parse_args()
 
     site = OPERATIONS[args.operation]
+    if args.action == "arm-on-load":
+        return arm_on_load(args.host, args.operation, site, args.timeout)
     client = Xbdm(args.host)
     try:
         verify_module(client)
@@ -196,22 +275,7 @@ def main() -> int:
             print(f"Verified: original {args.operation} handler restored.")
             return 0
 
-        desired = build_stub(site)
-        if state == "armed":
-            client.write(site, ORIGINAL)
-            if client.read(site, 4) != ORIGINAL:
-                raise RuntimeError("Could not unpublish the previous trace")
-        existing = client.read(STUB, STUB_SIZE)
-        if existing not in (bytes(STUB_SIZE), desired):
-            raise RuntimeError("FUT API trace cave is not free")
-
-        write_chunks(client, JOURNAL, bytes(JOURNAL_SIZE))
-        write_chunks(client, STUB, desired)
-        if client.read(STUB, STUB_SIZE) != desired:
-            raise RuntimeError("FUT API trace stub verification failed")
-        client.write(site, site_patch(site))
-        if hook_state(client, site) != "armed":
-            raise RuntimeError("FUT API trace hook verification failed")
+        apply_trace(client, site, state)
         print(f"Verified: passive {args.operation} trace armed.")
         return 0
     finally:

@@ -91,6 +91,12 @@ ACTIONS = {
 # Screens the title reaches on its own; pressing at them only restarts a video.
 PATIENT = {"main_menu", "fut_loader"}
 
+# Skipping an attract video reveals the title screen for only a couple of
+# seconds before the next one starts.  Polling at the settled cadence lands
+# mid-video every time and loops forever, so unknown frames are re-checked
+# quickly enough to catch that window.
+SKIP_INTERVAL = 2.5
+
 
 def signature(width: int, height: int, rgb: bytes) -> bytes:
     """Reduce a frame to an average-colour grid, independent of resolution."""
@@ -174,7 +180,7 @@ def navigate(
         button = ACTIONS.get(screen)
         if button is not None:
             press(host, button, frames)
-        time.sleep(interval)
+        time.sleep(SKIP_INTERVAL if screen == "unknown" else interval)
     raise TimeoutError(f"{target} was not reached before timeout")
 
 

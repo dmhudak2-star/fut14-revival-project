@@ -62,10 +62,53 @@ the dialog may come from the FUT front-end resolving the same key without
 `0x8909F448` running at all. The dispatch trace now also records that routine,
 so the next reproduction settles it.
 
-What is solid is that the FUT bootstrap never receives a CardHouse login result:
-the dispatcher is not reached, the console opens a single Blaze connection,
-sends no component 2148 frame, issues no HTTP after `accountinfo`, requests no
-unmodelled route, and the connect hook counts no additional connection.
+What is solid is that the result dispatcher is not reached, the console opens a
+single Blaze connection, sends no component 2148 frame, issues no HTTP after
+`accountinfo`, requests no unmodelled route, and the connect hook counts no
+additional connection.
+
+## 2026-08-06 CardsDLL FUT API table
+
+The initializer at `0x89107480` builds CardsDLL's FUT surface as 12-byte
+records holding a handler and the operation name. Reconstructed statically from
+the module image it yields 75 named operations, including the whole path a
+first match needs:
+
+| Operation | Handler |
+| --- | --- |
+| `LoginToFUT` | `0x89105D18` |
+| `FirstTimeInit` | `0x89105D50` |
+| `GetIdentityData` | `0x89105EA0` |
+| `CardsDownloaded` | `0x89105E68` |
+| `CreateClub` | `0x891061E0` |
+| `CreateMatch` | `0x89106218` |
+| `ServiceQuickMatch` | `0x89106130` |
+| `MatchReady` | `0x89226270` |
+
+Tracing `LoginToFUT` from the CardsDLL modload notification shows the front-end
+does call it, once, from `0x824112FC` in `default.xex`:
+
+```text
+LoginToFUT invocations = 1
+     0  r3=0xBD9DE7B0 r4=0x00000000 r5=0xBD9DE744 lr=0x824112FC
+FUT service object = 0xB5AA3018
+```
+
+The live service object is `0xB5AA3018` with vtable `0x89008E90`, whose slots
+are:
+
+```text
++0x00 0x8908F5E0   +0x10 0x8908B540   +0x20 0x8908F630   +0x30 0x8908D5A0
++0x04 0x8908D350   +0x14 0x8908B518   +0x24 0x8908ED78   +0x34 0x8908FD28
++0x08 0x8908D3D0   +0x18 0x8908D438   +0x28 0x8908B568   +0x38 0x89090270
++0x0C 0x8908B4F0   +0x1C 0x8908D4A8   +0x2C 0x8908D520   +0x3C 0x890906B0
+```
+
+`LoginToFUT` dispatches through slot `+0x04`, `0x8908D350`. That method is
+synchronous: it builds local state through `0x8909EA30`, `0x8909DD90` and
+`0x8909EBD8` — the routines surrounding the FUT manager constructor — then emits
+a `_global` / `LoginToFUT` telemetry record. It waits for no server reply, so
+the online step that should follow is a different entry in the same table.
 
 One further live observation separates two distinct end states. Applying the TU3
 `helperFunctions` patch before selecting FUT leads to the error dialog; when the

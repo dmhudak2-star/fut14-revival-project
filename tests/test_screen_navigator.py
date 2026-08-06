@@ -97,3 +97,10 @@ def test_pulse_rejects_unusable_requests() -> None:
         virtual_input.pulse(None, "A", 0)
     with pytest.raises(RuntimeError):
         virtual_input.pulse(None, "A", 121)
+
+
+def test_attract_frames_are_rechecked_faster_than_settled_screens() -> None:
+    # A skip only reveals the title screen for a couple of seconds; polling at
+    # the settled cadence would skip the next video instead and loop forever.
+    assert navigator.SKIP_INTERVAL < 4
+    assert navigator.ACTIONS["unknown"] == "START"
