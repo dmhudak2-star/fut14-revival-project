@@ -4,7 +4,7 @@ Research toolkit and technical notes for restoring the FIFA 14 Ultimate Team
 front-end on a personally owned Xbox 360 RGH/JTAG after the official services
 were shut down.
 
-> **Status — 2026-08-03:** active research prototype. A local Blaze 3 server
+> **Status — 2026-08-05:** active research prototype. A local Blaze 3 server
 > now completes the title's native redirector, PreAuth, Authentication2,
 > PostAuth and UserSessions path. Passive Xbox traces observed the retail game
 > publish both `EVENT_BOOT_LOGIN_SUCCESS` and `EVENT_LOGIN_SUCCESS`; this is no
@@ -17,6 +17,13 @@ were shut down.
 > newest blocker in the asynchronous ION exit from the main-menu `FluxHub`:
 > the screen is left in an `unload` request with `ToFe`, while `futLauncher`,
 > `FUTStartUp`, CardsDLL loading and the first CardHouse request are not reached.
+> A comparison with the public Zamboni NHL 14 server and Aim4Kill's
+> Bug_OldProtoSSL research exposed one remaining transport divergence: the
+> earlier launcher forced `standardInsecure_v3` and served port `42127` in
+> plaintext, whereas the preserved retail path uses `xbox360Secure_v3` and a
+> TLS redirector. Native TLS 1.0 redirector support and the legacy certificate
+> workaround are now implemented locally; validation by one cold Xbox run is
+> pending.
 > The project still does not reach a usable FUT menu or persist a club.
 
 This repository contains only original research scripts, documentation and
@@ -70,7 +77,8 @@ The investigation has crossed several distinct boundaries:
 | --- | --- |
 | Xbox/XBDM access | Confirmed; stable module, memory and file inspection over TCP 730 |
 | Natural EA traffic | Confirmed; the original failure is not explained by a simple local firewall block |
-| Local redirector and plaintext sockets | Confirmed through the title's real DirtySock/XNet connect path |
+| Local redirector and plaintext diagnostic sockets | Confirmed through the title's real DirtySock/XNet connect path |
+| Native TLS redirector (`xbox360Secure_v3`) | Implemented and locally handshake-tested; cold Xbox validation pending |
 | Blaze PreAuth | Confirmed; supported build accepts the FIFA 14 Xbox response |
 | Authentication2 | Confirmed; local OAuth code and native Blaze login complete |
 | PostAuth and UserSessions | Confirmed; PostAuth, authenticated user, UserAdded and extended-data notifications are consumed |
@@ -267,7 +275,9 @@ The paired launcher, `tools/fifa14_early_local_server.py`, waits for XBDM's
 title executes. It combines:
 
 - local endpoint redirection for Blaze and identity HTTP;
-- scoped plaintext/unsecure handling for local test sockets;
+- scoped XNet security handling for local LAN sockets;
+- either the earlier plaintext redirector mode or the native retail
+  `xbox360Secure_v3` TLS redirector mode;
 - XNet startup handling required by this retail build;
 - passive PostAuth, UserAdded and native login-state traces;
 - strict supported-build and original-byte validation.
@@ -316,13 +326,28 @@ This is an investigation runbook, not a one-command installer. Read
 [`docs/SAFETY.md`](docs/SAFETY.md) before any mutating step. Keep the console
 and research computer on the same trusted private LAN.
 
-### 1. Start the local server
+### 1. Generate the legacy redirector certificate
+
+The native TLS experiment follows the public
+[Bug_OldProtoSSL](https://github.com/Aim4kill/Bug_OldProtoSSL) method used by
+[Zamboni3](https://github.com/ZamboniDevelopment/Zamboni3). Generate a local
+test certificate; generated keys remain ignored under `runtime/`:
+
+```bash
+python3 tools/generate_old_protossl_certificate.py \
+  --output runtime/old-protossl
+```
+
+### 2. Start the local server
 
 From the repository root, substitute the Mac/research-host IP:
 
 ```bash
 python3 server/fifa14_blaze_server.py \
   --advertise RESEARCH_HOST_IP \
+  --redirector-tls-ports 42124,42126,42127 \
+  --redirector-tls-cert runtime/old-protossl/gosredirector-old-protossl.crt.pem \
+  --redirector-tls-key runtime/old-protossl/gosredirector.key.pem \
   --journal runtime/live-blaze.jsonl \
   --account-state runtime/local-account.json
 ```
@@ -330,7 +355,7 @@ python3 server/fifa14_blaze_server.py \
 The default listeners are `10041`, `42124`, `42126` and `42127`; the local
 identity endpoint uses `18080`. Do not expose these listeners to the Internet.
 
-### 2. Arm before title execution
+### 3. Arm before title execution
 
 Leave FIFA 14 unloaded in XeXMenu, then run:
 
@@ -338,6 +363,7 @@ Leave FIFA 14 unloaded in XeXMenu, then run:
 python3 tools/fifa14_early_local_server.py XBOX_IP \
   --local-ip RESEARCH_HOST_IP \
   --timeout 300 \
+  --redirector-transport tls \
   --trace-login-flow
 ```
 
@@ -345,7 +371,7 @@ Wait until it prints `Waiting for default.xex`, then launch FIFA 14 once. The
 script must observe the module-load event and finish with verified patch/trace
 messages before the title is tested.
 
-### 3. Observe title login before FUT
+### 4. Observe title login before FUT
 
 At the main menu, do not click FUT immediately. Confirm that the launcher trace
 contains the boot login-success publication and that the server journal shows
@@ -357,7 +383,7 @@ Read the passive journal without changing game state:
 python3 tools/fifa14_ea_login_state_trace.py XBOX_IP read
 ```
 
-### 4. Make one natural FUT attempt
+### 5. Make one natural FUT attempt
 
 Select Ultimate Team once. Record the exact visible result and the elapsed
 time. Do not send navigation events or suppress a popup. Then read the passive
@@ -366,7 +392,7 @@ trace again and inspect only the new server journal entries.
 The immediate success criterion for the next run is a first CardHouse request,
 especially `2148:101`. A loader alone is evidence of progress, not completion.
 
-### 5. End an observation cleanly
+### 6. End an observation cleanly
 
 Return to the dashboard before changing hook code or endpoint behavior. Runtime
 patches disappear when the title unloads. Keep `runtime/*.jsonl` locally for
@@ -417,6 +443,8 @@ The current server-side code is intentionally small and inspectable:
 - `tools/blaze_tdf.py` parses and builds the subset of TDF used in experiments;
 - `server/fifa14_blaze_server.py` provides redirector, Blaze core and local
   identity services with typed responses and JSONL journaling;
+- `tools/generate_old_protossl_certificate.py` generates the private legacy
+  TLS redirector certificate used only on the trusted LAN;
 - `tools/fifa14_early_local_server.py` applies the guarded volatile redirect
   before title execution and can arm passive login-flow traces;
 - `tools/fifa14_connect_redirect.py` implements the scoped DirtySock/XNet
@@ -493,15 +521,18 @@ See [`docs/SAFETY.md`](docs/SAFETY.md) for recovery procedures.
 
 ## Next research steps
 
-The next useful experiment is one cold passive ION comparison:
+The next useful experiment is one cold native-transport run:
 
-1. leave the current local server running with a fresh journal boundary;
-2. arm `fifa14_early_local_server.py --trace-login-flow` while FIFA is unloaded;
-3. launch the supported build from XeXMenu and verify native boot-login success;
-4. at the main menu, arm the four-point ION LoadView pipeline journal;
-5. select FUT once and read the enqueue, action, state and completion records;
-6. identify the first missing native stage without publishing an event or
-   changing a return value;
+1. serve redirector ports `42124`, `42126` and `42127` with the generated
+   OldProtoSSL certificate and keep core `10041` plaintext as advertised by
+   `SECU=0`;
+2. arm `fifa14_early_local_server.py --redirector-transport tls` before FIFA;
+3. verify a `tls_connected` journal entry followed by the native Redirector
+   request and response;
+4. verify the title reconnects to plaintext core `10041` and completes its
+   normal login sequence;
+5. select FUT once, without publishing a frontend event;
+6. compare the resulting native route against the earlier plaintext run;
 7. continue to treat a client-originated `CardHouse.Login` (`2148:101`) as the
    next protocol success criterion.
 

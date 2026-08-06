@@ -56,10 +56,8 @@ PROBES = (
     Probe("enterfut2_handler", 0x828350C8, "7D8802A6", "event"),
     Probe("ion_send_nav_event", 0x82805C10, "7D8802A6", "event"),
     Probe("ion_flow_action_dispatch", 0x83622D20, "7D8802A6", "event"),
-    # Deeper stock ION routes.  Normal retail navigation can bypass the
-    # convenience wrapper above and call the core sender or another overload
-    # of the flow-action dispatcher directly.
-    Probe("ion_core_send_event", 0x8288D9F0, "7D8802A6", "event"),
+    # Deeper stock ION routes.  The core sender at 0x8288D9F0 is owned by the
+    # provider/publication ring trace when these diagnostics coexist.
     Probe("ion_dispatch_v18", 0x83622C38, "7D8802A6", "event"),
     Probe("ion_dispatch_v1c", 0x83622CB8, "7D8802A6", "event"),
     # The retail main-menu SWF enters the native navigation graph through
@@ -67,12 +65,9 @@ PROBES = (
     # (controller, screen-id, event-name, payload), so r5 identifies whether
     # the tile really submitted LaunchFUT before any flow action runs.
     Probe("screen_controller_handle_event", 0x82B00198, "7D8802A6", "event"),
-    # Retail mainfeflow.nav enters futLauncher and executes the built-in
-    # sendScreenEvent action with FUTStartUp.  This action handler is separate
-    # from SendNavEvent and the flow-action dispatchers above.  Recording its
-    # ABI arguments proves whether the native launcher really publishes the
-    # screen event, without synthesising it or changing its result.
-    Probe("ion_send_screen_event_action", 0x8288BF68, "7D8802A6", "event"),
+    # The generic UX method bridge at 0x8288BF68 is owned by the dedicated FUT
+    # launcher transition trace.  Keeping a single owner per entry permits all
+    # passive startup traces to be armed together.
 )
 
 
