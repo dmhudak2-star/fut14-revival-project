@@ -72,11 +72,18 @@ python3 tools/xbox360_virtual_input.py "$XBOX" press A --frames 12 >/dev/null 2>
 wait $arm_pid
 cat runtime/cycle-arm.log
 
-print "== settle"
-sleep 200
+# The FUT API journal lives inside CardsDLL, so it can only be read while that
+# module is loaded.  When the bootstrap gives up, FUT unloads it and a single
+# late read returns nothing but "module missing" -- which is indistinguishable
+# from the operations never having been called.  Sample while it is still up.
+for at in 60 130 200; do
+    print "== read at ${at}s"
+    sleep $(( at == 60 ? 60 : 70 ))
+    python3 tools/fifa14_fut_api_trace.py "$XBOX" read 2>&1
+    python3 tools/fifa14_screen_navigator.py "$XBOX" identify 2>&1
+done
 
-print "== read"
-python3 tools/fifa14_fut_api_trace.py "$XBOX" read 2>&1
+# This one is in default.xex and survives FUT unloading, so it is read last.
+print "== read notification bus"
 python3 tools/fifa14_fut_notification_listener_trace.py "$XBOX" read 2>&1
-python3 tools/fifa14_screen_navigator.py "$XBOX" identify 2>&1
 print "== CYCLE_DONE"
