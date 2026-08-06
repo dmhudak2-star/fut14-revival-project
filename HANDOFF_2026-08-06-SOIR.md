@@ -249,6 +249,44 @@ titre, avant tout clic FUT, et le menu affiche malgré tout « EAS FC non
 connecté ». Le sous-système EASFC de `powdllzf` et le bootstrap FUT de
 `CardsDLLzf` sont donc deux clients distincts du même serveur local.
 
+## Le blocage exact : la requête `0xDF` de `FirstTimeInit`
+
+En armant toutes les opérations tracées sur la notification `modload` de
+CardsDLL puis en sélectionnant FUT, la séquence complète tient en un run :
+
+```text
+LoginToFUT             1 call(s)   lr=0x824112FC
+FirstTimeInit          1 call(s)   lr=0x824112FC
+GetIdentityData        never called
+CardsDownloaded        never called
+CreateClub             never called
+CreateMatch            never called
+...                    never called
+FUT service object = 0xB5AA7018
+```
+
+Le front-end appelle exactement **deux** opérations, puis s'arrête.
+`GetIdentityData`, étape suivante du parcours first-use retail, n'est jamais
+atteinte, et le dialogue d'erreur suit.
+
+`FirstTimeInit` est le slot vtable `+0x08`, soit `0x8908D3D0`. Contrairement à
+`LoginToFUT` qui est purement local, il **émet une requête** :
+
+```text
+bl 0x89185500          ; manager
+bl 0x8908CA10          ; objet de requête
+li r4, 0xDF            ; identifiant d'opération 223
+vtable+0x4C(r31, 0xDF) ; soumission
+vtable+0x04(r31)       ; libération
+```
+
+Le blocage tient donc en une seule requête nommée : l'opération `0xDF` soumise
+via le slot `+0x4C`. Rien ne lui succède, et aucune route HTTP ni frame Blaze
+correspondante n'atteint le serveur local.
+
+À noter : la table de noms d'opérations à `0x890A6980` ne couvre que les ids
+0..81, donc `0xDF` appartient à une autre énumération et reste à nommer.
+
 ## Prochaine correction recommandée
 
 La table d'API rend la suite mécanique plutôt qu'exploratoire. `LoginToFUT`

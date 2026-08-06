@@ -2,6 +2,58 @@
 
 Last updated: 2026-08-06.
 
+## 2026-08-06 the FUT bootstrap stops after FirstTimeInit
+
+Arming every traced operation of the CardsDLL FUT API on the module's `modload`
+notification, then selecting FUT, gives the whole sequence in one run:
+
+```text
+LoginToFUT             1 call(s)
+     0  r3=0xBD9DF12C r4=0x00000000 r5=0xBD9DF108 lr=0x824112FC
+FirstTimeInit          1 call(s)
+     0  r3=0xBD9DF12C r4=0x00000000 r5=0xBD9DF140 lr=0x824112FC
+GetIdentityData        never called
+GetUserStatsData       never called
+CardsDownloaded        never called
+CreateClub             never called
+CreateMatch            never called
+ServiceQuickMatch      never called
+ServiceCreateSession   never called
+GetRandomOpponent      never called
+FinalShutdown          never called
+FUT service object = 0xB5AA7018
+```
+
+The front-end calls exactly two operations, both from `0x824112FC` in
+`default.xex`, and then stops. `GetIdentityData` — the next step of the retail
+first-use flow — is never reached, and the retail error dialog follows.
+
+`FirstTimeInit` resolves to vtable slot `+0x08`, `0x8908D3D0`. Unlike
+`LoginToFUT`, which is purely local, it issues a request:
+
+```text
+0x8908D3E0  bl 0x89185500      ; manager
+0x8908D3EC  bl 0x8908CA10      ; obtain the request object
+0x8908D3F0  li r4, 0xDF        ; operation id 223
+0x8908D404  vtable+0x4C(r31, 0xDF)
+0x8908D418  vtable+0x04(r31)   ; release
+```
+
+So the boundary is now a single named request: operation `0xDF` submitted
+through slot `+0x4C` of the object `0x8908CA10` returns. Nothing follows it, and
+no HTTP route or Blaze frame corresponding to it reaches the local server.
+
+Note the id space: the operation-name table at `0x890A6980` covers ids 0..81, so
+`0xDF` belongs to a different enumeration and still needs a name.
+
+Two practical notes from the same session. The TU3 `helperFunctions` APT moves
+with the heap: after signing in a different profile it left its usual
+`0xBDD7xxxx` neighbourhood and no ordering heuristic found it quickly, while
+restoring the previous profile put it straight back. And Xbox Live connectivity
+is not required by any of this — the local server serves every route — but a
+console left retrying a failed Live sign-in blocks the dashboard before the
+title can start.
+
 ## 2026-08-06 FUT security first-use checkpoint
 
 The native Xbox Cards Authentication boundary is closed. A controlled run with
