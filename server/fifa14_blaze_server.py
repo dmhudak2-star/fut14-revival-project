@@ -205,6 +205,11 @@ class ClientState:
     peer: tuple[str, int]
     local_port: int
     gamertag: str = "OfflineFUT"
+    # The four-byte locale the client presents in PreAuth, e.g. "frFR".  The
+    # EASW gate compares its own locale against a downloaded allow-list before
+    # it will even build its authentication request, so echoing back exactly
+    # what this console reported is what opens that gate.
+    locale: str = ""
     xuid: int = 1
     email: str = "offline@localhost"
     authenticated: bool = False
@@ -276,6 +281,12 @@ class PersistentAccountStore:
             identity = self.data["identity"]
             return int(identity["persona_id"]), str(identity["persona_name"])
 
+
+# CardsDLL formats its authentication request as
+# ``{OSDK_EASW_AUTH_URL}/v2/authenticationNucleusPersona``.
+EASW_AUTH_PATH = "/v2/authenticationNucleusPersona"
+EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
+EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
 
 REQUEST_BODY_PREVIEW_LIMIT = 4096
 
@@ -417,11 +428,37 @@ class Fifa14Protocol:
     def identity_base(self) -> str:
         return f"http://{self.advertise}:{self.identity_port}"
 
-    def fetch_config(self, request: bytes, fields: list[Field]) -> bytes:
+    def fetch_config(
+        self,
+        request: bytes,
+        fields: list[Field],
+        state: ClientState | None = None,
+    ) -> bytes:
         config_id = find_field(fields, "CFID")
         name = str(config_id.value) if config_id is not None else ""
         values: list[tuple[str, str]] = []
-        if name == "IdentityParams":
+        if name == "OSDK_CORE":
+            # CardsDLL reads its EASW settings from this map, not OSDK_CLIENT.
+            # Two of them decide whether it ever speaks: with
+            # OSDK_EASW_ALLOWED_LOCALES absent the native gate falls back to
+            # "----" and refuses to build the authentication request at all,
+            # and without OSDK_EASW_AUTH_URL it has nowhere to send it.  The
+            # allow-list echoes the locale this console reported in PreAuth,
+            # so the gate matches without guessing a region.
+            fut_base = f"{self.identity_base}/"
+            locale = (state.locale if state is not None else "") or "enUS"
+            values = [
+                ("FUT_ENABLE_MENU", "1"),
+                ("OSDK_EASW_ALLOWED_LOCALES", locale),
+                ("OSDK_EASW_AUTH_URL", self.identity_base),
+                ("FUTBOOTCFGFILE_URL", f"{self.identity_base}/futBoot.xml"),
+                # Left unset, CardsDLL falls back to the retired
+                # easw.easports.com:8099 and pg.fifa13.test... hosts, both of
+                # which are still present as literals in the shipped DLL.
+                ("FUT_RS4_BASE_URL", fut_base),
+                ("FUTDYNAMICMESSAGES_URL_BASE", self.identity_base),
+            ]
+        elif name == "IdentityParams":
             # The Xbox Authentication2 bootstrap appends this map to
             # nucleusConnect/connect/auth, then looks redirect_uri up again
             # while parsing the HTTP redirect.
@@ -527,7 +564,25 @@ class Fifa14Protocol:
         )
         return response_frame(request, payload)
 
-    def preauth(self, request: bytes) -> bytes:
+    @staticmethod
+    def decode_locale(value: object) -> str:
+        """Return the printable four-character locale behind PreAuth's LANG."""
+        if not isinstance(value, int) or isinstance(value, bool):
+            return ""
+        if not 0 < value <= 0xFFFFFFFF:
+            return ""
+        try:
+            text = value.to_bytes(4, "big").decode("ascii")
+        except (UnicodeDecodeError, OverflowError):
+            return ""
+        return text if text.isalpha() else ""
+
+    def preauth(self, request: bytes, state: ClientState | None = None) -> bytes:
+        if state is not None:
+            language = find_field(decode_frame(request)["fields"], "LANG")
+            locale = self.decode_locale(language.value if language else None)
+            if locale:
+                state.locale = locale
         payload = encode_fields(
             [
                 Field("ANON", INTEGER, 0),
@@ -1016,7 +1071,7 @@ class Fifa14Protocol:
         if route == (REDIRECTOR, REDIRECTOR_GET_SERVER_INSTANCE):
             return [self.redirector(request)]
         if route == (UTIL, UTIL_PREAUTH):
-            return [self.preauth(request)]
+            return [self.preauth(request, state)]
         if route == (UTIL, UTIL_PING):
             return [self.ping(request)]
         if route == (UTIL, UTIL_POSTAUTH):
@@ -1054,7 +1109,7 @@ class Fifa14Protocol:
             )
             return [response_frame(request)]
         if route == (UTIL, UTIL_FETCH_CONFIG):
-            return [self.fetch_config(request, decoded["fields"])]
+            return [self.fetch_config(request, decoded["fields"], state)]
         if route == (UTIL, UTIL_USER_SETTINGS_LOAD_ALL):
             settings = self.account_store.load_all_settings()
             self.logger.event(
@@ -1318,6 +1373,35 @@ class IdentityHttpService:
                     normalized_path = "/ut/auth"
                 elif normalized_path.startswith("/game/fifa14/"):
                     normalized_path = "/ut" + normalized_path
+                if normalized_path == EASW_AUTH_PATH:
+                    # The native success parser reads these headers and hands
+                    # EASW-Session and EASW-Token to CardsDLL.  Supplying them
+                    # here is what the retail flow does; writing them straight
+                    # into the JSON builder's registers, as an earlier tool
+                    # did, satisfied that one constructor while leaving the
+                    # EASW session itself unestablished.
+                    owner.journal.event(
+                        "easw_auth_request",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        bytes=len(body),
+                        body=request_body_preview(body),
+                    )
+                    persona_id, _ = owner.account_store.load_identity()
+                    self.reply(
+                        200,
+                        b"",
+                        {
+                            "Content-Type": "text/plain",
+                            "Cache-Control": "no-store",
+                            "EASW-Token": EASW_TOKEN,
+                            "EASW-Session": EASW_SESSION,
+                            "EASW-Nucleus-Persona": str(persona_id),
+                            "EASW-Userid": str(persona_id),
+                        },
+                    )
+                    return
                 if normalized_path == "/ut/auth":
                     sid = "LOCAL-XBOX360-FIFA14-SID"
                     presented = auth_request_identity(body)

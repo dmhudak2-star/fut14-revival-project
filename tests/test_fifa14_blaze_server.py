@@ -453,6 +453,65 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(by_label(reloaded, "DATA").value, "1")
 
 
+    def test_preauth_locale_opens_the_easw_gate(self) -> None:
+        # PreAuth's LANG is the four-byte locale the EASW gate compares
+        # against, so OSDK_CORE must echo exactly what the console reported.
+        assert SERVER.Fifa14Protocol.decode_locale(0x66724652) == "frFR"
+        assert SERVER.Fifa14Protocol.decode_locale(0) == ""
+        assert SERVER.Fifa14Protocol.decode_locale("frFR") == ""
+        assert SERVER.Fifa14Protocol.decode_locale(0x00302D31) == ""
+
+        self.state.locale = "frFR"
+        response = self.protocol.fetch_config(
+            request(9, 1, [Field("CFID", STRING, "OSDK_CORE")]),
+            [Field("CFID", STRING, "OSDK_CORE")],
+            self.state,
+        )
+        config = dict(by_label(decode_frame(response), "CONF").value[2])
+        assert config["OSDK_EASW_ALLOWED_LOCALES"] == "frFR"
+        assert len(config["OSDK_EASW_ALLOWED_LOCALES"]) == 4
+        assert config["OSDK_EASW_AUTH_URL"].startswith("http://")
+        # Without this the DLL falls back to the retired easw.easports.com.
+        assert config["FUT_RS4_BASE_URL"].startswith("http://")
+
+    def test_osdk_core_falls_back_to_a_valid_locale(self) -> None:
+        response = self.protocol.fetch_config(
+            request(9, 1, [Field("CFID", STRING, "OSDK_CORE")]),
+            [Field("CFID", STRING, "OSDK_CORE")],
+            self.state,
+        )
+        config = dict(by_label(decode_frame(response), "CONF").value[2])
+        assert len(config["OSDK_EASW_ALLOWED_LOCALES"]) == 4
+
+    def test_easw_authentication_returns_the_session_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            journal_path = Path(temp) / "journal.jsonl"
+            journal = SERVER.Journal(journal_path)
+            store = SERVER.PersistentAccountStore()
+            store.save_identity(4242, "Local")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal, store
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request("POST", SERVER.EASW_AUTH_PATH, body=b"{}")
+                response = client.getresponse()
+                assert response.status == 200
+                assert response.getheader("EASW-Token") == SERVER.EASW_TOKEN
+                assert response.getheader("EASW-Session") == SERVER.EASW_SESSION
+                assert response.getheader("EASW-Nucleus-Persona") == "4242"
+                assert response.getheader("EASW-Userid") == "4242"
+                response.read()
+                client.close()
+            finally:
+                identity.stop()
+            assert '"event": "easw_auth_request"' in journal_path.read_text(
+                encoding="utf-8"
+            )
+
+
 class TcpServerTests(unittest.TestCase):
     def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
