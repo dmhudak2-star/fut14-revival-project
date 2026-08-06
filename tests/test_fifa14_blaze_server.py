@@ -495,20 +495,43 @@ class ProtocolTests(unittest.TestCase):
             identity.start()
             try:
                 port = identity.server.server_address[1]
-                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-                client.request("POST", SERVER.EASW_AUTH_PATH, body=b"{}")
-                response = client.getresponse()
-                assert response.status == 200
-                assert response.getheader("EASW-Token") == SERVER.EASW_TOKEN
-                assert response.getheader("EASW-Session") == SERVER.EASW_SESSION
-                assert response.getheader("EASW-Nucleus-Persona") == "4242"
-                assert response.getheader("EASW-Userid") == "4242"
-                response.read()
-                client.close()
+                # This Xbox build posts a signed form to /authentication360
+                # with a version query; the PC build posts JSON to the /v2
+                # path. Both have to answer with the same headers.
+                for path, body, content_type in (
+                    (
+                        "/authentication360?version=2.0.5.0",
+                        b"gamertag=Local&xuid=1&locale=fr_FR&skuid=FFA14XBX",
+                        "application/x-www-form-urlencoded",
+                    ),
+                    ("/v2/authenticationNucleusPersona", b"{}", "application/json"),
+                ):
+                    client = http.client.HTTPConnection(
+                        "127.0.0.1", port, timeout=2
+                    )
+                    client.request(
+                        "POST", path, body=body,
+                        headers={"Content-Type": content_type},
+                    )
+                    response = client.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(
+                        response.getheader("EASW-Token"), SERVER.EASW_TOKEN
+                    )
+                    self.assertEqual(
+                        response.getheader("EASW-Session"), SERVER.EASW_SESSION
+                    )
+                    self.assertEqual(
+                        response.getheader("EASW-Nucleus-Persona"), "4242"
+                    )
+                    self.assertEqual(response.getheader("EASW-Userid"), "4242")
+                    response.read()
+                    client.close()
             finally:
                 identity.stop()
-            assert '"event": "easw_auth_request"' in journal_path.read_text(
-                encoding="utf-8"
+            self.assertIn(
+                '"event": "easw_auth_request"',
+                journal_path.read_text(encoding="utf-8"),
             )
 
 

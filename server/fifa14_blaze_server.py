@@ -282,9 +282,12 @@ class PersistentAccountStore:
             return int(identity["persona_id"]), str(identity["persona_name"])
 
 
-# CardsDLL formats its authentication request as
-# ``{OSDK_EASW_AUTH_URL}/v2/authenticationNucleusPersona``.
-EASW_AUTH_PATH = "/v2/authenticationNucleusPersona"
+# CardsDLL formats its authentication request against OSDK_EASW_AUTH_URL.
+# The PC build posts JSON to ``/v2/authenticationNucleusPersona``; this Xbox
+# build posts a form to ``/authentication360`` with a ``version`` query and
+# its own EASW-* signature headers.  Accept both.
+EASW_AUTH_PATHS = ("/authentication360", "/v2/authenticationNucleusPersona")
+EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
 
@@ -1373,7 +1376,7 @@ class IdentityHttpService:
                     normalized_path = "/ut/auth"
                 elif normalized_path.startswith("/game/fifa14/"):
                     normalized_path = "/ut" + normalized_path
-                if normalized_path == EASW_AUTH_PATH:
+                if normalized_path in EASW_AUTH_PATHS:
                     # The native success parser reads these headers and hands
                     # EASW-Session and EASW-Token to CardsDLL.  Supplying them
                     # here is what the retail flow does; writing them straight
