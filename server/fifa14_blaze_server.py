@@ -158,9 +158,14 @@ FUT_BOOT_XML = b"""<?xml version="1.0" encoding="utf-8"?>
           <size>1</size>
         </Language>
       </revision>
+      <!-- The working reference implementation of this title serves 1/1 here,
+           where this server served 2/0.  This block carries the DLC key's
+           identity, and CardsDLLzf.xex.dll is never mapped on this console:
+           the title asks its XEX loader for nothing at all, which is what a
+           FUT DLC it does not consider present would look like. -->
       <key>
-        <dimeUniqueId>2</dimeUniqueId>
-        <futKeyType>0</futKeyType>
+        <dimeUniqueId>1</dimeUniqueId>
+        <futKeyType>1</futKeyType>
       </key>
     </fut12>
   </futDlc>
