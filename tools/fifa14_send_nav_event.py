@@ -25,6 +25,17 @@ EVENTS = {
     # This event exists in the active patched nav archive but not in static
     # default.xex rdata. JRPC2 supplies a temporary NUL-terminated byte array.
     "FUTStartUp": None,
+    # futLogInFlow.nav gives futLogIn1 four transitions. "advance" leads to
+    # futLogIn2, which is where the bootstrap stalls, and "createClub" leads to
+    # the FutCreateClub screen whose loading popup never clears. "iceBreaker"
+    # is the third, and it opens futIcebreakerFlow's futPackSelect -- the
+    # captain chooser -- whose pack list and captain names this project's
+    # server already serves. None of these strings are in static rdata.
+    "iceBreaker": None,
+    # futPackSelect leaves through GotoCreateClub, and createClub's own
+    # "advance" reaches futLogIn2, whose advance exits the flow to futGamehub.
+    "GotoCreateClub": None,
+    "changeClubName": None,
 }
 
 
