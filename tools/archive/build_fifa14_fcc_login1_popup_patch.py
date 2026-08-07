@@ -60,7 +60,9 @@ CONTEXT_SUFFIX = bytes.fromhex("12129d")
 SHOW = b"ShowLoadingIcon"
 HIDE = b"HideLoadingIcon"
 
-BH_BASE, BH_STRIDE = 20, 20
+# The index is a 16-byte header followed by 20-byte records:
+# 16 + 2433 * 20 is exactly cards0.bh's length.
+BH_BASE, BH_STRIDE = 16, 20
 
 
 def sha256(path: Path) -> str:
@@ -95,8 +97,7 @@ def read_directory(big: Path) -> list[tuple[int, int, int, int, str]]:
 def uncompressed_container(payload: bytes) -> bytes:
     """Wrap a decoded resource the way this archive's entries are wrapped."""
     return (
-        bytes(4)
-        + b"chunkunc"
+        b"chunkunc"
         + struct.pack(
             ">10I", 2, len(payload), 0x40000, 1, 0x10, 0, 0, 0, len(payload), 4
         )
@@ -153,11 +154,9 @@ def slot_capacity(entries: list, offset: int) -> int:
 def declare_new_length(stream) -> None:
     """Rewrite both length fields an appended archive must agree with.
 
-    A BIG4 archive states its own byte length twice: in the four bytes ahead
-    of the magic, and in the header word right after it, both little-endian.
-    Appending a relocated resource without updating them leaves the entry past
-    the declared end, where the loader will not read it -- which takes the
-    title down at boot rather than failing visibly.
+    A BIG4 archive states its own byte length in the header word after the
+    magic, little-endian.  Appending a relocated resource without updating it
+    leaves the entry past the declared end, where the loader will not read it.
     """
     import struct as _struct
 
@@ -168,8 +167,6 @@ def declare_new_length(stream) -> None:
     base = head.find(b"BIG4")
     if base < 0:
         raise RuntimeError("Not a BIG4 archive")
-    stream.seek(base - 4)
-    stream.write(_struct.pack("<I", length))
     stream.seek(base + 4)
     stream.write(_struct.pack("<I", length))
 

@@ -12,10 +12,9 @@ import lzx_decode
 
 
 def uncompressed_container(payload: bytes) -> bytes:
-    """The exact layout make_chunkunc.py writes, plus the four-byte prefix."""
+    """The layout an uncompressed entry has inside the archive."""
     return (
-        bytes(4)
-        + b"chunkunc"
+        b"chunkunc"
         + struct.pack(
             ">10I", 2, len(payload), 0x40000, 1, 0x10, 0, 0, 0, len(payload), 4
         )

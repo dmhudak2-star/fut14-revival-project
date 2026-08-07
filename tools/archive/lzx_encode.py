@@ -463,8 +463,7 @@ def encode_container(payload: bytes, window_bits: int = DEFAULT_WINDOW_BITS) -> 
         raise ValueError("Compressed frame does not fit its 16-bit length")
     frame = b"\xff" + struct.pack(">HH", len(payload), len(stream)) + stream
     return (
-        bytes(4)
-        + b"chunklzx"
+        b"chunklzx"
         + struct.pack(
             ">10I", 2, len(payload), 0x40000, 1, 0x10, 0, 0, 0, len(frame), 3
         )

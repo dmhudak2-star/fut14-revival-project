@@ -104,8 +104,8 @@ def test_the_block_type_matches_what_retail_emits() -> None:
     import struct
 
     container = lzx_encode.encode_container(b"abcabcabc" * 200)
-    _raw, packed = struct.unpack(">HH", container[53:57])
-    reader = lzx_decode.BitReader(container[57 : 57 + packed])
+    _raw, packed = struct.unpack(">HH", container[49:53])
+    reader = lzx_decode.BitReader(container[53 : 53 + packed])
     assert reader.read(1) == 0  # no E8 translation
     assert reader.read(3) == lzx_decode.ALIGNED
 

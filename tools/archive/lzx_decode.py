@@ -9,17 +9,16 @@ any other compressed entry on its own.
 
 Layout of the container::
 
-    0x00  u32   zero
-    0x04  8s    "chunklzx"
-    0x0C  u32   version (2)
-    0x10  u32   total uncompressed size
-    0x14  u32   chunk size (0x40000)
-    0x18  u32   chunk count
-    0x1C  u32   header size (0x10)
-    0x20  u32   reserved x3
-    0x2C  u32   stored size
-    0x30  u32   block type (3 = LZX)
-    0x34  ...   framed LZX blocks
+    0x00  8s    "chunklzx"
+    0x08  u32   version (2)
+    0x0C  u32   total uncompressed size
+    0x10  u32   chunk size (0x40000)
+    0x14  u32   chunk count
+    0x18  u32   header size (0x10)
+    0x1C  u32   reserved x3
+    0x28  u32   stored size
+    0x2C  u32   block type (3 = LZX)
+    0x30  ...   framed LZX blocks
 
 Each frame is ``FF <u16 uncompressed> <u16 compressed>`` followed by that many
 bytes of LZX bitstream.  The bitstream is read most-significant-bit first out
@@ -300,20 +299,20 @@ def decode_block(
 
 def decode_container(blob: bytes) -> bytes:
     """Decode a whole ``chunklzx``/``chunkunc`` container."""
-    magic = blob[4:12]
+    magic = blob[0:8]
     if magic == UNCOMPRESSED_MAGIC:
-        total = struct.unpack(">I", blob[16:20])[0]
-        return blob[52 : 52 + total]
+        total = struct.unpack(">I", blob[12:16])[0]
+        return blob[48 : 48 + total]
     if magic != MAGIC:
         raise ValueError(f"Not a chunk container: {magic!r}")
 
-    total, _chunk_size, chunk_count = struct.unpack(">III", blob[16:28])
-    block_type = struct.unpack(">I", blob[48:52])[0]
+    total, _chunk_size, chunk_count = struct.unpack(">III", blob[12:24])
+    block_type = struct.unpack(">I", blob[44:48])[0]
     if block_type != BLOCK_TYPE_LZX:
         raise ValueError(f"Unsupported chunk block type {block_type}")
 
     output = bytearray()
-    cursor = 52
+    cursor = 48
     for _ in range(chunk_count):
         if blob[cursor] != 0xFF:
             raise ValueError(f"Missing frame marker at {cursor:#x}")
