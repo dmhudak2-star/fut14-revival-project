@@ -78,6 +78,13 @@ print "== patch helperFunctions"
 python3 tools/fifa14_tu3_helperfunctions_runtime_patch.py "$XBOX" \
     --timeout 600 --chunk-size 0x800000 2>&1 | tail -1
 
+# Armed here rather than through the launcher's boot-time flags: arming the
+# ION pipeline and provider traces from the title's first instruction took the
+# console off the network entirely and needed a power cycle. At the menu the
+# same hooks go in against a running title, and only the one being measured.
+print "== arm ION action pipeline trace"
+python3 tools/fifa14_ion_action_pipeline_trace.py "$XBOX" apply 2>&1 | tail -1
+
 print "== arm FUT API traces on CardsDLL load"
 python3 tools/fifa14_fut_api_trace.py "$XBOX" arm-on-load --timeout 600 \
     > runtime/cycle-arm.log 2>&1 &
@@ -121,6 +128,9 @@ for at in 60 130 200; do
 done
 
 # This one is in default.xex and survives FUT unloading, so it is read last.
+print "== read ION action pipeline"
+python3 tools/fifa14_ion_action_pipeline_trace.py "$XBOX" read 2>&1 | tail -20
+
 print "== read notification bus"
 python3 tools/fifa14_fut_notification_listener_trace.py "$XBOX" read 2>&1
 print "== CYCLE_DONE"
