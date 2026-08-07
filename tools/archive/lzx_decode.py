@@ -311,6 +311,16 @@ def decode_container(blob: bytes) -> bytes:
     if block_type != BLOCK_TYPE_LZX:
         raise ValueError(f"Unsupported chunk block type {block_type}")
 
+    if chunk_count != 1:
+        # The single-chunk layout puts one (stored, block type) pair at 40 and
+        # the payload at 48.  A multi-chunk resource carries more than that,
+        # and no reading of the extra descriptors tried so far yields a
+        # plausible size for the second chunk -- so refuse rather than decode
+        # from the wrong offset and hand back plausible-looking noise.
+        raise ValueError(
+            f"Multi-chunk container ({chunk_count} chunks) is not understood"
+        )
+
     output = bytearray()
     cursor = 48
     for _ in range(chunk_count):
