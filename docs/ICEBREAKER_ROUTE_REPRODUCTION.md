@@ -37,6 +37,75 @@ That is consistent with the route patch doing its job too early: with
 `futLogIn1 / advance` pointing at `iceBreaker`, an `advance` that fires before
 `InitialLoginDone` lands on the captain selector instead of `futLogIn2`.
 
+## The seven minutes, from the journals
+
+Blaze bursts are collapsed per second and identical consecutive lines
+dropped; `cN` is a component id. Everything else is verbatim.
+
+```text
+14:55:50  blaze burst: c5x2, c9x18
+14:55:50  connected
+14:55:50  disconnected
+14:55:51  authentication2_login
+14:55:51  blaze burst: c1x4, c7x6, c9x20, c10x2, c11x4, c15x8, c21x2, c25x2, c35x2, c2076x2, c2249x4, c2268x2, c30722x9
+14:55:51  easw_auth_request
+14:55:51  identity_http_redirect
+14:55:51  HTTP GET /connect/auth
+14:55:51  HTTP POST /authentication360
+14:55:51  user_setting_load
+14:55:51  user_settings_load_all
+14:55:52  blaze burst: c9x2
+14:55:52  fut_boot_served
+14:55:52  HTTP GET /futBoot.xml
+14:55:52  user_setting_save
+14:56:12  blaze burst: c9x2
+14:56:15  fut_account_info_request
+14:56:15  HTTP GET /ut/game/fifa14/user/accountinfo
+14:56:32  blaze burst: c9x2
+15:03:35  fut_icebreaker_packlist_served
+15:03:35  HTTP GET /fut/packs/icebreaker/icebreakerpacklist.json
+15:03:37  blaze burst: c5x2
+15:03:37  connected
+15:03:37  connection_error
+15:03:37  disconnected
+15:03:41  authentication2_login
+15:03:41  blaze burst: c1x2, c7x6, c9x34, c10x2, c11x2, c15x6, c21x2, c25x2, c35x2, c2076x2, c2249x4, c2268x2, c30722x9
+15:03:41  connected
+15:03:41  easw_auth_request
+15:03:41  identity_http_redirect
+15:03:41  HTTP GET /connect/auth
+15:03:41  HTTP POST /authentication360
+15:03:41  user_settings_load_all
+15:03:42  blaze burst: c1x2, c9x6, c11x2, c15x2
+15:03:42  fut_boot_served
+15:03:42  HTTP GET /futBoot.xml
+15:03:42  user_setting_load
+15:03:42  user_setting_save
+15:04:02  blaze burst: c9x2
+15:04:08  fut_account_info_request
+15:04:08  HTTP GET /ut/game/fifa14/user/accountinfo
+15:04:22  blaze burst: c9x2
+15:11:28  disconnected
+15:11:30  identity_http_listening
+15:11:30  listening
+15:11:30  ready
+15:11:35  fut_icebreaker_packlist_served
+15:11:35  HTTP GET /fut/packs/icebreaker/icebreakerpacklist.json
+```
+
+Three things stand out.
+
+The client goes quiet for **seven minutes** after `accountinfo` at 14:56:15 —
+nothing but the two-frame Util keepalive every twenty seconds — and only then
+asks for the pack list.
+
+The pack list is followed two seconds later by `connection_error` and a
+dropped Blaze connection, then a complete re-bootstrap at 15:03:41. So the
+title did not sit on the captain selector: it asked for the data and fell over
+immediately.
+
+`/ut/auth` appears nowhere in the window. The FUT login never ran.
+
 ## Reproduction
 
 ```bash
