@@ -95,3 +95,24 @@ def test_planned_runs_cover_the_tree_exactly() -> None:
     lengths = [0] * 3 + [7] + [0] * 25 + [2, 2] + [0] * 60
     items = lzx_encode.plan_tree(lengths, [0] * len(lengths))
     assert sum(span for _symbol, _extra, span in items) == len(lengths)
+
+
+def test_the_block_type_matches_what_retail_emits() -> None:
+    # A verbatim block is legal LZX and this repository's decoder reads it,
+    # but the title freezes on one. The block type is matched to retail, not
+    # chosen, so a change here would be silent until the console froze again.
+    import struct
+
+    container = lzx_encode.encode_container(b"abcabcabc" * 200)
+    _raw, packed = struct.unpack(">HH", container[53:57])
+    reader = lzx_decode.BitReader(container[57 : 57 + packed])
+    assert reader.read(1) == 0  # no E8 translation
+    assert reader.read(3) == lzx_decode.ALIGNED
+
+
+def test_every_aligned_symbol_gets_a_code() -> None:
+    # Padding unused aligned lengths up to one after the fact produces eight
+    # one-bit codes, which is not a prefix code and desynchronises the
+    # decoder partway through the stream.
+    payload = b"".join(bytes([index % 251]) * 5 for index in range(400))
+    assert round_trip(payload) == payload

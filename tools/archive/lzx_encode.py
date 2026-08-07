@@ -7,11 +7,12 @@ the end of the archive and repointing its directory record boots the title to a
 black screen, so the patched bytes must re-compress to no more than the slot
 they came from.
 
-The output is a single verbatim block -- literals and matches through the main
-tree, long lengths through the length tree, both trees delta-coded through a
-pretree, exactly the shapes ``lzx_decode`` reads. Aligned-offset blocks and the
-E8 call translation are not emitted; neither is needed to fit, and every byte
-of this encoder has to be verifiable against the decoder.
+The output is a single aligned-offset block, which is what retail emits for
+these resources: literals and matches through the main tree, long lengths
+through the length tree, the low three bits of each large offset through an
+aligned tree, all delta-coded through a pretree. A verbatim block is a legal
+LZX stream and this repository's decoder reads it happily, but the title
+freezes on one, so the block type is matched to retail rather than chosen.
 
 Positions 0-2 of the position-slot space are the repeated-offset slots. A real
 distance encodes as ``distance + 2``, which is always at least 3, so those
@@ -36,6 +37,7 @@ from lzx_decode import (
     MIN_MATCH,
     POSITION_BASE,
     PRETREE_ELEMENTS,
+    ALIGNED,
     VERBATIM,
     position_slots,
 )
@@ -403,17 +405,31 @@ def encode_block(
             length_frequencies[secondary] += 1
         encoded.append(("match", symbol, secondary, extra, footer))
 
+    aligned_frequencies = [0] * 8
+    for item in encoded:
+        if item[0] == "match" and item[4] >= 3:
+            aligned_frequencies[item[3] & 7] += 1
+
     main_lengths = code_lengths(main_frequencies)
     length_lengths = code_lengths(length_frequencies)
+    # Every one of the eight aligned symbols needs a real code: the tree is
+    # always present in an aligned block, and padding lengths up afterwards
+    # would produce something that is not a prefix code at all.  Counting each
+    # symbol once more keeps the tree valid without distorting the frequent
+    # ones.
+    aligned_lengths = code_lengths([count + 1 for count in aligned_frequencies])
     main_codes = canonical_codes(main_lengths)
     length_codes = canonical_codes(length_lengths)
+    aligned_codes = canonical_codes(aligned_lengths)
 
     writer = BitWriter()
     writer.write(0, 1)  # no E8 call translation
-    writer.write(VERBATIM, 3)
+    writer.write(ALIGNED, 3)
     writer.write((len(data) >> 16) & 0xFF, 8)
     writer.write((len(data) >> 8) & 0xFF, 8)
     writer.write(len(data) & 0xFF, 8)
+    for value in aligned_lengths:
+        writer.write(value, 3)
     encode_tree(writer, main_lengths[:256], [0] * 256)
     encode_tree(writer, main_lengths[256:], [0] * (main_elements - 256))
     encode_tree(writer, length_lengths, [0] * LENGTH_TREE_ELEMENTS)
@@ -429,7 +445,12 @@ def encode_block(
         if secondary >= 0:
             code, length = length_codes[secondary]
             writer.write(code, length)
-        writer.write(extra, footer)
+        if footer >= 3:
+            writer.write(extra >> 3, footer - 3)
+            code, length = aligned_codes[extra & 7]
+            writer.write(code, length)
+        else:
+            writer.write(extra, footer)
     return writer.finish()
 
 
