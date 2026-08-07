@@ -1604,23 +1604,20 @@ class IdentityHttpService:
                     return
                 if normalized_path == "/ut/game/fifa14/user/accountinfo":
                     persona_id, persona_name = owner.account_store.load_identity()
-                    # An empty persona list is what says "this account has no
-                    # FUT persona yet", which is the state that sends the
-                    # client on to create one.  Describing a persona that owns
-                    # no club instead left the client re-running the whole
-                    # bootstrap -- connect/auth, authentication360, futBoot,
-                    # accountinfo -- in a loop, which is the observed stall.
-                    #
-                    # The identity this server was taught to echo is still
-                    # carried where the client asked for it: the EASW headers
-                    # and the Blaze session both keep the Nucleus id the
-                    # console presents, so nothing here reintroduces the
-                    # placeholder-persona mismatch that populating this list
-                    # was originally meant to fix.
                     document = {
                         "userAccountInfo": {
-                            "personas": [],
-                            "returningUser": False,
+                            "personas": [
+                                {
+                                    "personaId": persona_id,
+                                    "personaName": persona_name,
+                                    "returningUser": 0,
+                                    "onlineAccess": True,
+                                    "trial": False,
+                                    "userState": None,
+                                    "userClubList": [],
+                                    "trialFree": False,
+                                }
+                            ]
                         }
                     }
                     payload = (
