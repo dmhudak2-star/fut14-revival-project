@@ -16,8 +16,7 @@ BODY=${2:-}
     else
         cat
     fi
-    print ""
-    print "-- FIFA 14 FUT revival, $(date '+%Y-%m-%d %H:%M')"
+    printf "\n-- FIFA 14 FUT revival, %s\n" "$(date '+%Y-%m-%d %H:%M')"
 } | mail -s "$SUBJECT" "$TO"
 
 print "notified $TO: $SUBJECT"
