@@ -307,17 +307,22 @@ def decode_container(blob: bytes) -> bytes:
         raise ValueError(f"Not a chunk container: {magic!r}")
 
     total, _chunk_size, chunk_count = struct.unpack(">III", blob[12:24])
-    block_type = struct.unpack(">I", blob[44:48])[0]
+    stored_size, block_type = struct.unpack(">II", blob[40:48])
     if block_type != BLOCK_TYPE_LZX:
         raise ValueError(f"Unsupported chunk block type {block_type}")
 
     output = bytearray()
     cursor = 48
     for _ in range(chunk_count):
-        if blob[cursor] != 0xFF:
-            raise ValueError(f"Missing frame marker at {cursor:#x}")
-        raw_size, packed_size = struct.unpack(">HH", blob[cursor + 1 : cursor + 5])
-        cursor += 5
+        if blob[cursor] == 0xFF:
+            raw_size, packed_size = struct.unpack(">HH", blob[cursor + 1 : cursor + 5])
+            cursor += 5
+        else:
+            # The framed form carries its sizes in sixteen bits, so a resource
+            # that decompresses past 64 KiB cannot use it and the bitstream
+            # begins immediately.  The container header already states both
+            # sizes for that case.
+            raw_size, packed_size = total, stored_size
         output.extend(decode_block(blob[cursor : cursor + packed_size], raw_size))
         cursor += packed_size
     if len(output) != total:
