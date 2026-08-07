@@ -68,6 +68,12 @@ OPERATIONS = {
     "ServiceCreateSession": 0x89106188,
     "GetRandomOpponent": 0x891063C8,
     "FinalShutdown": 0x89105E30,
+    # Not an operation entry: the case the notification handler runs for
+    # FirstTimeInit's own 0xDF.  The handler at 0x8910A798 switches on the
+    # notification id and 0xDF lands at 0x8910A9EC, which calls this.  It is
+    # the first thing known to run on that path and to stop before
+    # GetIdentityData, so whether it is entered at all is the question.
+    "FirstTimeInitNotify": 0x8909FC40,
 }
 
 # The FUT service object LoginToFUT dispatches through.
@@ -86,6 +92,7 @@ ORDER = (
     "ServiceCreateSession",
     "GetRandomOpponent",
     "FinalShutdown",
+    "FirstTimeInitNotify",
 )
 
 # Every operation gets its own stub and journal so the whole path can be armed
