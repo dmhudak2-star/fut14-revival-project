@@ -493,10 +493,11 @@ class Fifa14Protocol:
         # that fetch the DLC wrapper reports success without mapping anything.
         # A session that never asks looks identical to one that asked and was
         # answered badly, so record the request itself.
-        self.logger.event(
+        journal_fetch = lambda served: self.logger.event(  # noqa: E731
             "config_fetch",
             connection=state.connection_id if state is not None else None,
             name=name,
+            values=dict(served),
         )
         if name == "OSDK_CORE":
             # CardsDLL reads its EASW settings from this map, not OSDK_CLIENT.
@@ -586,6 +587,7 @@ class Fifa14Protocol:
                 ("ROSTER_LKR", ""),
                 ("ROSTER_CSUM", ""),
             ]
+        journal_fetch(values)
         return response_frame(
             request,
             encode_fields(
