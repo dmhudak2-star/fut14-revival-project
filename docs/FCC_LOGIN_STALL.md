@@ -92,3 +92,25 @@ The three flags `InitialLoginDone` carries — `NEW_USER`,
 `CUSTOM_DATA_AVAILABLE`, `CLUB_NAME_CHANGE` — are account-shaped, which makes
 the `accountinfo` response and whatever `FirstTimeInit` expects alongside it
 the first thing to check.
+
+## The PC popup patch, transposed and measured
+
+The PC revival project removes this popup by turning the one-byte `EQUALS2`
+at `fcc_login1`'s popup-presence compare into `OR`, so the branch that
+normally skips popup construction always takes. This build's APT is
+byte-identical to theirs at that offset, context bytes included, so the same
+edit applies cleanly.
+
+It was built, verified against libmspack as an outside decoder, deployed with
+a byte-for-byte verified upload, and run:
+
+* the popup is genuinely gone -- `fcc_login1` shows an empty screen where
+  `Chargement…` used to be;
+* but the login sequence stops **earlier** than it did unpatched. Retail
+  reaches `phishing/validate` and then continues through
+  `settings`, `match/reset`, `user`, `userdata`, `tutorials`; patched, nothing
+  follows the validate at all.
+
+So on this build the popup is not merely an overlay left behind: something on
+that path is load-bearing. The patch is kept in the repository and reverted on
+the console.
