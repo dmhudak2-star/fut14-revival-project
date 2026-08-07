@@ -89,3 +89,32 @@ bitstream is being read as LZX correctly for a while; the failure is not at
 the first symbol. The E8 translation header is already handled, so that is not
 the cause. This is the one place a script-side class registry could still be
 hiding, and it is the last undecoded thing on the login path.
+
+## The classloader bit-offset sweep is a false positive
+
+Sweeping header bit offsets 0..48 against window sizes 17..21 finds several
+combinations that decode all 236000 bytes without raising: `skip=4` and
+`skip=34` at every window, `skip=43` at window 21.
+
+None of them decoded anything. The output does not begin with `BIGF` -- it
+begins `00 00 45 fd 4a ca ca ca` -- and it is 71.6% zero bytes, against 33.3%
+for a genuine decode of `fcc_login.big`, which does start with `BIGF`. Total
+printable runs: 707 characters out of 236000.
+
+So "decodes without raising" is not evidence here. An LZX bitstream read at the
+wrong offset still yields legal Huffman codes and legal match distances for a
+long time; it just yields the wrong bytes. This is the same false positive this
+project already recorded once, when skipping 12 bytes made libmspack emit
+65,536 bytes of noise that got reported as a foothold.
+
+`classloader.big` remains undecoded. The next attempt on it should be checked
+against the `BIGF` magic before anything else is claimed.
+
+## A cheaper test than decoding it
+
+Whether `CardsLoginHelper` resolves is observable at runtime without decoding
+anything. The provider trace already shows resource requests by path, e.g.
+`screen.param1='external/ion_fut/screens/fcc_login1'`. Watching that same
+boundary for `external/ion_fut/classes/CardsLoginHelper` answers directly
+whether the class is requested, and whether the request fails -- which is the
+actual question the classloader was only a proxy for.
