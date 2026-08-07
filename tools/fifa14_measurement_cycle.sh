@@ -41,6 +41,26 @@ json.dump(state, open(path, "w"), indent=1)
 print("account and user_settings cleared")
 PYRESET
 
+# The server holds that state in memory and writes it back, so clearing the
+# file under a running one changes nothing -- the first save puts the flags
+# straight back. It has to be restarted to read the cleared file.
+server_cmd=$(ps -ax -o command= | grep '[f]ifa14_blaze_server.py' | head -1)
+if [[ -n "$server_cmd" ]]; then
+    pkill -f fifa14_blaze_server.py
+    sleep 2
+    ( cd "$REPO" && eval "nohup $server_cmd > runtime/server-cycle.log 2>&1 &" )
+    sleep 4
+    if pgrep -f fifa14_blaze_server.py >/dev/null; then
+        print "server restarted on the cleared state"
+    else
+        print "the server did not come back; stopping"
+        exit 4
+    fi
+else
+    print "no server running; start one before a cycle"
+    exit 4
+fi
+
 # magicboot does not always take: the console reboots and lands on the
 # dashboard with no title. Retrying costs a minute; not retrying costs the
 # whole cycle, which is what it has cost several times.
