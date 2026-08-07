@@ -31,14 +31,14 @@ def test_operation_handlers_are_distinct() -> None:
 def test_stub_starts_with_the_displaced_retail_instruction() -> None:
     site = trace.OPERATIONS["LoginToFUT"]
     stub, journal = trace.slot("LoginToFUT")
-    image = trace.build_stub(site, stub, journal)
+    image = trace.build_stub(site, stub, journal, "LoginToFUT")
     assert words(image)[0] == int.from_bytes(trace.ORIGINAL, "big")
 
 
 def test_stub_resumes_after_whichever_site_it_was_built_for() -> None:
     for name, site in trace.OPERATIONS.items():
         stub, journal = trace.slot(name)
-        encoded = words(trace.build_stub(site, stub, journal))
+        encoded = words(trace.build_stub(site, stub, journal, "LoginToFUT"))
         tail = next(
             index for index, word in enumerate(encoded) if (word >> 26) == 18
         )
@@ -54,7 +54,7 @@ def test_stub_only_writes_volatile_scratch_registers() -> None:
     # retail prologue stores, so only r10/r11 may be written.
     site = trace.OPERATIONS["CreateClub"]
     stub, journal = trace.slot("CreateClub")
-    for word in words(trace.build_stub(site, stub, journal))[1:]:
+    for word in words(trace.build_stub(site, stub, journal, "LoginToFUT"))[1:]:
         opcode = word >> 26
         if opcode in (14, 15, 32):
             assert (word >> 21) & 0x1F in (10, 11)
@@ -111,3 +111,21 @@ def test_every_operation_has_a_private_slot() -> None:
 
 def test_slot_order_covers_every_traced_operation() -> None:
     assert set(trace.ORDER) == set(trace.OPERATIONS)
+
+
+def test_a_probe_that_is_not_a_function_entry_keeps_its_own_instruction() -> None:
+    # FirstTimeInitReturn sits on a stack teardown, not a prologue; displacing
+    # the handlers' mflr there would corrupt the epilogue it is measuring.
+    assert trace.displaced_for("FirstTimeInitReturn") != trace.ORIGINAL
+    assert trace.displaced_for("LoginToFUT") == trace.ORIGINAL
+
+
+def test_every_displaced_instruction_is_position_independent() -> None:
+    # These are executed from a cave, so a relative branch would land wrong.
+    for operation in trace.ORDER:
+        word = int.from_bytes(trace.displaced_for(operation), "big")
+        assert (word >> 26) not in (16, 18)  # no conditional or plain branch
+
+
+def test_the_entry_and_exit_probes_do_not_share_a_slot() -> None:
+    assert trace.slot("FirstTimeInitNotify") != trace.slot("FirstTimeInitReturn")

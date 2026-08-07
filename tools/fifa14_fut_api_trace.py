@@ -54,6 +54,20 @@ MODULE_SIZE = 0x2B0000
 
 ORIGINAL = bytes.fromhex("7D8802A6")  # mflr r12
 
+# Every operation handler opens with the same prologue, so one displaced
+# instruction covers them all.  A probe that is not a function entry needs its
+# own, and the only requirement is that the instruction be position
+# independent -- these hooks move it into a cave and run it there.
+DISPLACED = {
+    # FirstTimeInitNotify's epilogue: addi r1, r1, 0x1b0, the stack teardown
+    # immediately before its tail call to the register-restore helper.
+    "FirstTimeInitReturn": bytes.fromhex("382101B0"),
+}
+
+
+def displaced_for(operation: str) -> bytes:
+    return DISPLACED.get(operation, ORIGINAL)
+
 # Recovered from the table initializer at 0x89107480.  Only the operations on
 # the path to a first match are listed; the table holds 75 in total.
 OPERATIONS = {
@@ -74,6 +88,9 @@ OPERATIONS = {
     # the first thing known to run on that path and to stop before
     # GetIdentityData, so whether it is entered at all is the question.
     "FirstTimeInitNotify": 0x8909FC40,
+    # Its epilogue.  Entry alone cannot tell "ran and returned" from "entered
+    # and never came back", and those point in opposite directions.
+    "FirstTimeInitReturn": 0x890A06D0,
 }
 
 # The FUT service object LoginToFUT dispatches through.
@@ -93,6 +110,7 @@ ORDER = (
     "GetRandomOpponent",
     "FinalShutdown",
     "FirstTimeInitNotify",
+    "FirstTimeInitReturn",
 )
 
 # Every operation gets its own stub and journal so the whole path can be armed
@@ -118,14 +136,14 @@ def pointer_load(register: int, address: int) -> list[int]:
     return [addis(register, 0, high), addi(register, register, low)]
 
 
-def build_stub(site: int, stub: int, journal: int) -> bytes:
+def build_stub(site: int, stub: int, journal: int, operation: str) -> bytes:
     """Build an ABI-preserving ring recorder for one operation handler.
 
     ``mflr r12`` runs first because every handler's next instruction stores
     r12.  r10 and r11 are volatile: the handlers take at most three arguments
     and write r10/r11 before reading them.
     """
-    words = [int.from_bytes(ORIGINAL, "big")]
+    words = [int.from_bytes(displaced_for(operation), "big")]
     words.extend(pointer_load(11, journal))
     words.extend(
         (
@@ -172,11 +190,11 @@ def hook_state(client: Xbdm, operation: str) -> str:
     site = OPERATIONS[operation]
     stub, journal = slot(operation)
     current = client.read(site, 4)
-    if current == ORIGINAL:
+    if current == displaced_for(operation):
         return "original"
     if current == site_patch(site, stub) and client.read(
         stub, STUB_SIZE
-    ) == build_stub(site, stub, journal):
+    ) == build_stub(site, stub, journal, operation):
         return "armed"
     return "unexpected"
 
@@ -206,12 +224,12 @@ def read_journal(client: Xbdm, operation: str) -> int:
 def apply_trace(client: Xbdm, operation: str) -> None:
     site = OPERATIONS[operation]
     stub, journal = slot(operation)
-    desired = build_stub(site, stub, journal)
+    desired = build_stub(site, stub, journal, operation)
     if hook_state(client, operation) == "unexpected":
         raise RuntimeError(f"Refusing an unexpected {operation} entry")
-    if client.read(site, 4) != ORIGINAL:
-        client.write(site, ORIGINAL)
-        if client.read(site, 4) != ORIGINAL:
+    if client.read(site, 4) != displaced_for(operation):
+        client.write(site, displaced_for(operation))
+        if client.read(site, 4) != displaced_for(operation):
             raise RuntimeError("Could not unpublish the previous trace")
     existing = client.read(stub, STUB_SIZE)
     if existing not in (bytes(STUB_SIZE), desired):
@@ -326,8 +344,8 @@ def main() -> int:
             for operation in operations:
                 site = OPERATIONS[operation]
                 if hook_state(client, operation) == "armed":
-                    client.write(site, ORIGINAL)
-                    if client.read(site, 4) != ORIGINAL:
+                    client.write(site, displaced_for(operation))
+                    if client.read(site, 4) != displaced_for(operation):
                         raise RuntimeError(f"{operation} restore failed")
             print("Verified: original FUT operation handlers restored.")
             return 0
