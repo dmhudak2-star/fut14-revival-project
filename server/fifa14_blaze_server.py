@@ -335,6 +335,8 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/v2/game/fifa14/store/transaction": b'{"state":"NOTRANSACTION"}',
 }
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
+ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.json"
+
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
 
@@ -1776,16 +1778,15 @@ class IdentityHttpService:
                 ) or lowered_path.endswith(
                     "/packs/icebreaker/icebreakerpacklist.json"
                 ):
-                    document = {
-                        "packList": [
-                            {"id": 0, "image": 0},
-                            {"id": 1, "image": 1},
-                            {"id": 2, "image": 2},
-                            {"id": 3, "image": 3},
-                        ]
-                    }
+                    # id and image alone are enough to draw the four dock
+                    # rows, but not to build the cards behind them: the retail
+                    # CardsDLL card constructor dereferences a null player
+                    # object when the squad resource ids are absent, and the
+                    # client restarts its whole bootstrap.  Serve a fixture
+                    # that carries the 23-player arrays each pack declares.
                     payload = (
-                        json.dumps(document, separators=(",", ":")) + "\n"
+                        ICEBREAKER_PACK_LIST.read_text(encoding="utf-8").strip()
+                        + "\n"
                     ).encode("utf-8")
                     owner.journal.event(
                         "fut_icebreaker_packlist_served",

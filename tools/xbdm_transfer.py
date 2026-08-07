@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import socket
 import struct
+import time
 from pathlib import Path
 
 
@@ -65,11 +66,20 @@ class Console:
             body += chunk
         return bytes(body)
 
-    def upload(self, remote: str, data: bytes) -> None:
+    def upload(self, remote: str, data: bytes, pace: int = 1 << 18) -> None:
+        """Send a file, paced so a large one does not take the console down.
+
+        Pushing a 337 MB archive as fast as the socket accepts it dropped the
+        console off the network mid-transfer and needed a power cycle. Writing
+        it in quarter-megabyte pieces, yielding between them, keeps the debug
+        channel responsive for the whole upload.
+        """
         status = self.command(f'sendfile name="{remote}" length={len(data)}')
         if not status.startswith(b"204"):
             raise RuntimeError(status.decode("ascii", "replace"))
-        self.socket.sendall(data)
+        for start in range(0, len(data), pace):
+            self.socket.sendall(data[start : start + pace])
+            time.sleep(0.002)
         reply = self.reader.readline().rstrip(b"\r\n")
         if not reply.startswith(b"200"):
             raise RuntimeError(reply.decode("ascii", "replace"))

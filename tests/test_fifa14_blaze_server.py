@@ -931,16 +931,21 @@ class TcpServerTests(unittest.TestCase):
                     "/fut/packs/icebreaker/icebreakerpacklist.json",
                 )
                 self.assertEqual(status, 200)
+                # Four dock rows, each carrying the arrays the card
+                # constructor reads.  With only id and image the retail
+                # constructor dereferences a null player and the client
+                # restarts its bootstrap, so the arrays are the contract,
+                # not decoration.
+                packs = pack_list["packList"]
+                self.assertEqual([pack["id"] for pack in packs], [0, 1, 2, 3])
+                self.assertEqual([pack["image"] for pack in packs], [0, 1, 2, 3])
+                for pack in packs:
+                    self.assertEqual(len(pack["squad"]), 23)
+                    self.assertEqual(len(pack["Rating"]), 23)
+                    self.assertTrue(all(pack["squad"]))
                 self.assertEqual(
-                    pack_list,
-                    {
-                        "packList": [
-                            {"id": 0, "image": 0},
-                            {"id": 1, "image": 1},
-                            {"id": 2, "image": 2},
-                            {"id": 3, "image": 3},
-                        ]
-                    },
+                    True,
+                    True,
                 )
             finally:
                 identity.stop()
