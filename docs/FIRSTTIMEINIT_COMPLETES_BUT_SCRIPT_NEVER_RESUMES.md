@@ -84,3 +84,42 @@ The next measurement is the handle, not the name: `CardsDLL` holds no
 `InitialLoginDone` or `DoInitialLoginSteps` string, so the callback is
 registered by handle. `r3=0xB5BEC700` at the notify site is the object being
 notified, and it is the bridge to trace next.
+
+## Correction: FirstTimeInit is UI registration, not a login step
+
+Disassembled from the console at `0x8909FC40`, the body the `0xDF` case calls.
+It builds names and hands each to `r29->vtable+0x10` with a function pointer.
+The name table at `0x8900B000` says what is being registered:
+
+```text
+futloginviewmodel            futloginwcviewmodel
+futsecuritycheckpointviewmodel
+futgamehubviewmodel          futsquadswcviewmodel
+futauctionsearchviewmodel    futonlineseasonsviewmodel
+futofflineseasonsviewmodel   futlogoutviewmodel
+futNewUser
+```
+
+These are ION viewmodel registrations. `FirstTimeInit` means the first-time
+initialisation of the FUT UI layer, not first-time setup of a new player. The
+`0xDF` tail confirms it does nothing else:
+
+```text
+0x8910A9EC  bl 0x8909FC40      the registration body
+0x8910A9F4  li r11, 0
+0x8910AAEC  bl 0x8910A6A0      publish GameSceneEnable = 0
+```
+
+So it succeeds because succeeding is all it was ever going to do. Reading its
+`r3=1` and its notification as a login completion was a misreading of the
+name, and this document's earlier section is wrong on that point: there is no
+"completion that never reaches the login helper", because this operation is
+not the login.
+
+What that leaves is narrower and plainer:
+
+> `LoginToFUT` is called once. No FUT API call follows it, ever.
+
+`GetIdentityData`, `CardsDownloaded`, `CreateClub` are all downstream of a
+sequence that does not resume after its first step. That, and not the
+notification bus, is where the next measurement belongs.
