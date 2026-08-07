@@ -26,6 +26,39 @@ python3 tools/fifa14_early_local_server.py "$XBOX" --local-ip "$MAC" \
     --timeout 900 --launch-title "$TITLE" \
     --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -2
 
+# magicboot drops the debug connection, and the launcher reports that as a
+# failure even when the title is on its way up.  Everything after this races
+# the boot unless it waits, which has cost several cycles: the input hook is
+# armed against a process that is being replaced, and the navigator then
+# times out against a console that is not showing anything yet.
+print "== wait for the title"
+title_up=0
+for _ in {1..40}; do
+    if python3 - "$XBOX" <<'PYWAIT'
+import sys
+sys.path.insert(0, "tools")
+from fifa14_plain_send_hook import Xbdm
+try:
+    client = Xbdm(sys.argv[1])
+    names = [
+        line.split('name="')[1].split('"')[0]
+        for line in client.multiline("modules")
+        if 'name="' in line
+    ]
+    client.close()
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if any("default.xex" in name for name in names) else 1)
+PYWAIT
+    then title_up=1; break; fi
+    /bin/sleep 10
+done
+if (( ! title_up )); then
+    print "the title never came back after the relaunch"
+    exit 3
+fi
+print "title is up"
+
 print "== arm virtual input"
 python3 tools/xbox360_virtual_input.py "$XBOX" apply 2>&1 | tail -1
 
