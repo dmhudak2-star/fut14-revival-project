@@ -85,6 +85,13 @@ python3 tools/fifa14_tu3_helperfunctions_runtime_patch.py "$XBOX" \
 print "== arm ION action pipeline trace"
 python3 tools/fifa14_ion_action_pipeline_trace.py "$XBOX" apply 2>&1 | tail -1
 
+# The action pipeline carries screen actions.  A native class calling back
+# into ActionScript -- which is what fcc_login1 is waiting on -- publishes
+# through the provider boundary instead, so both are needed to say where the
+# completion is lost.
+print "== arm provider publication trace"
+python3 tools/fifa14_provider_publication_trace.py "$XBOX" apply 2>&1 | tail -1
+
 print "== arm FUT API traces on CardsDLL load"
 python3 tools/fifa14_fut_api_trace.py "$XBOX" arm-on-load --timeout 600 \
     > runtime/cycle-arm.log 2>&1 &
@@ -130,6 +137,9 @@ done
 # This one is in default.xex and survives FUT unloading, so it is read last.
 print "== read ION action pipeline"
 python3 tools/fifa14_ion_action_pipeline_trace.py "$XBOX" read 2>&1 | tail -20
+
+print "== read provider publication"
+python3 tools/fifa14_provider_publication_trace.py "$XBOX" read 2>&1 | tail -24
 
 print "== read notification bus"
 python3 tools/fifa14_fut_notification_listener_trace.py "$XBOX" read 2>&1
