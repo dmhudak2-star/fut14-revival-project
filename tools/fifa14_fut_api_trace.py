@@ -62,10 +62,6 @@ DISPLACED = {
     # FirstTimeInitNotify's epilogue: addi r1, r1, 0x1b0, the stack teardown
     # immediately before its tail call to the register-restore helper.
     "FirstTimeInitReturn": bytes.fromhex("382101B0"),
-    # The notification handler's tail reaches this only when an interface is
-    # bound: lwz r11, 0(r28), guarded by a branch that skips it when r28 is
-    # null.
-    "NotifyInterfaceCall": bytes.fromhex("817C0000"),
 }
 
 
@@ -95,11 +91,6 @@ OPERATIONS = {
     # Its epilogue.  Entry alone cannot tell "ran and returned" from "entered
     # and never came back", and those point in opposite directions.
     "FirstTimeInitReturn": 0x890A06D0,
-    # Whether the handler notifies anything after publishing. This sits on the
-    # tail every notification id shares, so its count is not specific to 0xDF
-    # -- it says the tail notified something, not that it notified for this
-    # operation. Read it alongside FirstTimeInitNotify, never alone.
-    "NotifyInterfaceCall": 0x8910AAF8,
 }
 
 # The FUT service object LoginToFUT dispatches through.
@@ -120,7 +111,6 @@ ORDER = (
     "FinalShutdown",
     "FirstTimeInitNotify",
     "FirstTimeInitReturn",
-    "NotifyInterfaceCall",
 )
 
 # Every operation gets its own stub and journal so the whole path can be armed
