@@ -22,9 +22,11 @@ running in its place.
 Their offsets were recovered from the PC build; this console's APT turned out
 to be byte-identical at the same offsets, so the same two edits apply here.
 
-The patched resource no longer fits its slot once stored uncompressed -- there
-is no LZX encoder in this repository -- so it is appended to the archive and
-its directory record repointed.  ``cards0.bh`` mirrors that record.
+The patched resource is re-compressed and written back into the slot it came
+from.  Relocating it to the end of the archive instead -- which is what this
+tool did before there was an encoder -- boots the title to a black screen even
+with the archive's declared length corrected, so the loader wants the resource
+where its directory record has always pointed.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lzx_decode import decode_container
+from lzx_encode import encode_container
 
 
 SCREEN_ENTRY = "data/ui/external/ion_fut/screens/fcc_login1.big"
@@ -139,6 +142,14 @@ def patch_screen(decoded: bytes) -> tuple[bytes, dict]:
     }
 
 
+def slot_capacity(entries: list, offset: int) -> int:
+    """Bytes available where this entry sits, up to the next one."""
+    following = sorted(entry[2] for entry in entries if entry[2] > offset)
+    if not following:
+        raise RuntimeError("This entry is last; its capacity is unbounded here")
+    return following[0] - offset
+
+
 def declare_new_length(stream) -> None:
     """Rewrite both length fields an appended archive must agree with.
 
@@ -179,19 +190,26 @@ def main() -> int:
         stream.seek(offset)
         decoded = decode_container(stream.read(size))
     patched, info = patch_screen(decoded)
-    payload = uncompressed_container(patched)
+    payload = encode_container(patched)
+    if decode_container(payload) != patched:
+        raise RuntimeError("Re-encoded screen does not decode back to itself")
+
+    slot = slot_capacity(entries, offset)
+    if len(payload) > slot:
+        raise RuntimeError(
+            f"Patched screen is {len(payload):#x} bytes and its slot is {slot:#x}"
+        )
 
     shutil.copyfile(args.source_big, args.output_big)
     shutil.copyfile(args.source_bh, args.output_bh)
 
+    # Written in place: same offset, same slot, only the stored length changes.
     with args.output_big.open("r+b") as stream:
-        stream.seek(0, 2)
-        new_offset = (stream.tell() + 0x7F) & ~0x7F
-        stream.write(bytes(new_offset - stream.tell()))
+        stream.seek(offset)
         stream.write(payload)
+        stream.write(bytes(slot - len(payload)))
         stream.seek(table_offset)
-        stream.write(struct.pack(">II", new_offset, len(payload)))
-        declare_new_length(stream)
+        stream.write(struct.pack(">II", offset, len(payload)))
 
     record = BH_BASE + index * BH_STRIDE
     with args.output_bh.open("r+b") as stream:
@@ -199,14 +217,14 @@ def main() -> int:
         if struct.unpack(">II", stream.read(8)) != (offset, size):
             raise RuntimeError(f"Unexpected BH record for index {index}")
         stream.seek(record)
-        stream.write(struct.pack(">II", new_offset, len(payload)))
+        stream.write(struct.pack(">II", offset, len(payload)))
 
     print(f"{SCREEN_ENTRY}: index={index}")
     print(f"  popup compare  {RETAIL_OPCODE:#04x} -> {PATCHED_OPCODE:#04x} "
           f"at decoded {info['opcode_offset']:#x}")
     print(f"  ShowLoadingIcon -> HideLoadingIcon at {info['show_offset']:#x}")
-    print(f"  was  offset={offset:#x} size={size:#x} (LZX)")
-    print(f"  now  offset={new_offset:#x} size={len(payload):#x} (uncompressed)")
+    print(f"  offset={offset:#x} unchanged; size {size:#x} -> {len(payload):#x} "
+          f"in a {slot:#x} slot")
     print(f"BIG SHA-256: {sha256(args.output_big)}")
     print(f"BH  SHA-256: {sha256(args.output_bh)}")
     return 0
