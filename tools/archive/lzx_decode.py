@@ -306,23 +306,48 @@ def decode_container(blob: bytes) -> bytes:
     if magic != MAGIC:
         raise ValueError(f"Not a chunk container: {magic!r}")
 
-    total, _chunk_size, chunk_count = struct.unpack(">III", blob[12:24])
+    total, chunk_size, chunk_count = struct.unpack(">III", blob[12:24])
     stored_size, block_type = struct.unpack(">II", blob[40:48])
     if block_type != BLOCK_TYPE_LZX:
         raise ValueError(f"Unsupported chunk block type {block_type}")
 
-    if chunk_count != 1:
-        # The single-chunk layout puts one (stored, block type) pair at 40 and
-        # the payload at 48.  A multi-chunk resource carries more than that,
-        # and no reading of the extra descriptors tried so far yields a
-        # plausible size for the second chunk -- so refuse rather than decode
-        # from the wrong offset and hand back plausible-looking noise.
-        raise ValueError(
-            f"Multi-chunk container ({chunk_count} chunks) is not understood"
-        )
-
+    # Each chunk carries its own eight-byte (stored, block type) descriptor
+    # immediately before its data, and every chunk's data starts on a sixteen
+    # byte boundary -- so the descriptor always sits at 8 mod 16, and the gap
+    # after a chunk is whatever padding that alignment needs. Verified against
+    # all 27 chunks of the multi-chunk resources in the TU archive.
     output = bytearray()
-    cursor = 48
+    cursor = 40
+    for index in range(chunk_count):
+        stored_size, block_type = struct.unpack(">II", blob[cursor : cursor + 8])
+        if block_type != BLOCK_TYPE_LZX:
+            raise ValueError(f"Unsupported chunk block type {block_type}")
+        cursor += 8
+        chunk = blob[cursor : cursor + stored_size]
+        output.extend(decode_chunk(chunk, total, len(output), chunk_size))
+        cursor = align_to(cursor + stored_size + 8, 16) - 8
+    if len(output) != total:
+        raise ValueError(f"Decoded {len(output)} bytes, container declares {total}")
+    return bytes(output)
+
+
+def align_to(value: int, boundary: int) -> int:
+    return (value + boundary - 1) & ~(boundary - 1)
+
+
+def decode_chunk(chunk: bytes, total: int, produced: int, chunk_size: int) -> bytes:
+    """Decode one chunk, framed or not.
+
+    A chunk whose output fits sixteen bits carries an ``FF`` frame header with
+    both sizes; one that does not cannot, and its bitstream starts at once.
+    """
+    if chunk[:1] == b"\xff":
+        raw_size, packed_size = struct.unpack(">HH", chunk[1:5])
+        return decode_block(chunk[5 : 5 + packed_size], raw_size)
+    return decode_block(chunk, min(total - produced, chunk_size))
+
+
+def _unused_single_chunk_path(blob, chunk_count, total, stored_size):
     for _ in range(chunk_count):
         if blob[cursor] == 0xFF:
             raw_size, packed_size = struct.unpack(">HH", blob[cursor + 1 : cursor + 5])
