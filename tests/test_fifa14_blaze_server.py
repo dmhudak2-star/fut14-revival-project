@@ -726,12 +726,13 @@ class TcpServerTests(unittest.TestCase):
                 client.request("GET", "/ut/game/fifa14/user/accountinfo")
                 response = client.getresponse()
                 account = __import__("json").loads(response.read())
-                personas = account["userAccountInfo"]["personas"]
                 self.assertEqual(response.status, 200)
-                self.assertEqual(len(personas), 1)
-                self.assertEqual(personas[0]["personaId"], 0x123456789)
-                self.assertEqual(personas[0]["personaName"], "MatchedPersona")
-                self.assertEqual(personas[0]["userClubList"], [])
+                # No FUT account yet, whatever identity the Blaze side holds.
+                # Offering a persona here claims a club, squad and identity
+                # that this server cannot then produce, and the login helper
+                # waits on them forever.
+                self.assertEqual(account["userAccountInfo"]["personas"], [])
+                self.assertIs(account["userAccountInfo"]["returningUser"], False)
                 client.close()
             finally:
                 identity.stop()
@@ -827,10 +828,10 @@ class TcpServerTests(unittest.TestCase):
                 client.request("GET", "/ut/game/fifa14/user/accountinfo")
                 response = client.getresponse()
                 persona = __import__("json").loads(response.read())
-                persona = persona["userAccountInfo"]["personas"][0]
-                self.assertEqual(persona["personaName"], "Imskobogota6z")
-                self.assertEqual(persona["personaId"], 2535469248587161)
-                self.assertEqual(persona["userClubList"], [])
+                # The Blaze side still adopts the persona the client presents
+                # -- that is what this test is about -- but accountinfo does
+                # not advertise it as an existing FUT account.
+                self.assertEqual(persona["userAccountInfo"]["personas"], [])
                 client.close()
             finally:
                 identity.stop()

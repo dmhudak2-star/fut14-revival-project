@@ -322,6 +322,9 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/game/fifa14/purchased/items": b'{"duplicateItemIdList":[],"itemData":[]}',
     "/ut/game/fifa14/tradePile": b'{"auctionInfo":[]}',
     "/ut/game/fifa14/squad/list": b'{"squad":[]}',
+    # Acknowledges the squad the client saves at the end of club creation; the
+    # PC revival answers with the same id it was asked to store.
+    "/ut/game/fifa14/squad/1": b'{"id":1}',
     "/ut/game/fifa14/squad/active": b'{"squad":[]}',
     "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
     "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
@@ -1619,20 +1622,19 @@ class IdentityHttpService:
                     return
                 if normalized_path == "/ut/game/fifa14/user/accountinfo":
                     persona_id, persona_name = owner.account_store.load_identity()
+                    # An empty persona list is what the PC revival serves, and
+                    # the difference is not cosmetic.  A populated list tells
+                    # the client it already owns a FUT account, so the login
+                    # helper goes looking for that account's club, squad and
+                    # identity -- none of which exist here -- and waits on a
+                    # completion that never arrives.  An empty list states the
+                    # opposite: no FUT account yet.  That is the NEW_USER path
+                    # fcc_login1 already knows how to walk, through the
+                    # icebreaker captain selection into club creation.
                     document = {
                         "userAccountInfo": {
-                            "personas": [
-                                {
-                                    "personaId": persona_id,
-                                    "personaName": persona_name,
-                                    "returningUser": 0,
-                                    "onlineAccess": True,
-                                    "trial": False,
-                                    "userState": None,
-                                    "userClubList": [],
-                                    "trialFree": False,
-                                }
-                            ]
+                            "personas": [],
+                            "returningUser": False,
                         }
                     }
                     payload = (
