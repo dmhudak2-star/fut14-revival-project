@@ -14,12 +14,32 @@ XBOX=${XBOX:-192.168.1.25}
 MAC=${MAC:-192.168.1.36}
 JOURNAL=${JOURNAL:-$REPO/runtime/live-easw-v46.jsonl}
 TITLE=${TITLE:-'Hdd:\Games\FIFA 14'}
+ACCOUNT=${ACCOUNT:-$REPO/runtime/local-account.json}
 
 # A previous cycle killed mid-flight leaves a navigator or a modload listener
 # holding the console, which makes this one look like a console fault.
 pkill -f screen_navigator 2>/dev/null
 pkill -f fut_api_trace 2>/dev/null
 sleep 1
+
+# The client stops issuing /ut/auth once this server has persisted what it
+# saves after the security question, and then the whole FUT login is skipped.
+# A run that inherits that state measures a client that never logged in, which
+# has already invalidated a batch of results here. Start every cycle from
+# first use, keeping only the identity the console presents.
+print "== reset the account to first use"
+python3 - "$ACCOUNT" <<'PYRESET'
+import json, sys
+path = sys.argv[1]
+try:
+    state = json.load(open(path))
+except Exception:
+    state = {}
+state["account"] = {}
+state["user_settings"] = {}
+json.dump(state, open(path, "w"), indent=1)
+print("account and user_settings cleared")
+PYRESET
 
 # magicboot does not always take: the console reboots and lands on the
 # dashboard with no title. Retrying costs a minute; not retrying costs the

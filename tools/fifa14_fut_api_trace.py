@@ -95,8 +95,10 @@ OPERATIONS = {
     # Its epilogue.  Entry alone cannot tell "ran and returned" from "entered
     # and never came back", and those point in opposite directions.
     "FirstTimeInitReturn": 0x890A06D0,
-    # Whether the handler notifies anything at all after publishing. If this
-    # never fires, nothing is bound to be told, and that is the loss.
+    # Whether the handler notifies anything after publishing. This sits on the
+    # tail every notification id shares, so its count is not specific to 0xDF
+    # -- it says the tail notified something, not that it notified for this
+    # operation. Read it alongside FirstTimeInitNotify, never alone.
     "NotifyInterfaceCall": 0x8910AAF8,
 }
 
