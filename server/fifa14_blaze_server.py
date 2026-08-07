@@ -487,6 +487,17 @@ class Fifa14Protocol:
         config_id = find_field(fields, "CFID")
         name = str(config_id.value) if config_id is not None else ""
         values: list[tuple[str, str]] = []
+        # Which configuration maps the client asks for, and when, is the only
+        # signal that says whether it ever reached the point of loading
+        # CardsDLL: DLC_USE_REAL_DLL_LOAD lives in OSDK_CLIENT, and without
+        # that fetch the DLC wrapper reports success without mapping anything.
+        # A session that never asks looks identical to one that asked and was
+        # answered badly, so record the request itself.
+        self.logger.event(
+            "config_fetch",
+            connection=state.connection_id if state is not None else None,
+            name=name,
+        )
         if name == "OSDK_CORE":
             # CardsDLL reads its EASW settings from this map, not OSDK_CLIENT.
             # Two of them decide whether it ever speaks: with
