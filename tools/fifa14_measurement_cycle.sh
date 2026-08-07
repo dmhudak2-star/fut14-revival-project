@@ -21,19 +21,51 @@ pkill -f screen_navigator 2>/dev/null
 pkill -f fut_api_trace 2>/dev/null
 sleep 1
 
+# magicboot does not always take: the console reboots and lands on the
+# dashboard with no title. Retrying costs a minute; not retrying costs the
+# whole cycle, which is what it has cost several times.
 print "== relaunch title"
-python3 tools/fifa14_early_local_server.py "$XBOX" --local-ip "$MAC" \
-    --timeout 900 --launch-title "$TITLE" \
-    --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -2
+launched=0
+for attempt in 1 2 3; do
+    python3 tools/fifa14_early_local_server.py "$XBOX" --local-ip "$MAC" \
+        --timeout 900 --launch-title "$TITLE" \
+        --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -2
+    for _ in {1..20}; do
+        if python3 - "$XBOX" <<'PYWAIT'
+import sys
+sys.path.insert(0, "tools")
+from fifa14_plain_send_hook import Xbdm
+try:
+    client = Xbdm(sys.argv[1])
+    names = [
+        line.split('name="')[1].split('"')[0]
+        for line in client.multiline("modules")
+        if 'name="' in line
+    ]
+    client.close()
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if any("default.xex" in name for name in names) else 1)
+PYWAIT
+        then launched=1; break; fi
+        /bin/sleep 8
+    done
+    (( launched )) && break
+    print "attempt $attempt did not bring the title up; retrying"
+done
+if (( ! launched )); then
+    print "the title never came back after three relaunch attempts"
+    exit 3
+fi
 
 # magicboot drops the debug connection, and the launcher reports that as a
 # failure even when the title is on its way up.  Everything after this races
 # the boot unless it waits, which has cost several cycles: the input hook is
 # armed against a process that is being replaced, and the navigator then
 # times out against a console that is not showing anything yet.
-print "== wait for the title"
-title_up=0
-for _ in {1..40}; do
+print "== title is up"
+title_up=1
+for _ in {1..1}; do
     if python3 - "$XBOX" <<'PYWAIT'
 import sys
 sys.path.insert(0, "tools")
