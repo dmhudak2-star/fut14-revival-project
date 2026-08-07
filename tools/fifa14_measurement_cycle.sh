@@ -35,11 +35,15 @@ python3 tools/fifa14_screen_navigator.py "$XBOX" goto main_menu --timeout 900 ||
 print "== arm notification listener trace"
 python3 tools/fifa14_fut_notification_listener_trace.py "$XBOX" apply 2>&1 | tail -1
 
-# The helperFunctions APT patch is deliberately not run here.  The cycle that
-# failed to find the APT still reached CardsDLL load, the security question and
-# the same FUT loader state, with the same two recorded calls -- so it buys
-# nothing at this stage while costing ~20 min of heap sweep per cycle.  Run
-# tools/fifa14_tu3_helperfunctions_runtime_patch.py by hand if a gate needs it.
+# This patch is what lets FUT get past its roster gate: it routes the three
+# helperFunctions continuation branches to their retail success paths, the
+# same change the PC revival project makes to checkForFUTRosters.  It was
+# dropped from this cycle once, on the strength of a single run where it had
+# failed to find the APT and CardsDLL loaded anyway; every run since then has
+# stalled at the FUT launcher with CardsDLLzf.xex.dll never mapped.  It stays.
+print "== patch helperFunctions"
+python3 tools/fifa14_tu3_helperfunctions_runtime_patch.py "$XBOX" \
+    --timeout 600 --chunk-size 0x800000 2>&1 | tail -1
 
 print "== arm FUT API traces on CardsDLL load"
 python3 tools/fifa14_fut_api_trace.py "$XBOX" arm-on-load --timeout 600 \
