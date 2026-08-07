@@ -139,6 +139,30 @@ def patch_screen(decoded: bytes) -> tuple[bytes, dict]:
     }
 
 
+def declare_new_length(stream) -> None:
+    """Rewrite both length fields an appended archive must agree with.
+
+    A BIG4 archive states its own byte length twice: in the four bytes ahead
+    of the magic, and in the header word right after it, both little-endian.
+    Appending a relocated resource without updating them leaves the entry past
+    the declared end, where the loader will not read it -- which takes the
+    title down at boot rather than failing visibly.
+    """
+    import struct as _struct
+
+    stream.seek(0, 2)
+    length = stream.tell()
+    stream.seek(0)
+    head = stream.read(64)
+    base = head.find(b"BIG4")
+    if base < 0:
+        raise RuntimeError("Not a BIG4 archive")
+    stream.seek(base - 4)
+    stream.write(_struct.pack("<I", length))
+    stream.seek(base + 4)
+    stream.write(_struct.pack("<I", length))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source_big", type=Path)
@@ -167,6 +191,7 @@ def main() -> int:
         stream.write(payload)
         stream.seek(table_offset)
         stream.write(struct.pack(">II", new_offset, len(payload)))
+        declare_new_length(stream)
 
     record = BH_BASE + index * BH_STRIDE
     with args.output_bh.open("r+b") as stream:
