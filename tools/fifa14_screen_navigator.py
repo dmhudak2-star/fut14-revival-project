@@ -292,10 +292,48 @@ def navigate(
     raise TimeoutError(f"{target} was not reached before timeout")
 
 
+def learn(host: str, seconds: float, interval: float) -> int:
+    """Print the signature of every distinct unrecognised frame seen.
+
+    A screen missing from SIGNATURES costs a whole run: the navigator presses
+    blind at it until it times out.  Finding those one at a time, by catching
+    the console mid-boot, is how a night gets lost -- this harvests them in a
+    single pass so the references can be added from real captures rather than
+    reconstructed from a screenshot that went through a different crop.
+    """
+    deadline = time.monotonic() + seconds
+    seen: list[bytes] = []
+    while time.monotonic() < deadline:
+        header, raw = capture(host)
+        width, height, rgb = decode_bgrx_tiled(
+            raw,
+            pitch=header["pitch"],
+            width=header["width"],
+            height=header["height"],
+            offset_x=header["offset_x"],
+            offset_y=header["offset_y"],
+            crop_right=round(header["width"] * 0.02),
+        )
+        current = signature(width, height, rgb)
+        name, measured = classify(current)
+        if name == "unknown" and all(
+            distance(current, other) > MATCH_THRESHOLD for other in seen
+        ):
+            seen.append(current)
+            print(f"# unrecognised frame {len(seen)} (nearest known: {measured})")
+            hexed = current.hex().upper()
+            for offset in range(0, len(hexed), 64):
+                print(f'        "{hexed[offset:offset + 64]}"')
+            print(flush=True)
+        time.sleep(interval)
+    print(f"# {len(seen)} distinct unrecognised frame(s)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("host")
-    parser.add_argument("action", choices=("identify", "goto"))
+    parser.add_argument("action", choices=("identify", "goto", "learn"))
     parser.add_argument(
         "target", nargs="?", choices=sorted(SIGNATURES), default="main_menu"
     )
@@ -308,6 +346,8 @@ def main() -> int:
         screen, measured = observe(args.host)
         print(f"screen = {screen} (distance {measured})")
         return 0
+    if args.action == "learn":
+        return learn(args.host, args.timeout, SKIP_INTERVAL)
     return navigate(
         args.host, args.target, args.timeout, args.interval, args.frames
     )
