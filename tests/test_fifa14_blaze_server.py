@@ -896,7 +896,19 @@ class TcpServerTests(unittest.TestCase):
                 status, _, trusted = request_json(
                     "GET", "/ut/game/fifa14/phishing/trusteddevice"
                 )
-                self.assertEqual((status, trusted), (200, {}))
+                # A known device is what keeps the client from asking its
+                # security question on every launch. The four booleans are
+                # the whole of what CardsDLL's parser reads here.
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    trusted,
+                    {
+                        "trusted": True,
+                        "changed": False,
+                        "exists": True,
+                        "locked": False,
+                    },
+                )
 
                 status, _, question = request_json(
                     "GET", "/ut/game/fifa14/phishing/question"

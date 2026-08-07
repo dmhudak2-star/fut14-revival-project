@@ -1657,10 +1657,23 @@ class IdentityHttpService:
                     return
                 lowered_path = normalized_path.lower()
                 if lowered_path == "/ut/game/fifa14/phishing/trusteddevice":
-                    # A first-use console has no trusted-device record yet.
-                    # CardsDLL accepts the empty object and continues into the
-                    # native security-question path.
-                    payload = b"{}\n"
+                    # An empty object leaves the device unknown, so the client
+                    # asks its security question on every single launch -- and
+                    # answering it is what makes this server persist the flags
+                    # that then stop the client authenticating at all.  The
+                    # question is not a step of a working FUT login; it is a
+                    # detour an unrecognised device is sent on.
+                    #
+                    # CardsDLL's parser reads exactly four booleans here.
+                    # Describing the console as a device we already know, whose
+                    # fingerprint has not changed and which is not locked, is
+                    # what the working reference implementation of this title
+                    # serves. It grants no account, club, inventory or
+                    # entitlement -- only that this device has been seen before.
+                    payload = (
+                        b'{"trusted":true,"changed":false,'
+                        b'"exists":true,"locked":false}\n'
+                    )
                     owner.journal.event(
                         "fut_trusted_device_request",
                         peer=self.client_address[0],
