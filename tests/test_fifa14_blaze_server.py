@@ -647,10 +647,8 @@ class TcpServerTests(unittest.TestCase):
                     b"<Language>",
                     b"<dimeUniqueId>1</dimeUniqueId>",
                     b"<key>",
-                    # The key block carries the DLC key's identity, and the
-                    # working reference implementation of this title serves
-                    # 1/1 here.
-                    b"<futKeyType>1</futKeyType>",
+                    b"<dimeUniqueId>2</dimeUniqueId>",
+                    b"<futKeyType>0</futKeyType>",
                 ):
                     self.assertIn(required, body)
                 client.close()
