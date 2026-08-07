@@ -12,16 +12,9 @@ never fires, and injecting the event by hand does nothing while a modal popup
 is up.  Rerouting ``advance`` puts the icebreaker on the path the screen takes
 by itself.
 
-Two archive details make this awkward and are handled here rather than
-assumed:
-
-* the resource is LZX-compressed and there is no encoder in this repository,
-  so the patched graph is stored in the uncompressed ``chunkunc`` container;
-* that makes it larger than its slot, so the entry is appended to the end of
-  the archive and its directory record repointed, rather than written in
-  place.  ``data1.bh`` mirrors the same record and is updated to match.
-
-Nothing else in either file is touched, and the original pair is left alone.
+The patched graph is re-compressed and written back into the slot it came
+from; the title will not accept a relocated resource.  ``data1.bh`` mirrors
+the same record.  Nothing else in either file is touched.
 """
 
 from __future__ import annotations
@@ -36,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lzx_decode import decode_container
+from lzx_encode import encode_container
 
 
 NAV_ENTRY = "data/ui/nav/fut/futloginflow.nav"
@@ -154,20 +148,26 @@ def main() -> int:
     patched = reroute(graph)
     if args.dump:
         args.dump.write_bytes(patched)
-    payload = uncompressed_container(patched)
+    payload = encode_container(patched)
+    if decode_container(payload) != patched:
+        raise RuntimeError("Re-encoded graph does not decode back to itself")
+
+    following = sorted(e[2] for e in entries if e[2] > offset)
+    slot = following[0] - offset
+    if len(payload) > slot:
+        raise RuntimeError(
+            f"Patched graph is {len(payload):#x} bytes and its slot is {slot:#x}"
+        )
 
     shutil.copyfile(args.source_big, args.output_big)
     shutil.copyfile(args.source_bh, args.output_bh)
 
     with args.output_big.open("r+b") as stream:
-        stream.seek(0, 2)
-        # Keep the appended resource aligned the way every other entry is.
-        new_offset = (stream.tell() + 0x7F) & ~0x7F
-        stream.write(bytes(new_offset - stream.tell()))
+        stream.seek(offset)
         stream.write(payload)
+        stream.write(bytes(slot - len(payload)))
         stream.seek(table_offset)
-        stream.write(struct.pack(">II", new_offset, len(payload)))
-        declare_new_length(stream)
+        stream.write(struct.pack(">II", offset, len(payload)))
 
     record = BH_BASE + index * BH_STRIDE
     with args.output_bh.open("r+b") as stream:
@@ -175,11 +175,12 @@ def main() -> int:
         if struct.unpack(">II", stream.read(8)) != (offset, size):
             raise RuntimeError(f"Unexpected BH record for index {index}")
         stream.seek(record)
-        stream.write(struct.pack(">II", new_offset, len(payload)))
+        stream.write(struct.pack(">II", offset, len(payload)))
 
     print(f"{NAV_ENTRY}: index={index}")
-    print(f"  was  offset={offset:#x} size={size:#x} (LZX)")
-    print(f"  now  offset={new_offset:#x} size={len(payload):#x} (uncompressed)")
+    print(f"  futLogIn1 advance -> iceBreaker")
+    print(f"  offset={offset:#x} unchanged; size {size:#x} -> {len(payload):#x} "
+          f"in a {slot:#x} slot")
     print(f"BIG SHA-256: {sha256(args.output_big)}")
     print(f"BH  SHA-256: {sha256(args.output_bh)}")
     return 0
