@@ -726,12 +726,12 @@ class TcpServerTests(unittest.TestCase):
                 client.request("GET", "/ut/game/fifa14/user/accountinfo")
                 response = client.getresponse()
                 account = __import__("json").loads(response.read())
-                personas = account["userAccountInfo"]["personas"]
                 self.assertEqual(response.status, 200)
-                self.assertEqual(len(personas), 1)
-                self.assertEqual(personas[0]["personaId"], 0x123456789)
-                self.assertEqual(personas[0]["personaName"], "MatchedPersona")
-                self.assertEqual(personas[0]["userClubList"], [])
+                # A first-use account has no FUT persona yet.  This is the
+                # shape the working reference implementation of this title
+                # serves, and the one that lets the client move on.
+                self.assertEqual(account["userAccountInfo"]["personas"], [])
+                self.assertIs(account["userAccountInfo"]["returningUser"], False)
                 client.close()
             finally:
                 identity.stop()
@@ -826,11 +826,13 @@ class TcpServerTests(unittest.TestCase):
                 client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
                 client.request("GET", "/ut/game/fifa14/user/accountinfo")
                 response = client.getresponse()
-                persona = __import__("json").loads(response.read())
-                persona = persona["userAccountInfo"]["personas"][0]
-                self.assertEqual(persona["personaName"], "Imskobogota6z")
-                self.assertEqual(persona["personaId"], 2535469248587161)
-                self.assertEqual(persona["userClubList"], [])
+                account = __import__("json").loads(response.read())
+                # The identity is adopted for the Blaze session and the EASW
+                # headers; accountinfo deliberately reports no FUT persona,
+                # because describing one that owns no club made the client
+                # restart the bootstrap instead of going on to create it.
+                self.assertEqual(account["userAccountInfo"]["personas"], [])
+                self.assertIs(account["userAccountInfo"]["returningUser"], False)
                 client.close()
             finally:
                 identity.stop()
