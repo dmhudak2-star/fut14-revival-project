@@ -1938,9 +1938,13 @@ class IdentityHttpService:
                 # Bidding and buying. Both go through the same endpoint: a bid
                 # at or above the buy-now price ends the auction, which is what
                 # the Buy Now button does.
+                # Buying posts to /offer, not /bid. That 404 is what the
+                # screen reports as "cette liste a expiré" -- the timer was
+                # showing 23h59 at the time, so the message names the wrong
+                # cause and only the journal says which request was missed.
                 if (
                     normalized_path.startswith("/ut/game/fifa14/trade/")
-                    and normalized_path.endswith("/bid")
+                    and normalized_path.rsplit("/", 1)[-1] in ("bid", "offer")
                     and self.command in ("PUT", "POST")
                 ):
                     parts = normalized_path.split("/")
