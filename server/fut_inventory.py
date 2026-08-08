@@ -474,11 +474,14 @@ class CardCatalogue:
                     # member table carries startTime, endtime, endDateTime and
                     # duration beside expires, so the screen works from
                     # absolute bounds. Send both forms.
+                    # Two bounds only. Sending duration and endDateTime as
+                    # well emptied the detail panel entirely -- the prices that
+                    # had been showing disappeared -- so one of those two is
+                    # the wrong type or the wrong member, and adding four at
+                    # once made it impossible to say which.
                     "expires": AUCTION_DURATION,
-                    "duration": AUCTION_DURATION,
                     "startTime": _now(),
                     "endtime": _now() + AUCTION_DURATION,
-                    "endDateTime": _now() + AUCTION_DURATION,
                     "sellerName": "FUT",
                     "sellerEstablished": 2013,
                     "sellerId": 1,
