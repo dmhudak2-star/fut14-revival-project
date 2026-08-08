@@ -4,27 +4,41 @@ Research toolkit and technical notes for restoring the FIFA 14 Ultimate Team
 front-end on a personally owned Xbox 360 RGH/JTAG after the official services
 were shut down.
 
-> **Status — 2026-08-05:** active research prototype. A local Blaze 3 server
-> now completes the title's native redirector, PreAuth, Authentication2,
-> PostAuth and UserSessions path. Passive Xbox traces observed the retail game
-> publish both `EVENT_BOOT_LOGIN_SUCCESS` and `EVENT_LOGIN_SUCCESS`; this is no
-> longer a frontend-only skip. Selecting Ultimate Team reaches the native
-> bottom-left loader after the expected early Blaze/OSDK request burst.
-> The server now implements the concrete public BlazeSDK/Zamboni schemas found
-> in that burst. A first cold Xbox bootstrap consumed the new typed responses,
-> reached the normal main menu and remained connected with periodic pings.
-> Passive comparison before and after one natural FUT selection now places the
-> newest blocker in the asynchronous ION exit from the main-menu `FluxHub`:
-> the screen is left in an `unload` request with `ToFe`, while `futLauncher`,
-> `FUTStartUp`, CardsDLL loading and the first CardHouse request are not reached.
-> A comparison with the public Zamboni NHL 14 server and Aim4Kill's
-> Bug_OldProtoSSL research exposed one remaining transport divergence: the
-> earlier launcher forced `standardInsecure_v3` and served port `42127` in
-> plaintext, whereas the preserved retail path uses `xbox360Secure_v3` and a
-> TLS redirector. Native TLS 1.0 redirector support and the legacy certificate
-> workaround are now implemented locally; validation by one cold Xbox run is
-> pending.
-> The project still does not reach a usable FUT menu or persist a club.
+> **Status — 2026-08-08:** FIFA 14 Ultimate Team runs. The FUT login
+> completes, a club is created and persists, the squad screen draws real cards
+> with their art, the transfer market is searchable across 14 019 cards, packs
+> can be bought and opened, and cards can be sent to the club, quick-sold or
+> listed for sale.
+>
+> The two-day blocker was the tutorial feed. Every session ended on the same
+> tail -- `userdata`, then the tutorial URL, then silence -- because the server
+> answered an invented empty `<MESSAGES>` document. CardsDLL pairs
+> `RetrieveShouldShowTutorial` with `RetrieveShouldShowTutorialComplete`, so
+> `DoInitialLoginSteps` waits on that retrieval; the document was accepted as
+> HTTP and never completed as a document. Answering **404** completed it, and
+> thirty requests followed immediately in the PC revival's own order.
+>
+> Entering FUT needs two runtime patches, and the order matters: the launch
+> patch (hostnames, plaintext redirector, native FUT-resource redirect), then
+> `helperFunctions` applied **at the FIFA main menu, before Ultimate Team is
+> selected**. Applied from inside the FUT loader it does nothing -- the trace
+> stops at `accountinfo`, `/ut/auth` never follows, and CardsDLL is never
+> mapped. Re-entering FUT requires a full relaunch: the title keeps its FUT
+> session in memory and rewrites the account state within seconds of the file
+> being cleared.
+>
+> The club is built from this build's own icebreaker packs, whose asset ids are
+> the game's; positions, nations, leagues and rarities come from a 14 019-card
+> catalogue keyed by the same ids. Nothing about a card is invented -- an asset
+> id with no art behind it parses cleanly and draws a blank card.
+>
+> Not working yet: no match has been played. The FUT home header shows a zero
+> balance while the store and market show the true figure; the responses that
+> refresh it have been bisected but the one the home reads is not yet
+> identified. `EAS FC` still reads not connected -- it is a second Blaze
+> connection to its own endpoint, and pointing it here via `POW_CUSTOMURL` is
+> applied but unverified. Auction listings show no time remaining, and buying
+> from the market has not been confirmed end to end on the console.
 
 This repository contains only original research scripts, documentation and
 non-sensitive example configuration. It does **not** contain FIFA game files,
