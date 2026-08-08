@@ -1426,3 +1426,31 @@ def consumables_response(inventory: "ClubInventory") -> bytes:
         or item.get("consumableType") in CONSUMABLE_TYPES
     ]
     return json.dumps({"itemData": items}, separators=(",", ":")).encode()
+
+
+def totw_index() -> bytes:
+    """The list of Team of the Week squads available to view.
+
+    The screen asks for the TOTW itself and then for this list, and a 404 here
+    is what it reports as "aucune Équipe de la semaine disponible" -- the squad
+    had already been served successfully.
+    """
+    squads = []
+    if TOTW_FILE.exists():
+        squads = json.loads(TOTW_FILE.read_text()).get("squads", [])
+    return json.dumps(
+        {
+            "squad": [
+                {
+                    "id": index + 1,
+                    "squadName": squad.get("name", f"TOTW {index + 1}"),
+                    "formation": FORMATION,
+                    "rating": 0,
+                    "chemistry": 100,
+                }
+                for index, squad in enumerate(squads)
+            ],
+            "userInfo": [],
+        },
+        separators=(",", ":"),
+    ).encode()

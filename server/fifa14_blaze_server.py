@@ -469,6 +469,7 @@ from fut_inventory import (  # noqa: E402
     consumables_response,
     hub_response,
     store_catalogue,
+    totw_index,
     totw_response,
     tournaments_response,
 )
@@ -1813,6 +1814,7 @@ class IdentityHttpService:
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
                     ),
+                    "/ut/game/fifa14/user/list": totw_index,
                     "/ut/game/fifa14/clientdata/totw": (
                         lambda: totw_response(CARD_CATALOGUE)
                     ),
