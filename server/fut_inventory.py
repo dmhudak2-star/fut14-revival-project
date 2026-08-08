@@ -709,15 +709,19 @@ def store_catalogue(timestamp: int = 2147483647) -> bytes:
                     "finalFunds": spec["points"],
                 }
             )
+        # The asset id names the tier's artwork, not the pack: the PC
+        # reference ships assetId 3 for the gold pack. Deriving it from the
+        # pack id resolved to nothing and the bronze tiles drew NOT FOUND.
+        tier_asset = {"bronze": 1, "silver": 2, "gold": 3}[spec["tier"]]
         purchases.append(
             {
                 "id": pack_id,
-                "assetId": pack_id % 100,
+                "assetId": tier_asset,
                 "actionType": "CREATEPACK",
                 "packType": "CARDPACK",
                 "description": f"FUT_STORE_PACK_{pack_id}_DESC",
                 "displayGroup": {"priority": index, "value": spec["tier"]},
-                "displayGroupAssetId": index,
+                "displayGroupAssetId": tier_asset,
                 "displayGroupUseDefaultImage": True,
                 "useDefaultImage": True,
                 "isPremium": spec["premium"],
