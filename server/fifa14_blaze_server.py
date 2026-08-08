@@ -1764,7 +1764,19 @@ class IdentityHttpService:
                     in ("/ut/game/fifa14/purchased/items", "/ut/game/fifa14/store")
                     and self.command == "POST"
                 ):
-                    if not PACK_SHOP.can_afford():
+                    # The body names which pack, so the 400-coin bronze costs
+                    # 400 rather than whatever the default is.
+                    try:
+                        wanted = json.loads(body or b"{}")
+                    except ValueError:
+                        wanted = {}
+                    try:
+                        pack_id = int(
+                            wanted.get("packId") or wanted.get("id") or GOLD_PACK_ID
+                        )
+                    except (TypeError, ValueError):
+                        pack_id = GOLD_PACK_ID
+                    if not PACK_SHOP.can_afford(pack_id):
                         owner.journal.event(
                             "fut_pack_refused",
                             peer=self.client_address[0],
@@ -1776,11 +1788,12 @@ class IdentityHttpService:
                             {"Content-Type": "application/json; charset=utf-8"},
                         )
                         return
-                    payload = PACK_SHOP.open_pack()
+                    payload = PACK_SHOP.open_pack(pack_id)
                     owner.journal.event(
                         "fut_pack_opened",
                         peer=self.client_address[0],
                         coins=WALLET.coins,
+                        pack=pack_id,
                         items=len(PACK_SHOP.pending),
                     )
                     self.reply(
