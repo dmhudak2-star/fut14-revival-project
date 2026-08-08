@@ -298,14 +298,23 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/delete/auth": b"{}",
     "/ut/game/fifa14/user": b"{}",
     "/ut/game/fifa14/userdata": b"{}",
-    "/ut/game/fifa14/user/credits": b"{}",
+    # A club with no coins cannot buy a pack or bid on anything, so the store
+    # and market screens render but do nothing. Give the founding club a
+    # working balance.
+    "/ut/game/fifa14/user/credits": b'{"credits":50000}',
     "/ut/game/fifa14/user/historical": b"{}",
     "/ut/game/fifa14/match": b"{}",
     "/ut/game/fifa14/match/ready": b"{}",
     "/ut/game/fifa14/match/end": b"{}",
     "/ut/game/fifa14/clientdata/tutorialpopups": b"{}",
     "/ut/game/fifa14/clientdata/userHubData": b"{}",
-    "/ut/game/fifa14/clientdata/pileSize": b"{}",
+    # Trade pile, watch list and club capacity. Zero here means every add is
+    # refused as "pile full"; these are the retail defaults the PC revival
+    # carries.
+    "/ut/game/fifa14/clientdata/pileSize": (
+        b'{"entries":[{"key":2,"value":20000},{"key":3,"value":20000},'
+        b'{"key":4,"value":20000}]}'
+    ),
     "/ut/game/fifa14/clientdata/totw": b"{}",
     "/ut/game/fifa14/clientdata/managerquest": b'{"entries":[]}',
     "/ut/game/fifa14/eventfeed": b"{}",
@@ -326,7 +335,14 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/game/fifa14/club/stats/newcards": b'{"entries":[]}',
     "/ut/game/fifa14/item": b'{"itemData":[]}',
     "/ut/delete/game/fifa14/item": b"{}",
-    "/ut/game/fifa14/tradePile": b'{"auctionInfo":[]}',
+    # The market parser reads all three members; omitting the count and the
+    # duplicate list leaves two of them at whatever the constructor held.
+    "/ut/game/fifa14/tradePile": (
+        b'{"auctionInfo":[],"duplicateItemIdList":[],"total":0}'
+    ),
+    "/ut/game/fifa14/watchlist": (
+        b'{"auctionInfo":[],"duplicateItemIdList":[],"total":0}'
+    ),
     # Acknowledges the squad the client saves at the end of club creation; the
     # PC revival answers with the same id it was asked to store.
     "/ut/game/fifa14/squad/1": b'{"id":1}',
@@ -343,9 +359,18 @@ FUT_ROUTES: dict[str, bytes] = {
     # A visible-but-invalid single entry keeps the store screen constructible
     # without offering anything purchasable.
     "/ut/game/fifa14/store": b'{"purchase":[],"timestamp":2147483647}',
+    # One real, buyable gold pack rather than a deliberately invalid entry:
+    # the store screen now has something to sell, which is what a club with a
+    # balance is for. Same record the PC revival serves.
     "/ut/game/fifa14/store/purchasegroup/all": (
-        b'{"purchase":[{"id":1,"actionType":"CREATEPACK",'
-        b'"packType":"INVALID","visible":0}],"timestamp":2147483647}'
+        b'{"purchase":[{"id":304,"assetId":3,"actionType":"CREATEPACK",'
+        b'"packType":"CARDPACK","description":"FUT_STORE_PACK_304_DESC",'
+        b'"displayGroup":{"priority":3,"value":"gold"},"displayGroupAssetId":3,'
+        b'"displayGroupUseDefaultImage":true,"useDefaultImage":true,'
+        b'"isPremium":true,"dealType":"REGULAR","saleType":"NONE",'
+        b'"state":"active","visible":1,"sortPriority":1,'
+        b'"currencies":[{"name":"COINS","funds":7500,"finalFunds":7500}]}],'
+        b'"timestamp":2147483647}'
     ),
     "/ut/v2/game/fifa14/store/transaction": b'{"state":"NOTRANSACTION"}',
 }
