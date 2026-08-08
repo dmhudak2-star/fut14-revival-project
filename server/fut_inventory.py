@@ -842,10 +842,19 @@ PILE_CLUB = 7
 class CardActions:
     """Moving cards between piles, and quick-selling them."""
 
-    def __init__(self, shop: "PackShop", wallet: "Wallet") -> None:
+    def __init__(
+        self,
+        shop: "PackShop",
+        wallet: "Wallet",
+        inventory: "ClubInventory | None" = None,
+    ) -> None:
         self.shop = shop
         self.wallet = wallet
-        # Cards taken out of a pack and kept.
+        self.inventory = inventory
+        # Cards taken out of a pack and kept. When an inventory is attached,
+        # this *is* its item list -- otherwise a card sent to the club is held
+        # here and never appears in the club, which is exactly how it looked:
+        # the send succeeded, the card vanished.
         self.club: list[dict] = []
         # Pile 5: cards set aside to be listed, not yet on the market.
         self.transfer: list[dict] = []
@@ -896,6 +905,8 @@ class CardActions:
                 else:
                     item["itemState"] = "free"
                     self.club.append(item)
+                    if self.inventory is not None:
+                        self.inventory.items.append(item)
             results.append(
                 {
                     "id": item_id,
@@ -923,6 +934,12 @@ class CardActions:
                     if owned["id"] == item_id:
                         item = self.club.pop(index)
                         break
+            if item is not None and self.inventory is not None:
+                self.inventory.items = [
+                    owned
+                    for owned in self.inventory.items
+                    if owned["id"] != item_id
+                ]
             awarded += int(item["discardValue"]) if item else 200
             sold.append({"id": item_id})
         self.wallet.credit(awarded)

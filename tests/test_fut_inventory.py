@@ -463,3 +463,58 @@ def test_team_of_the_week_is_a_full_side_of_rare_cards() -> None:
     assert len(squad["itemData"]) == 23
     assert all(card["rareflag"] for card in squad["itemData"])
     assert all(card["rating"] >= 80 for card in squad["itemData"])
+
+
+def test_a_card_sent_to_the_club_is_in_the_club() -> None:
+    # The send acknowledged and the card left the pack, but the club response
+    # was built from the starting inventory alone, so it never appeared.
+    import random
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory = ClubInventory()
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    actions = CardActions(shop, wallet, inventory)
+
+    before = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(21)))
+    kept = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": kept, "pile": 7}]})
+
+    owned = json.loads(inventory.club_response({"type": "player"}))["itemData"]
+    assert len(owned) == before + 1
+    assert kept in [item["id"] for item in owned]
+
+
+def test_a_card_sold_out_of_the_club_leaves_it() -> None:
+    import random
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory = ClubInventory()
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    actions = CardActions(shop, wallet, inventory)
+
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(22)))
+    kept = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": kept, "pile": 7}]})
+    actions.discard_many([kept])
+
+    owned = json.loads(inventory.club_response({"type": "player"}))["itemData"]
+    assert kept not in [item["id"] for item in owned]
