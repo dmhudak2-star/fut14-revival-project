@@ -466,6 +466,7 @@ from fut_inventory import (  # noqa: E402
     season_user_response,
     seasons_response,
     club_stats_response,
+    consumables_response,
     hub_response,
     store_catalogue,
     totw_response,
@@ -2147,6 +2148,28 @@ class IdentityHttpService:
                 # not know, and the login step waiting on the response never
                 # completes. Do not extend this list without watching where the
                 # fan-out stops.
+                # The Consommables tab asks here by category, and it was a
+                # 404 -- so the tab looked empty however many the club held.
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/club/consumables"
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        consumables_response(CLUB_INVENTORY) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Item definitions the trophy and club tiles resolve against.
+                if normalized_path.startswith("/fut/items/") and self.command == "GET":
+                    self.reply(
+                        200,
+                        b'{"itemData":[]}\n',
+                        {"Content-Type": "application/json; charset=utf-8"},
+                    )
+                    return
                 # Mon Club's counters -- players, rares, staff, stadiums,
                 # kits, badges, balls -- all read zero because these answered
                 # with an empty entries list, so a club full of cards reported

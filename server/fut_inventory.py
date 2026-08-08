@@ -1382,3 +1382,23 @@ def club_stats_response(inventory: "ClubInventory") -> bytes:
         {"key": 7, "value": 0},
     ]
     return json.dumps({"entries": entries}, separators=(",", ":")).encode()
+
+
+CONSUMABLE_TYPES = {
+    "contract", "fitness", "healing", "training", "position", "playStyle",
+}
+
+
+def consumables_response(inventory: "ClubInventory") -> bytes:
+    """The Consommables screen asks here, by category.
+
+    It was a 404, which is why the tab looked empty however many consumables
+    the club held.
+    """
+    items = [
+        item
+        for item in inventory.items
+        if item.get("itemType") in CONSUMABLE_TYPES
+        or item.get("consumableType") in CONSUMABLE_TYPES
+    ]
+    return json.dumps({"itemData": items}, separators=(",", ":")).encode()
