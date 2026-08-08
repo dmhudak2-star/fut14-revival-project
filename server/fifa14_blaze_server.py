@@ -296,14 +296,16 @@ EASW_AUTH_PATHS = ("/authentication360", "/v2/authenticationNucleusPersona")
 # implementation of this same title.
 FUT_ROUTES: dict[str, bytes] = {
     "/ut/delete/auth": b"{}",
-    # Back to an empty object, and the reason is worth keeping. Wrapping the
-    # account in {"userInfo":{...,"credits":50000,...}} made the club header
-    # read -842150451, which is 0xCDCDCDCD -- uninitialised memory. The parser
-    # did not recognise the shape, so it never wrote the field at all, and the
-    # header printed whatever the allocator had left there. An empty object at
-    # least leaves it at a clean zero. The real currency source is still to be
-    # found; guessing at member names makes it worse, not better.
-    "/ut/game/fifa14/user": b"{}",
+    # The header calls the currency "FIFA coins", and CardsDLL's JSON member
+    # table carries `coins` alongside GetCoinsBalance and RefreshUserCredit --
+    # so the member is very likely `coins`, not `credits`.
+    #
+    # Both are sent, at the top level. The earlier attempt wrapped them in
+    # {"userInfo":{...}} and the header read -842150451, which is 0xCDCDCDCD:
+    # the parser did not recognise the shape, never wrote the field, and the
+    # header printed uninitialised memory. An unknown *wrapper* breaks the
+    # parse; an unknown sibling member at the top level is simply skipped.
+    "/ut/game/fifa14/user": b'{"coins":50000,"credits":50000}',
     "/ut/game/fifa14/userdata": b"{}",
     # A club with no coins cannot buy a pack or bid on anything, so the store
     # and market screens render but do nothing. Give the founding club a
@@ -311,8 +313,10 @@ FUT_ROUTES: dict[str, bytes] = {
     # The parser reads a currencies array, not a "credits" number. Sending the
     # latter left the balance at whatever the response constructor held, which
     # is what showed up in the club header as a negative figure.
+    # Same two spellings here, for the same reason.
     "/ut/game/fifa14/user/credits": (
-        b'{"currencies":[{"name":"COINS","funds":50000,"finalFunds":50000},'
+        b'{"coins":50000,"credits":50000,'
+        b'"currencies":[{"name":"COINS","funds":50000,"finalFunds":50000},'
         b'{"name":"POINTS","funds":0,"finalFunds":0}],'
         b'"unopenedPacks":{"preOrderPacks":0,"recoveredPacks":0}}'
     ),
