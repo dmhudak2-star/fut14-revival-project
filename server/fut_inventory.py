@@ -1454,3 +1454,63 @@ def totw_index() -> bytes:
         },
         separators=(",", ":"),
     ).encode()
+
+
+# -- keeping the club between sessions -------------------------------------
+#
+# Everything above is rebuilt from the icebreaker packs at every server start,
+# so a card sent to the club survived exactly as long as the process did: the
+# club counter went back to 92 on the next relaunch and the pack you opened was
+# gone. Entering FUT needs a relaunch, so that is every single session.
+
+SAVE_FILE = Path(__file__).resolve().parent.parent / "runtime" / "club-save.json"
+
+
+class ClubSave:
+    """The club's own state, written to disk and reloaded."""
+
+    def __init__(self, path: Path = SAVE_FILE) -> None:
+        self.path = path
+
+    def load(self, inventory: "ClubInventory", wallet: "Wallet",
+             actions: "CardActions") -> bool:
+        if not self.path.exists():
+            return False
+        try:
+            saved = json.loads(self.path.read_text())
+        except (ValueError, OSError):
+            return False
+        wallet.coins = int(saved.get("coins", wallet.coins))
+        known = {item["id"] for item in inventory.items}
+        for item in saved.get("acquired", []):
+            if item["id"] not in known:
+                inventory.items.append(item)
+                actions.club.append(item)
+        for item in saved.get("sold", []):
+            inventory.items = [
+                held for held in inventory.items if held["id"] != item
+            ]
+        actions.transfer = list(saved.get("transfer", []))
+        actions.listings = {
+            int(key): value for key, value in saved.get("listings", {}).items()
+        }
+        return True
+
+    def save(self, inventory: "ClubInventory", wallet: "Wallet",
+             actions: "CardActions") -> None:
+        starting = ClubInventory()
+        original = {item["id"] for item in starting.items}
+        current = {item["id"] for item in inventory.items}
+        document = {
+            "coins": wallet.coins,
+            # Only what differs from the starting club, so the save stays small
+            # and a change to the icebreaker packs still flows through.
+            "acquired": [
+                item for item in inventory.items if item["id"] not in original
+            ],
+            "sold": sorted(original - current),
+            "transfer": actions.transfer,
+            "listings": {str(key): value for key, value in actions.listings.items()},
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(document, separators=(",", ":")))

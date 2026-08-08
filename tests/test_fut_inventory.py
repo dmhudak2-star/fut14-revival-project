@@ -591,3 +591,45 @@ def test_the_tiles_count_what_the_club_actually_holds() -> None:
     assert after["clubPlayers"] > before
     # And the market tile reports real listings rather than a fixed zero.
     assert json.loads(hub_response(inventory, 3))["auctionCount"] == 3
+
+
+def test_the_club_survives_a_restart() -> None:
+    # Entering FUT needs a relaunch, so without a save every session started
+    # from the icebreaker packs again: the club counter back to 92, the pack
+    # you opened gone, the coins reset.
+    import random
+    import tempfile
+    from pathlib import Path
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        ClubSave,
+        PackShop,
+        Wallet,
+    )
+
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "club.json"
+
+        inventory, wallet = ClubInventory(), Wallet()
+        shop = PackShop(CardCatalogue(), wallet)
+        actions = CardActions(shop, wallet, inventory)
+        opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(61)))
+        kept = [item["id"] for item in opened["itemList"][:2]]
+        actions.move({"itemData": [{"id": item, "pile": 7} for item in kept]})
+        ClubSave(path).save(inventory, wallet, actions)
+        owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+        coins = wallet.coins
+
+        # A fresh process, as a relaunch gives.
+        restored, purse = ClubInventory(), Wallet()
+        again = CardActions(PackShop(CardCatalogue(), purse), purse, restored)
+        assert ClubSave(path).load(restored, purse, again)
+
+        reloaded = json.loads(restored.club_response({"type": "player"}))["itemData"]
+        assert len(reloaded) == owned
+        assert set(kept) <= {item["id"] for item in reloaded}
+        assert purse.coins == coins

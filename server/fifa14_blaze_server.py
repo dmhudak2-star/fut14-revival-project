@@ -458,6 +458,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
     GOLD_PACK_ID,
     CardActions,
+    ClubSave,
     CardCatalogue,
     ClubInventory,
     PackShop,
@@ -479,6 +480,12 @@ CARD_CATALOGUE = CardCatalogue()
 WALLET = Wallet()
 PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET)
 CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
+
+# Entering FUT needs a relaunch, so without this every session started from the
+# icebreaker packs again: the club counter back to 92, the pack you opened
+# gone, the coins reset.
+CLUB_SAVE = ClubSave()
+CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
 CLUB_NAME = "Fondateur FUT"
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
@@ -1881,6 +1888,7 @@ class IdentityHttpService:
                         )
                         return
                     payload = PACK_SHOP.open_pack(pack_id)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_pack_opened",
                         peer=self.client_address[0],
@@ -1942,6 +1950,7 @@ class IdentityHttpService:
                         item["itemState"] = "free"
                         item["untradeable"] = False
                         CARD_ACTIONS.club.append(item)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_bid",
                         peer=self.client_address[0],
@@ -1970,6 +1979,7 @@ class IdentityHttpService:
                     except ValueError:
                         document = {}
                     payload = CARD_ACTIONS.list_for_sale(document)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_item_listed",
                         peer=self.client_address[0],
@@ -2014,6 +2024,7 @@ class IdentityHttpService:
                     except ValueError:
                         document = {}
                     payload = CARD_ACTIONS.move(document)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_item_move",
                         peer=self.client_address[0],
@@ -2051,6 +2062,7 @@ class IdentityHttpService:
                         except (TypeError, ValueError):
                             continue
                     payload = CARD_ACTIONS.discard_many(item_ids)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_quick_sell",
                         peer=self.client_address[0],
