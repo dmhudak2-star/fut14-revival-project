@@ -1133,7 +1133,14 @@ class PackShop:
     def purchased_items(self) -> bytes:
         return json.dumps(
             {
-                "duplicateItemIdList": self._duplicates(self.pending),
+                # Empty on purpose. Reporting duplicates here froze the title
+                # outright: after buying a second Chamakh the client fetched
+                # squad/active, tradePile and this, and stopped dead. The pack
+                # response carries the same list without trouble, so the fault
+                # is this document specifically -- most likely the ids it wants
+                # are the cards already owned rather than the new ones, and a
+                # freeze is not worth guessing through.
+                "duplicateItemIdList": [],
                 "itemData": self.pending,
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
