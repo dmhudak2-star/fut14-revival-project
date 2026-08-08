@@ -325,7 +325,15 @@ def decode_container(blob: bytes) -> bytes:
         cursor += 8
         chunk = blob[cursor : cursor + stored_size]
         output.extend(decode_chunk(chunk, total, len(output), chunk_size))
-        cursor = align_to(cursor + stored_size + 8, 16) - 8
+        # The next chunk's descriptor sits immediately after this chunk's
+        # data, and the data it introduces starts on a 16-byte boundary -- so
+        # align the position *after* the descriptor, not the position before
+        # it.  Aligning the end of the data instead gives the same answer
+        # whenever that end falls 1..8 bytes into a 16-byte unit, which is
+        # every single-chunk resource and most two-chunk ones; it is 16 bytes
+        # short otherwise, and an 11-chunk archive hits that case reliably.
+        end_of_data = cursor + 8 + stored_size
+        cursor = align_to(end_of_data + 8, 16) - 8
     if len(output) != total:
         raise ValueError(f"Decoded {len(output)} bytes, container declares {total}")
     return bytes(output)

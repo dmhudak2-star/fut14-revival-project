@@ -326,29 +326,18 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/game/fifa14/club/stats/newcards": b'{"entries":[]}',
     "/ut/game/fifa14/item": b'{"itemData":[]}',
     "/ut/delete/game/fifa14/item": b"{}",
-    "/ut/game/fifa14/purchased/items": b'{"duplicateItemIdList":[],"itemData":[]}',
     "/ut/game/fifa14/tradePile": b'{"auctionInfo":[]}',
-    # An empty squad list is not a neutral answer here.  The PC revival's own
-    # notes say fcc_login2 "deliberately treats an empty GetSquads vector as an
-    # error and never issues the active-squad request", and that is exactly the
-    # dialog this build raises: "une erreur s'est produite lors de la connexion
-    # a FIFA 14 Ultimate Team".  One squad summary is what lets the screen
-    # continue.
-    "/ut/game/fifa14/squad/list": (
-        b'{"squad":[{"id":1,"squadName":"FIFA 14 TOTY","rating":95,'
-        b'"chemistry":78,"formation":"f442"}]}'
-    ),
     # Acknowledges the squad the client saves at the end of club creation; the
     # PC revival answers with the same id it was asked to store.
     "/ut/game/fifa14/squad/1": b'{"id":1}',
-    "/ut/game/fifa14/squad/active": (
-        b'{"squad":[{"id":1,"squadName":"FIFA 14 TOTY","rating":95,'
-        b'"chemistry":78,"formation":"f442"}]}'
-    ),
     # Entering Saison Joueur Solo asks for this list; a 404 surfaces as "un
     # probleme de communication est survenu avec les serveurs FIFA Ultimate
     # Team".  The PC revival carries the same empty-seasons shape.
     "/ut/game/fifa14/season/list": b'{"seasons":[]}',
+    # The season screen asks for the user's own season state straight after the
+    # list.  An empty object leaves the native response at its constructor
+    # defaults -- no division, no points, no record invented.
+    "/ut/game/fifa14/season/user": b"{}",
     "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
     "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
     # A visible-but-invalid single entry keeps the store screen constructible
@@ -362,6 +351,14 @@ FUT_ROUTES: dict[str, bytes] = {
 }
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.json"
+
+# The club's cards. Built once at import from the icebreaker packs this build
+# ships, so every screen that asks about the club sees the same inventory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fut_inventory import ClubInventory  # noqa: E402
+
+CLUB_INVENTORY = ClubInventory()
+CLUB_NAME = "Fondateur FUT"
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
@@ -1580,6 +1577,40 @@ class IdentityHttpService:
                         peer=self.client_address[0],
                         method=self.command,
                         path=parsed.path,
+                    )
+                    return
+                # Anything that describes the club is generated from the
+                # inventory rather than answered with an empty fixture: an
+                # empty squad is what fcc_login2 treats as fatal, and an empty
+                # club leaves nothing to field a match with.
+                club_responses = {
+                    "/ut/game/fifa14/squad/list": (
+                        lambda: CLUB_INVENTORY.squad_list_response(CLUB_NAME)
+                    ),
+                    "/ut/game/fifa14/squad/active": (
+                        lambda: CLUB_INVENTORY.active_squad_response(CLUB_NAME)
+                    ),
+                    "/ut/game/fifa14/club": CLUB_INVENTORY.club_response,
+                    "/ut/game/fifa14/purchased/items": (
+                        CLUB_INVENTORY.purchased_items_response
+                    ),
+                }
+                if normalized_path in club_responses and self.command == "GET":
+                    payload = club_responses[normalized_path]()
+                    owner.journal.event(
+                        "fut_club_response",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
                     )
                     return
                 if normalized_path in FUT_ROUTES:
