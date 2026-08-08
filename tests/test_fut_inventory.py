@@ -844,8 +844,14 @@ def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
 
     inventory = ClubInventory()
     shop = PackShop(CardCatalogue(), Wallet(), inventory)
-    base = {"id": 1, "assetId": 158023, "rareflag": 0}
-    rare = {"id": 2, "assetId": 158023, "rareflag": 1}
+    # An asset the starting club does not already hold, so the only copies in
+    # play are the ones this test puts there.
+    held = {item.get("assetId") for item in inventory.items}
+    asset = next(
+        card["assetId"] for card in CardCatalogue().cards if card["assetId"] not in held
+    )
+    base = {"id": 1, "assetId": asset, "rareflag": 0}
+    rare = {"id": 2, "assetId": asset, "rareflag": 1}
     inventory.items.append(base)
     # Same player, different version: not a repeat.
     assert shop._duplicates([rare]) == []
