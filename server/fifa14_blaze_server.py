@@ -645,6 +645,22 @@ class Fifa14Protocol:
             fut_base = f"{self.identity_base}/"
             locale = (state.locale if state is not None else "") or "enUS"
             values = [
+                # EA Sports Football Club. powdllzf names its own endpoints --
+                # pal.gt.easfc.ea.com:8094 for the session and
+                # content.lt.easfc.ea.com:8080 for the catalogue -- and neither
+                # is among the hostnames the launch patch redirects, which is
+                # why the header reads "EAS FC non connecte". These keys are
+                # what the module reads in preference to those defaults; the
+                # retail values give the host:port form.
+                #
+                # POWService::PowBlazeDisconnected says the session itself is a
+                # Blaze connection, not HTTP, so the session URL points at the
+                # Blaze core port and the content URL at the identity server.
+                ("ONLINE/POW_CUSTOMURL", f"{self.advertise}:{self.core_port}"),
+                ("ONLINE/POW_CUSTOMCONTENTURL", self.identity_base),
+                ("FIFA_POW_URL", f"{self.advertise}:{self.core_port}"),
+                ("FIFA_POW_CONTENT_SERVER_URL", self.identity_base),
+                ("FIFA_POW_NUCLEUS_PROXY_URL", self.identity_base),
                 ("FUT_ENABLE_MENU", "1"),
                 ("OSDK_EASW_ALLOWED_LOCALES", locale),
                 ("OSDK_EASW_AUTH_URL", self.identity_base),
