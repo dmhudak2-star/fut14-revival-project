@@ -591,6 +591,9 @@ class ProtocolTests(unittest.TestCase):
                     "/ut/game/fifa14/user",
                     "/ut/game/fifa14/user/credits",
                     "/ut/delete/game/fifa14/item",
+                    "/ut/game/fifa14/trade/status",
+                    "/ut/game/fifa14/tradePile",
+                    "/ut/game/fifa14/watchlist",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(

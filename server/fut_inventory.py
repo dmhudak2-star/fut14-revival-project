@@ -332,7 +332,9 @@ class CardCatalogue:
         matches.sort(key=lambda card: -card.get("rating", 0))
         return matches[:limit]
 
-    def auctions(self, query: dict[str, str], limit: int = 40) -> bytes:
+    def auctions(
+        self, query: dict[str, str], limit: int = 40, coins: int | None = None
+    ) -> bytes:
         listings = []
         for offset, card in enumerate(self.search(query, limit)):
             price = _price_for(card.get("rating", 0), card.get("rareflag", 0))
@@ -369,10 +371,20 @@ class CardCatalogue:
                     "confidenceValue": 100,
                 }
             )
-        return json.dumps(
-            {"auctionInfo": listings, "duplicateItemIdList": [], "total": len(listings)},
-            separators=(",", ":"),
-        ).encode()
+        # The balance rides along. These response constructors zero their
+        # fields before parsing, so a search reply without it hands the header
+        # a real zero -- which is exactly what visiting the market did to a
+        # balance that was 50400 on the server at the time.
+        document = {
+            "auctionInfo": listings,
+            "duplicateItemIdList": [],
+            "total": len(listings),
+        }
+        if coins is not None:
+            document.update(
+                {"credits": coins, "totalCredits": coins, "coins": coins}
+            )
+        return json.dumps(document, separators=(",", ":")).encode()
 
 
 # -- the coin balance ------------------------------------------------------
@@ -402,6 +414,20 @@ class Wallet:
 
     def debit(self, amount: int) -> int:
         return self.credit(-abs(int(amount)))
+
+    def auction_state(self) -> bytes:
+        """An empty trade list that still reports the balance."""
+        return json.dumps(
+            {
+                "auctionInfo": [],
+                "duplicateItemIdList": [],
+                "total": 0,
+                "credits": self.coins,
+                "totalCredits": self.coins,
+                "coins": self.coins,
+            },
+            separators=(",", ":"),
+        ).encode()
 
     def response(self) -> bytes:
         return json.dumps(

@@ -1654,6 +1654,22 @@ class IdentityHttpService:
                 # A quick sell is what actually writes the header's balance, so
                 # its reply has to carry the new total. An empty object here is
                 # what left the header printing uninitialised memory.
+                # Polled straight after every search, and it refreshes the
+                # header too, so it carries the balance as well.
+                if normalized_path in (
+                    "/ut/game/fifa14/trade/status",
+                    "/ut/game/fifa14/tradePile",
+                    "/ut/game/fifa14/watchlist",
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        WALLET.auction_state() + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path == "/ut/delete/game/fifa14/item":
                     WALLET.credit(SELL_PRICE_FALLBACK)
                     payload = WALLET.response()
@@ -1701,7 +1717,9 @@ class IdentityHttpService:
                         # A club search still searches the club.
                         payload = CLUB_INVENTORY.club_response()
                     else:
-                        payload = CARD_CATALOGUE.auctions(query, limit=40)
+                        payload = CARD_CATALOGUE.auctions(
+                            query, limit=40, coins=WALLET.coins
+                        )
                     owner.journal.event(
                         "fut_market_search",
                         peer=self.client_address[0],
