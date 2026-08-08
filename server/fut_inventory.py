@@ -925,14 +925,16 @@ class CardActions:
             if item is not None:
                 if pile == PILE_TRANSFER:
                     # Set aside to be listed. It leaves the club until it is
-                    # either listed or moved back.
+                    # either listed or moved back -- taking it out of the
+                    # inventory too, or the card shows in both places at once,
+                    # which is what looked like a duplicate.
                     item["itemState"] = "forSale"
-                    self.transfer.append(item)
+                    self._forget(item_id)
+                    if not any(held["id"] == item_id for held in self.transfer):
+                        self.transfer.append(item)
                 else:
                     item["itemState"] = "free"
-                    self.club.append(item)
-                    if self.inventory is not None:
-                        self.inventory.items.append(item)
+                    self._keep(item)
             results.append(
                 {
                     "id": item_id,
@@ -960,12 +962,8 @@ class CardActions:
                     if owned["id"] == item_id:
                         item = self.club.pop(index)
                         break
-            if item is not None and self.inventory is not None:
-                self.inventory.items = [
-                    owned
-                    for owned in self.inventory.items
-                    if owned["id"] != item_id
-                ]
+            if item is not None:
+                self._forget(item_id)
             awarded += int(item["discardValue"]) if item else 200
             sold.append({"id": item_id})
         self.wallet.credit(awarded)
@@ -997,6 +995,36 @@ class CardActions:
             separators=(",", ":"),
         ).encode()
 
+
+    def _forget(self, item_id: int) -> None:
+        """Drop a card from the club, wherever it is held."""
+        self.club = [held for held in self.club if held["id"] != item_id]
+        if self.inventory is not None:
+            self.inventory.items = [
+                held for held in self.inventory.items if held["id"] != item_id
+            ]
+
+    def _keep(self, item: dict) -> None:
+        """Put a card in the club, once.
+
+        A club holds one of any given card: the same item id arriving twice is
+        the same card, and the same asset in the same version is a duplicate
+        the club has no room for either.
+        """
+        signature = (item.get("assetId"), item.get("rareflag"))
+        for held in self.club:
+            if held["id"] == item["id"]:
+                return
+            if (held.get("assetId"), held.get("rareflag")) == signature:
+                return
+        self.club.append(item)
+        if self.inventory is not None:
+            for held in self.inventory.items:
+                if held["id"] == item["id"]:
+                    return
+                if (held.get("assetId"), held.get("rareflag")) == signature:
+                    return
+            self.inventory.items.append(item)
 
     def _find(self, item_id: int) -> dict | None:
         for pool in (self.transfer, self.club, self.shop.pending):
@@ -1305,5 +1333,20 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
         )
     return json.dumps(
         {"itemData": items, "formation": FORMATION, "squadName": "Équipe de la semaine"},
+        separators=(",", ":"),
+    ).encode()
+
+
+def hub_response(inventory: "ClubInventory", listings: int) -> bytes:
+    """The My Club and transfer tiles read their counts from here.
+
+    Both were fixed numbers -- 92 players and no auctions -- so the club tile
+    never moved as cards arrived and the market tile always read zero.
+    """
+    players = sum(
+        1 for item in inventory.items if item.get("itemType") == "player"
+    )
+    return json.dumps(
+        {"auctionCount": listings, "clubPlayers": players},
         separators=(",", ":"),
     ).encode()

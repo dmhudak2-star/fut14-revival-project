@@ -465,6 +465,7 @@ from fut_inventory import (  # noqa: E402
     active_tournaments_response,
     season_user_response,
     seasons_response,
+    hub_response,
     store_catalogue,
     totw_response,
     tournaments_response,
@@ -2145,6 +2146,25 @@ class IdentityHttpService:
                 # not know, and the login step waiting on the response never
                 # completes. Do not extend this list without watching where the
                 # fan-out stops.
+                # The My Club and transfer tiles read their counts here, and
+                # both were fixed: the club tile stayed at 92 as cards arrived
+                # and the market tile always read zero.
+                if normalized_path == "/ut/game/fifa14/hub" and self.command == "GET":
+                    self.reply(
+                        200,
+                        with_balance(
+                            hub_response(
+                                CLUB_INVENTORY, len(CARD_ACTIONS.listings)
+                            ),
+                            WALLET.coins,
+                        )
+                        + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in (
                     "/ut/game/fifa14/hub",
                     "/ut/game/fifa14/eventfeed",

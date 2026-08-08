@@ -518,3 +518,68 @@ def test_a_card_sold_out_of_the_club_leaves_it() -> None:
 
     owned = json.loads(inventory.club_response({"type": "player"}))["itemData"]
     assert kept not in [item["id"] for item in owned]
+
+
+def _fresh():
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory = ClubInventory()
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    return inventory, shop, CardActions(shop, wallet, inventory)
+
+
+def test_listing_a_card_takes_it_out_of_the_club() -> None:
+    # Moving to the transfer pile used to leave the card in the club as well,
+    # so it showed in both places and looked duplicated.
+    import random
+
+    inventory, shop, actions = _fresh()
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(41)))
+    card = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": card, "pile": 7}]})
+    owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+
+    actions.move({"itemData": [{"id": card, "pile": 5}]})
+    assert [item["id"] for item in actions.transfer] == [card]
+    after = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+    assert after == owned - 1
+
+
+def test_a_club_holds_one_of_any_card() -> None:
+    import random
+
+    inventory, shop, actions = _fresh()
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(42)))
+    card = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": card, "pile": 7}]})
+    owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+    # Sending the same card again must not add a second copy.
+    actions.move({"itemData": [{"id": card, "pile": 7}]})
+    assert (
+        len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+        == owned
+    )
+
+
+def test_the_tiles_count_what_the_club_actually_holds() -> None:
+    import random
+
+    from fut_inventory import hub_response
+
+    inventory, shop, actions = _fresh()
+    before = json.loads(hub_response(inventory, 0))["clubPlayers"]
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(43)))
+    actions.move(
+        {"itemData": [{"id": item["id"], "pile": 7} for item in opened["itemList"][:2]]}
+    )
+    after = json.loads(hub_response(inventory, 0))
+    assert after["clubPlayers"] > before
+    # And the market tile reports real listings rather than a fixed zero.
+    assert json.loads(hub_response(inventory, 3))["auctionCount"] == 3
