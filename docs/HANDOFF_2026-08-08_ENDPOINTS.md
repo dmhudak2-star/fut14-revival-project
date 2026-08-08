@@ -93,3 +93,46 @@ navigate to the FIFA main menu
 fifa14_tu3_helperfunctions_runtime_patch.py     <- here, not later
 select Ultimate Team
 ```
+
+## The two remaining blockers, and the names that matter
+
+Both were guessed at twice and both guesses failed. The strings say where to
+look next, and neither answer is a response-field permutation.
+
+**"Désolé, cette liste a expiré."** The localisation key is
+`FUT_AUCTION_EXPIRED`, and sitting near it in CardsDLL:
+
+```text
+EXPIRE_TIME
+TIME_SALE_EXPIRED
+XMINUTES_BEFORE_EXPIRY
+WARN_EXPIRY
+/expired
+```
+
+`EXPIRE_TIME` is a member name this server has never sent. The auction record
+carries `expires`, `startTime` and `endtime`; none of those is `EXPIRE_TIME`.
+That is the first thing to try, and unlike the four expiry variants already
+tried it comes from the binary rather than from analogy with the web app.
+
+**Team of the Week.** `clientdata/totw` is served and accepted; the screen then
+rejects what `user/list` returns. The relevant names are:
+
+```text
+GetTOTWSquads
+GetGameHubTOTWData
+EVENT_CARDS_REQUEST_TOTW_CHALLENGE_DATA_SUCCESS
+EVENT_CARDS_REQUEST_TOTW_CHALLENGE_DATA_FAILURE
+TOTW_CHALLENGE
+GOTO_TOTW_CHALLENGE
+external/ion_fut/components/Tile/MetroPanel_TOTWChallenge.swf
+```
+
+So the screen is not asking for a squad and being given the wrong shape -- it
+is asking for **challenge data**, which is a different dataset entirely, and
+the failure event has its own name. Serving a better-shaped squad will not fix
+it; the challenge document has to be found.
+
+Neither of these needs another relaunch to investigate. Both need more of
+CardsDLL dumped than the 192 KB read so far -- the member table runs past it,
+which is how `expires` was found at `0x89030D30` only after extending the dump.
