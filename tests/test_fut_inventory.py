@@ -213,3 +213,49 @@ def test_user_info_is_flat() -> None:
     assert "userInfo" not in info
     assert info["clubName"] == "Fondateur FUT"
     assert info["coins"] == info["credits"] > 0
+
+
+def test_quick_sell_takes_a_list_of_ids() -> None:
+    # The client always sends {"itemId":[...]}, twelve long when a whole pack
+    # is sold at once. Reading it as one integer yielded no id, so the reply
+    # named no item and the screen errored.
+    import random
+
+    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    actions = CardActions(shop, wallet)
+    opened = json.loads(shop.open_pack(random.Random(11)))
+    ids = [item["id"] for item in opened["itemList"]]
+
+    before = wallet.coins
+    sold = json.loads(actions.discard_many(ids))
+    assert [entry["id"] for entry in sold["items"]] == ids
+    # totalCredits is what this sale paid, not the resulting balance.
+    assert sold["totalCredits"] == wallet.coins - before
+    assert not shop.pending
+
+
+def test_sending_a_card_to_the_club_takes_it_out_of_the_pack() -> None:
+    import random
+
+    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    actions = CardActions(shop, wallet)
+    opened = json.loads(shop.open_pack(random.Random(5)))
+    first = opened["itemList"][0]["id"]
+    pending_before = len(shop.pending)
+
+    moved = json.loads(actions.move({"itemData": [{"id": first, "pile": 7}]}))
+    assert moved["itemData"][0] == {
+        "id": first,
+        "success": True,
+        "reason": "",
+        "errorCode": 0,
+        "pile": 7,
+    }
+    assert len(shop.pending) == pending_before - 1
+    assert [item["id"] for item in actions.club] == [first]

@@ -660,6 +660,30 @@ class CardActions:
             )
         return json.dumps({"itemData": results}, separators=(",", ":")).encode()
 
+    def discard_many(self, item_ids: list[int]) -> bytes:
+        """Quick sell one card or a whole pack at once.
+
+        The client sends {"itemId":[...]} -- always a list, even for one card,
+        and twelve entries long when you sell a pack outright. Reading it as a
+        single integer produced no id at all, so the reply named no item and the
+        screen raised an error.
+        """
+        sold, awarded = [], 0
+        for item_id in item_ids:
+            item = self._take_pending(item_id)
+            if item is None:
+                for index, owned in enumerate(self.club):
+                    if owned["id"] == item_id:
+                        item = self.club.pop(index)
+                        break
+            awarded += int(item["discardValue"]) if item else 200
+            sold.append({"id": item_id})
+        self.wallet.credit(awarded)
+        return json.dumps(
+            {"totalCredits": awarded, "items": sold},
+            separators=(",", ":"),
+        ).encode()
+
     def discard(self, item_id: int | None = None) -> bytes:
         """Quick sell.
 

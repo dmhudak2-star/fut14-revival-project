@@ -1806,26 +1806,32 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path == "/ut/delete/game/fifa14/item":
-                    item_id = None
-                    for candidate in urllib.parse.parse_qs(parsed.query).get("id", []):
+                    # {"itemId":[...]} -- always a list, twelve long when a
+                    # whole pack is sold at once.
+                    item_ids: list[int] = []
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    raw = document.get("itemId", document.get("id"))
+                    if isinstance(raw, list):
+                        candidates = raw
+                    elif raw is not None:
+                        candidates = [raw]
+                    else:
+                        candidates = urllib.parse.parse_qs(parsed.query).get("id", [])
+                    for candidate in candidates:
                         try:
-                            item_id = int(candidate)
-                        except ValueError:
-                            pass
-                    if item_id is None:
-                        try:
-                            document = json.loads(body or b"{}")
-                            ids = document.get("itemId") or document.get("id")
-                            item_id = int(ids) if ids is not None else None
-                        except (ValueError, TypeError):
-                            item_id = None
-                    payload = CARD_ACTIONS.discard(item_id)
+                            item_ids.append(int(candidate))
+                        except (TypeError, ValueError):
+                            continue
+                    payload = CARD_ACTIONS.discard_many(item_ids)
                     owner.journal.event(
                         "fut_quick_sell",
                         peer=self.client_address[0],
                         path=parsed.path,
                         coins=WALLET.coins,
-                        item=item_id,
+                        items=len(item_ids),
                     )
                     self.reply(
                         200,
