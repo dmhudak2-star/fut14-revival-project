@@ -1967,10 +1967,14 @@ class IdentityHttpService:
                         amount = 0
                     payload, won = CARD_CATALOGUE.bid(trade_id, amount, WALLET)
                     if won is not None:
+                        # Through _keep, so the card reaches the club inventory
+                        # -- appending to the action list alone left it owned by
+                        # nothing: unassignable, and gone on the next restart.
                         item = dict(won)
                         item["itemState"] = "free"
                         item["untradeable"] = False
-                        CARD_ACTIONS.club.append(item)
+                        CARD_ACTIONS._keep(item)
+                        CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_bid",

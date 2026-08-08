@@ -633,3 +633,33 @@ def test_the_club_survives_a_restart() -> None:
         assert len(reloaded) == owned
         assert set(kept) <= {item["id"] for item in reloaded}
         assert purse.coins == coins
+
+
+def test_a_bought_card_joins_the_club_and_leaves_the_market() -> None:
+    # Buying credited nothing to the club: the card went into a side list the
+    # inventory never saw, so it could not be assigned and vanished on restart.
+    # And the market regenerated the same listing, so the player just paid for
+    # was still for sale.
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, wallet = ClubInventory(), Wallet()
+    catalogue = CardCatalogue()
+    actions = CardActions(PackShop(catalogue, wallet), wallet, inventory)
+
+    listing = json.loads(catalogue.auctions({"start": "0", "num": "2"}))["auctionInfo"][0]
+    asset = listing["itemData"]["assetId"]
+    _, won = catalogue.bid(listing["tradeId"], listing["buyNowPrice"], wallet)
+    assert won is not None
+    actions._keep(dict(won))
+
+    assert any(item["assetId"] == asset for item in inventory.items)
+    again = json.loads(catalogue.auctions({"start": "0", "num": "2"}))
+    assert all(
+        entry["itemData"]["assetId"] != asset for entry in again["auctionInfo"]
+    )

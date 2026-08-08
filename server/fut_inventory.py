@@ -421,6 +421,10 @@ class CardCatalogue:
         # Listings are generated per search, so a bid arriving later refers to
         # a trade id that no longer exists anywhere unless it is remembered.
         self.served: dict[int, dict] = {}
+        # Cards already bought. Without this the market regenerates the same
+        # listing on the next search and the player you just paid for is still
+        # sitting there for sale.
+        self.sold: set[int] = set()
 
     def search(self, query: dict[str, str]) -> tuple[list[dict], int]:
         """Filtered, sorted, paged. Returns the page and the full match count.
@@ -469,7 +473,11 @@ class CardCatalogue:
                 return False
             return True
 
-        matches = [card for card in self.cards if wanted(card)]
+        matches = [
+            card
+            for card in self.cards
+            if wanted(card) and card["assetId"] not in self.sold
+        ]
         matches.sort(key=lambda card: (-card.get("rating", 0), card.get("name", "")))
 
         start = number("start") or 0
@@ -624,6 +632,8 @@ class CardCatalogue:
         listing["coins"] = wallet.coins
         self.served[trade_id] = listing
         item = listing.get("itemData") if won else None
+        if won and isinstance(item, dict) and item.get("assetId"):
+            self.sold.add(int(item["assetId"]))
         return json.dumps(listing, separators=(",", ":")).encode(), item
 
 
