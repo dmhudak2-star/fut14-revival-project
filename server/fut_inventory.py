@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from pathlib import Path
 
 
@@ -343,6 +344,13 @@ class ClubInventory:
 # 14019 standing auctions is not a market, it is a phone book. Each search
 # returns the best matches for its filters.
 
+AUCTION_DURATION = 3600
+
+
+def _now() -> int:
+    return int(time.time())
+
+
 MARKET_ITEM_ID_BASE = 1_800_000_000
 MARKET_TRADE_ID_BASE = 1_900_000_000
 
@@ -460,7 +468,17 @@ class CardCatalogue:
                     "watched": False,
                     "bidState": "none",
                     "tradeOwner": False,
-                    "expires": 3600,
+                    # "Temps restant" read as "--" with only a relative
+                    # `expires`, and an auction with no time left offers no
+                    # actions at all -- pressing A did nothing. CardsDLL's
+                    # member table carries startTime, endtime, endDateTime and
+                    # duration beside expires, so the screen works from
+                    # absolute bounds. Send both forms.
+                    "expires": AUCTION_DURATION,
+                    "duration": AUCTION_DURATION,
+                    "startTime": _now(),
+                    "endtime": _now() + AUCTION_DURATION,
+                    "endDateTime": _now() + AUCTION_DURATION,
                     "sellerName": "FUT",
                     "sellerEstablished": 2013,
                     "sellerId": 1,
