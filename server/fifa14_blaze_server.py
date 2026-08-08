@@ -407,7 +407,18 @@ SELL_PRICE_FALLBACK = 200
 
 
 def with_balance(payload: bytes, coins: int) -> bytes:
-    """Add the coin total to any JSON object we answer a FUT route with.
+    """Add the coin total to a response that is known to carry one.
+
+    Do not call this on every FUT route. Adding the total to all of them froze
+    the login: the fan-out stopped dead at clientdata/tutorialpopups and went no
+    further. So an unrecognised sibling is *not* universally skipped -- some of
+    these parsers reject an object carrying members they do not know, and the
+    login step waiting on that response never completes.
+
+    Use it only where a balance genuinely belongs: the user and credits
+    responses, quick sell, market searches, trade state, and pack purchases.
+
+    Original note, still true of those responses:
 
     The club header is refreshed from whichever response last carried a
     balance, and these response constructors zero their fields before parsing.
@@ -1642,9 +1653,7 @@ class IdentityHttpService:
                     # until it is observed.
                     self.reply(
                         200,
-                        with_balance(
-                            FUT_ROUTES["/ut/game/fifa14/user"], WALLET.coins
-                        ) + b"\n",
+                        WALLET.user_info(CLUB_NAME, "FUT") + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -1775,7 +1784,11 @@ class IdentityHttpService:
                     "/ut/game/fifa14/user/credits",
                     "/ut/game/fifa14/user",
                 ) and self.command == "GET":
-                    payload = WALLET.response()
+                    payload = (
+                        WALLET.credits_response()
+                        if normalized_path.endswith("/credits")
+                        else WALLET.user_info(CLUB_NAME, "FUT")
+                    )
                     self.reply(
                         200,
                         payload + b"\n",
@@ -1818,9 +1831,7 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path in club_responses and self.command == "GET":
-                    payload = with_balance(
-                        club_responses[normalized_path](), WALLET.coins
-                    )
+                    payload = club_responses[normalized_path]()
                     owner.journal.event(
                         "fut_club_response",
                         peer=self.client_address[0],
@@ -1846,7 +1857,7 @@ class IdentityHttpService:
                     )
                     self.reply(
                         200,
-                        with_balance(FUT_ROUTES[normalized_path], WALLET.coins) + b"\n",
+                        FUT_ROUTES[normalized_path] + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",

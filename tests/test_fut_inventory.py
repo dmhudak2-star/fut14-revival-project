@@ -180,3 +180,36 @@ def test_the_market_honours_the_names_it_is_actually_sent() -> None:
     )
     assert one["total"] > 0
     assert {a["itemData"]["assetId"] for a in one["auctionInfo"]} == {158023}
+
+
+def test_the_currency_names_are_lower_case() -> None:
+    # The native parser compares them against the literal strings "coins" and
+    # "points". "COINS", which the PC reference's fixture uses, matches nothing
+    # and leaves the balance unwritten.
+    from fut_inventory import Wallet
+
+    document = json.loads(Wallet().credits_response())
+    names = [entry["name"] for entry in document["currencies"]]
+    assert names == ["coins", "points"]
+    assert document["currencies"][0]["funds"] == document["credits"]
+
+
+def test_unopened_packs_is_an_object() -> None:
+    # An array leaves the parser walking the wrong token type, and it may never
+    # reach its success epilogue.
+    from fut_inventory import Wallet
+
+    packs = json.loads(Wallet().credits_response())["unopenedPacks"]
+    assert isinstance(packs, dict)
+    assert set(packs) == {"preOrderPacks", "recoveredPacks"}
+
+
+def test_user_info_is_flat() -> None:
+    # Wrapping it as {"userInfo": {...}} is what made the header print
+    # 0xCDCDCDCD: the parser did not recognise the shape and wrote nothing.
+    from fut_inventory import Wallet
+
+    info = json.loads(Wallet().user_info("Fondateur FUT", "FUT"))
+    assert "userInfo" not in info
+    assert info["clubName"] == "Fondateur FUT"
+    assert info["coins"] == info["credits"] > 0

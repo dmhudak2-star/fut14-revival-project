@@ -454,6 +454,60 @@ class Wallet:
             separators=(",", ":"),
         ).encode()
 
+    def credits_response(self) -> bytes:
+        """FutUserCreditsServerResponse, as the native parser reads it.
+
+        The currency names are compared against the literal lower-case strings
+        `coins` and `points`. Sending "COINS" -- which is what the PC
+        reference's fixture uses -- matches nothing, so the balance is never
+        written and the header keeps whatever it had.
+
+        `unopenedPacks` has to be an object, not an array: the parser descends
+        into it for preOrderPacks/recoveredPacks, and an array leaves it walking
+        the wrong token type.
+        """
+        return json.dumps(
+            {
+                "credits": self.coins,
+                "currencies": [
+                    {"name": "coins", "funds": self.coins, "finalFunds": self.coins},
+                    {"name": "points", "funds": 0, "finalFunds": 0},
+                ],
+                "unopenedPacks": {"preOrderPacks": 0, "recoveredPacks": 0},
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def user_info(self, club_name: str, club_abbr: str) -> bytes:
+        """FutGetUserInfo, flat -- there is no `userInfo` wrapper.
+
+        Wrapping it is what made the club header print 0xCDCDCDCD: the parser
+        did not recognise the shape and never wrote the fields at all.
+        """
+        return json.dumps(
+            {
+                "personaId": 0,
+                "clubName": club_name,
+                "clubAbbr": club_abbr,
+                "clubNameChangeAllowed": False,
+                "established": 2013,
+                "divisionOffline": 10,
+                "divisionOnline": 10,
+                "won": 0,
+                "draw": 0,
+                "loss": 0,
+                "seasonTicket": False,
+                "fifaPointsFromLastYear": 0,
+                "fifaPointsTransferredStatus": 0,
+                # Aliases some of the UI binders read instead.
+                "coins": self.coins,
+                "credits": self.coins,
+                "points": 0,
+                "fifaPoints": 0,
+            },
+            separators=(",", ":"),
+        ).encode()
+
     def response(self) -> bytes:
         return json.dumps(
             {
