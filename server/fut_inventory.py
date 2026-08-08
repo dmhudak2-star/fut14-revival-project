@@ -525,7 +525,14 @@ class CardCatalogue:
                     #
                     # So: a window that cannot be outside whatever the console
                     # believes the time is, and a long relative countdown.
+                    # EXPIRE_TIME is the member CardsDLL names beside
+                    # FUT_AUCTION_EXPIRED, and this server had never sent it --
+                    # expires, startTime and endtime are none of them. Sent
+                    # alongside the others rather than instead of them, since
+                    # those are what made the Actions entry appear.
                     "expires": AUCTION_WINDOW,
+                    "EXPIRE_TIME": AUCTION_WINDOW,
+                    "expireTime": AUCTION_WINDOW,
                     "startTime": 0,
                     "endtime": 2147483647,
                     "buyNowPrice": price,
