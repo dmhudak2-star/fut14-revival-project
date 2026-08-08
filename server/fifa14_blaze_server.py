@@ -321,11 +321,23 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/delete/game/fifa14/item": b"{}",
     "/ut/game/fifa14/purchased/items": b'{"duplicateItemIdList":[],"itemData":[]}',
     "/ut/game/fifa14/tradePile": b'{"auctionInfo":[]}',
-    "/ut/game/fifa14/squad/list": b'{"squad":[]}',
+    # An empty squad list is not a neutral answer here.  The PC revival's own
+    # notes say fcc_login2 "deliberately treats an empty GetSquads vector as an
+    # error and never issues the active-squad request", and that is exactly the
+    # dialog this build raises: "une erreur s'est produite lors de la connexion
+    # a FIFA 14 Ultimate Team".  One squad summary is what lets the screen
+    # continue.
+    "/ut/game/fifa14/squad/list": (
+        b'{"squad":[{"id":1,"squadName":"FIFA 14 TOTY","rating":95,'
+        b'"chemistry":78,"formation":"f442"}]}'
+    ),
     # Acknowledges the squad the client saves at the end of club creation; the
     # PC revival answers with the same id it was asked to store.
     "/ut/game/fifa14/squad/1": b'{"id":1}',
-    "/ut/game/fifa14/squad/active": b'{"squad":[]}',
+    "/ut/game/fifa14/squad/active": (
+        b'{"squad":[{"id":1,"squadName":"FIFA 14 TOTY","rating":95,'
+        b'"chemistry":78,"formation":"f442"}]}'
+    ),
     "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
     "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
     # A visible-but-invalid single entry keeps the store screen constructible
