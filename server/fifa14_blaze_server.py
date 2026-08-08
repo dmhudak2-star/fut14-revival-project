@@ -2031,6 +2031,35 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # The four the FUT home fetches for itself. The header reads
+                # its balance from whichever response last carried one, and
+                # these are the last ones before it draws -- which is why it
+                # showed zero at home while the store, which refetches credits,
+                # showed the real figure.
+                #
+                # Only these three, and the list was found by bisection rather
+                # than reasoning. Adding the balance to every FUT route froze
+                # the login at clientdata/tutorialpopups; adding it to
+                # clientdata/userHubData as well froze it there instead. Both
+                # of those parsers reject an object carrying members they do
+                # not know, and the login step waiting on the response never
+                # completes. Do not extend this list without watching where the
+                # fan-out stops.
+                if normalized_path in (
+                    "/ut/game/fifa14/hub",
+                    "/ut/game/fifa14/eventfeed",
+                    "/ut/game/fifa14/clubUser",
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        with_balance(FUT_ROUTES[normalized_path], WALLET.coins)
+                        + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in FUT_ROUTES:
                     owner.journal.event(
                         "fut_route_request",
