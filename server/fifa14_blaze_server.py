@@ -2037,6 +2037,43 @@ class IdentityHttpService:
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
+                # Saving a squad. The body names the cards and their slots;
+                # without this the squad was whatever was built at load time
+                # and nothing could ever change it, so a card bought or pulled
+                # reached the club and had nowhere to go.
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/squad/"
+                ) and self.command in ("PUT", "POST"):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    squad = document.get("squad", document)
+                    chosen: list[int] = []
+                    for entry in (squad.get("players") or []):
+                        data = entry.get("itemData") if isinstance(entry, dict) else None
+                        raw = (data or {}).get("id") if isinstance(data, dict) else None
+                        try:
+                            if raw:
+                                chosen.append(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+                    if chosen:
+                        CLUB_INVENTORY.set_squad(chosen)
+                        CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
+                    owner.journal.event(
+                        "fut_squad_saved",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        players=len(chosen),
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        b'{"id":1}\n',
+                        {"Content-Type": "application/json; charset=utf-8"},
+                    )
+                    return
                 # Send to club, list for transfer: each entry has to be
                 # acknowledged. Answering with a club search acknowledges
                 # nothing and the button looks dead.

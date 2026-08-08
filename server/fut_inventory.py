@@ -347,6 +347,19 @@ class ClubInventory:
             separators=(",", ":"),
         ).encode()
 
+    def set_squad(self, item_ids: list[int]) -> None:
+        """Replace the starting eleven and bench with these cards, in order.
+
+        The squad was the list built at load time and nothing could change it,
+        so a card bought or pulled from a pack reached the club and then had
+        nowhere to go: the assign screen found it among nothing it could field
+        and simply backed out.
+        """
+        by_id = {item["id"]: item for item in self.items}
+        chosen = [by_id[item_id] for item_id in item_ids if item_id in by_id]
+        if chosen:
+            self.squad = chosen
+
     def active_squad_response(self, name: str) -> bytes:
         players = []
         for index, item in enumerate(self.squad):
@@ -1559,6 +1572,8 @@ class ClubSave:
             inventory.items = [
                 held for held in inventory.items if held["id"] != item
             ]
+        if saved.get("squad"):
+            inventory.set_squad([int(x) for x in saved["squad"]])
         actions.transfer = list(saved.get("transfer", []))
         actions.listings = {
             int(key): value for key, value in saved.get("listings", {}).items()
@@ -1578,6 +1593,7 @@ class ClubSave:
                 item for item in inventory.items if item["id"] not in original
             ],
             "sold": sorted(original - current),
+            "squad": [item["id"] for item in inventory.squad],
             "transfer": actions.transfer,
             "listings": {str(key): value for key, value in actions.listings.items()},
         }

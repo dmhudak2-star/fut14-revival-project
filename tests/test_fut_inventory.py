@@ -663,3 +663,45 @@ def test_a_bought_card_joins_the_club_and_leaves_the_market() -> None:
     assert all(
         entry["itemData"]["assetId"] != asset for entry in again["auctionInfo"]
     )
+
+
+def test_a_bought_card_can_be_put_in_the_squad() -> None:
+    # The squad was whatever was built at load time and nothing could change
+    # it, so a card bought or pulled reached the club and had nowhere to go --
+    # the assign screen found nothing it could field and backed out.
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, wallet = ClubInventory(), Wallet()
+    catalogue = CardCatalogue()
+    actions = CardActions(PackShop(catalogue, wallet), wallet, inventory)
+
+    listing = json.loads(catalogue.auctions({"start": "0", "num": "1"}))["auctionInfo"][0]
+    _, won = catalogue.bid(listing["tradeId"], listing["buyNowPrice"], wallet)
+    actions._keep(dict(won))
+
+    chosen = [item["id"] for item in inventory.squad]
+    chosen[0] = won["id"]
+    inventory.set_squad(chosen)
+
+    fielded = [
+        player["itemData"]["id"]
+        for player in json.loads(inventory.active_squad_response("x"))["players"]
+    ]
+    assert fielded[0] == won["id"]
+    assert len(fielded) == len(chosen)
+
+
+def test_an_unknown_card_cannot_be_fielded() -> None:
+    from fut_inventory import ClubInventory
+
+    inventory = ClubInventory()
+    original = [item["id"] for item in inventory.squad]
+    inventory.set_squad([999_999_999])
+    # Nothing resolvable: the squad is left alone rather than emptied.
+    assert [item["id"] for item in inventory.squad] == original
