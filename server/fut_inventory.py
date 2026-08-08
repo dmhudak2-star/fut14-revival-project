@@ -238,6 +238,10 @@ class ClubInventory:
 
         self.squad = _arrange(self.squad)
         self.items.extend(_presentation_items())
+        # Consumables, kits, badges, stadiums, balls and staff. Without them
+        # the Consommables, Elements club and Personnel tabs are empty and
+        # their filters have nothing to act on.
+        self.items.extend(_club_extras())
 
     # -- responses -------------------------------------------------------
 
@@ -1035,3 +1039,82 @@ class CardActions:
             if "assetId" in item:
                 self.transfer.append(item)
         return json.dumps({"id": trade_id}, separators=(",", ":")).encode()
+
+
+# -- everything a club owns that is not a player ---------------------------
+#
+# The club screens have tabs for consumables, club items and staff, and a
+# search that filters on them. Serving players only leaves those tabs empty and
+# their filters inert.
+
+CLUB_ITEM_ID_BASE = 1_750_000_000
+
+# Contracts and fitness are what a club actually runs out of; the rest are the
+# cosmetics the club and stadium screens present.
+CONSUMABLE_KINDS = [
+    ("contract", "Contract", [(1, 7), (2, 15), (3, 28)]),
+    ("fitness", "Fitness", [(1, 25), (2, 50), (3, 75)]),
+    ("healing", "Healing", [(1, 1), (2, 3), (3, 7)]),
+    ("training", "Training", [(1, 1), (2, 3), (3, 5)]),
+    ("position", "Position", [(1, 1)]),
+    ("playStyle", "Chemistry Style", [(1, 1), (2, 1), (3, 1)]),
+]
+
+CLUB_ITEM_KINDS = [
+    ("kit", 14, 6300000, 4),
+    ("badge", 241, 6000000, 4),
+    ("stadium", 6, 6200000, 3),
+    ("ball", 23, 8120091, 3),
+    ("manager", 1, 6100000, 2),
+    ("staff", 2, 6150000, 3),
+]
+
+
+def _club_extras() -> list[dict]:
+    """Consumables, kits, badges, stadiums, balls and staff."""
+    items: list[dict] = []
+    next_id = CLUB_ITEM_ID_BASE
+
+    for kind, label, grades in CONSUMABLE_KINDS:
+        for index, (grade, amount) in enumerate(grades):
+            items.append(
+                {
+                    "id": next_id,
+                    "assetId": 1000 + index,
+                    "resourceId": RESOURCE_VERSION | (1000 + index),
+                    "rating": 0,
+                    "itemType": "training" if kind == "training" else kind,
+                    "itemState": "free",
+                    "cardsubtypeid": grade,
+                    "discardValue": 0,
+                    "lastSalePrice": 0,
+                    "timestamp": 1,
+                    "untradeable": False,
+                    "rareflag": 1 if grade > 1 else 0,
+                    "consumableType": kind,
+                    "consumableLabel": label,
+                    "amount": amount,
+                    "count": 5,
+                }
+            )
+            next_id += 1
+
+    for kind, asset, resource, count in CLUB_ITEM_KINDS:
+        for index in range(count):
+            items.append(
+                {
+                    "id": next_id,
+                    "assetId": asset + index,
+                    "resourceId": resource + index,
+                    "rating": 0,
+                    "itemType": kind,
+                    "itemState": "free",
+                    "discardValue": 0,
+                    "lastSalePrice": 0,
+                    "timestamp": 1,
+                    "untradeable": False,
+                    "rareflag": 0,
+                }
+            )
+            next_id += 1
+    return items

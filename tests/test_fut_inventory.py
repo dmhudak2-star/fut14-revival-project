@@ -398,3 +398,27 @@ def test_a_search_result_can_still_be_bid_on_afterwards() -> None:
     page = json.loads(catalogue.auctions({"start": "0", "num": "2"}, wallet.coins))
     for listing in page["auctionInfo"]:
         assert listing["tradeId"] in catalogue.served
+
+
+def test_the_club_holds_more_than_players() -> None:
+    # The Consommables, Éléments club and Personnel tabs each filter on an item
+    # type; serving players only leaves them empty and their filters inert.
+    kinds = {item["itemType"] for item in INVENTORY.items}
+    for kind in ("contract", "fitness", "playStyle", "kit", "badge", "stadium",
+                 "ball", "staff", "manager"):
+        assert kind in kinds, kind
+
+
+def test_consumables_carry_an_amount() -> None:
+    # A contract card that grants no matches is not a contract card.
+    for item in INVENTORY.items:
+        if item.get("consumableType") in ("contract", "fitness"):
+            assert item["amount"] > 0
+
+
+def test_the_club_search_can_isolate_a_type() -> None:
+    players = json.loads(INVENTORY.club_response({"type": "player"}))["itemData"]
+    kits = json.loads(INVENTORY.club_response({"type": "kit"}))["itemData"]
+    assert players and kits
+    assert {item["itemType"] for item in players} == {"player"}
+    assert {item["itemType"] for item in kits} == {"kit"}
