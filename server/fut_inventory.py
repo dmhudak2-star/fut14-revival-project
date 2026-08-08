@@ -347,6 +347,82 @@ class ClubInventory:
             separators=(",", ":"),
         ).encode()
 
+    # Named sides, keyed by the id the client uses. Slot 1 is the one loaded
+    # at boot; the rest are whatever has been built since. Without this there
+    # was one squad and no way to add, rename or drop another.
+    def _squads(self) -> dict[int, dict]:
+        if not hasattr(self, "_squad_store"):
+            self._squad_store: dict[int, dict] = {
+                1: {
+                    "name": "Fondateur FUT",
+                    "formation": FORMATION,
+                    "players": [item["id"] for item in self.squad],
+                }
+            }
+        return self._squad_store
+
+    def squad_ids(self) -> list[int]:
+        return sorted(self._squads())
+
+    def save_squad(
+        self,
+        squad_id: int,
+        item_ids: list[int],
+        name: str | None = None,
+        formation: str | None = None,
+    ) -> int:
+        """Write a side, creating it if the id is new.
+
+        A squad id of zero or one the club has never seen means "make a new
+        one" -- that is how the create button asks, and refusing it is why no
+        second squad could exist.
+        """
+        squads = self._squads()
+        if not squad_id or squad_id not in squads:
+            squad_id = squad_id or (max(squads) + 1 if squads else 1)
+        by_id = {item["id"] for item in self.items}
+        kept = [item_id for item_id in item_ids if item_id in by_id]
+        entry = squads.get(squad_id, {})
+        squads[squad_id] = {
+            "name": name or entry.get("name") or f"Équipe {squad_id}",
+            "formation": formation or entry.get("formation") or FORMATION,
+            "players": kept or entry.get("players") or [],
+        }
+        if squad_id == 1 and kept:
+            self.set_squad(kept)
+        return squad_id
+
+    def delete_squad(self, squad_id: int) -> bool:
+        squads = self._squads()
+        # Slot 1 is the side the club plays with; deleting it would leave the
+        # club with nothing to field.
+        if squad_id == 1 or squad_id not in squads:
+            return False
+        del squads[squad_id]
+        return True
+
+    def squad_summaries(self) -> bytes:
+        by_id = {item["id"]: item for item in self.items}
+        entries = []
+        for squad_id, squad in sorted(self._squads().items()):
+            fielded = [by_id[i] for i in squad["players"][:11] if i in by_id]
+            rating = (
+                round(sum(item["rating"] for item in fielded) / len(fielded))
+                if fielded
+                else 0
+            )
+            entries.append(
+                {
+                    "id": squad_id,
+                    "squadName": squad["name"],
+                    "formation": squad["formation"],
+                    "rating": rating,
+                    "starRating": rating,
+                    "chemistry": 100,
+                }
+            )
+        return json.dumps({"squad": entries}, separators=(",", ":")).encode()
+
     def set_squad(self, item_ids: list[int]) -> None:
         """Replace the starting eleven and bench with these cards, in order.
 
@@ -1591,6 +1667,8 @@ class ClubSave:
         for item in saved.get("pending", []):
             if item["id"] not in known:
                 actions.shop.pending.append(item)
+        for key, value in (saved.get("squads") or {}).items():
+            inventory._squads()[int(key)] = value
         if saved.get("squad"):
             inventory.set_squad([int(x) for x in saved["squad"]])
         actions.transfer = list(saved.get("transfer", []))
@@ -1614,6 +1692,9 @@ class ClubSave:
             "sold": sorted(original - current),
             "pending": actions.shop.pending,
             "squad": [item["id"] for item in inventory.squad],
+            "squads": {
+                str(key): value for key, value in inventory._squads().items()
+            },
             "transfer": actions.transfer,
             "listings": {str(key): value for key, value in actions.listings.items()},
         }

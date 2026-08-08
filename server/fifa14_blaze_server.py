@@ -1729,9 +1729,7 @@ class IdentityHttpService:
                 # empty squad is what fcc_login2 treats as fatal, and an empty
                 # club leaves nothing to field a match with.
                 club_responses = {
-                    "/ut/game/fifa14/squad/list": (
-                        lambda: CLUB_INVENTORY.squad_list_response(CLUB_NAME)
-                    ),
+                    "/ut/game/fifa14/squad/list": CLUB_INVENTORY.squad_summaries,
                     "/ut/game/fifa14/squad/active": (
                         lambda: CLUB_INVENTORY.active_squad_response(CLUB_NAME)
                     ),
@@ -2044,6 +2042,30 @@ class IdentityHttpService:
                 # without this the squad was whatever was built at load time
                 # and nothing could ever change it, so a card bought or pulled
                 # reached the club and had nowhere to go.
+                # Dropping a side.
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/squad/"
+                ) and self.command == "DELETE":
+                    tail = normalized_path.rsplit("/", 1)[-1]
+                    try:
+                        squad_id = int(tail)
+                    except ValueError:
+                        squad_id = 0
+                    removed = CLUB_INVENTORY.delete_squad(squad_id)
+                    if removed:
+                        CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
+                    owner.journal.event(
+                        "fut_squad_deleted",
+                        peer=self.client_address[0],
+                        squad=squad_id,
+                        removed=removed,
+                    )
+                    self.reply(
+                        200,
+                        json.dumps({"id": squad_id}).encode() + b"\n",
+                        {"Content-Type": "application/json; charset=utf-8"},
+                    )
+                    return
                 if normalized_path.startswith(
                     "/ut/game/fifa14/squad/"
                 ) and self.command in ("PUT", "POST"):
@@ -2061,19 +2083,29 @@ class IdentityHttpService:
                                 chosen.append(int(raw))
                         except (TypeError, ValueError):
                             continue
-                    if chosen:
-                        CLUB_INVENTORY.set_squad(chosen)
-                        CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
+                    tail = normalized_path.rsplit("/", 1)[-1]
+                    try:
+                        squad_id = int(tail)
+                    except ValueError:
+                        squad_id = 0
+                    saved_id = CLUB_INVENTORY.save_squad(
+                        squad_id,
+                        chosen,
+                        name=(squad.get("squadName") or "").strip() or None,
+                        formation=(squad.get("formation") or "").strip() or None,
+                    )
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
                         "fut_squad_saved",
                         peer=self.client_address[0],
                         path=parsed.path,
+                        squad=saved_id,
                         players=len(chosen),
                         body=request_body_preview(body),
                     )
                     self.reply(
                         200,
-                        b'{"id":1}\n',
+                        json.dumps({"id": saved_id}).encode() + b"\n",
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return

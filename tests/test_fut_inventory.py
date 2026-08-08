@@ -739,3 +739,41 @@ def test_a_bought_card_waits_in_the_purchased_pile() -> None:
     actions.move({"itemData": [{"id": won["id"], "pile": 7}]})
     assert not shop.pending
     assert won["id"] in [item["id"] for item in inventory.items]
+
+
+def test_a_second_squad_can_be_created_renamed_and_dropped() -> None:
+    # There was one squad and no way to add, rename or remove another: the
+    # list was generated from a single fixed side.
+    from fut_inventory import ClubInventory
+
+    inventory = ClubInventory()
+    assert inventory.squad_ids() == [1]
+
+    players = [item["id"] for item in inventory.items if item["itemType"] == "player"]
+    made = inventory.save_squad(0, players[:23], name="Ma 2e équipe")
+    assert made != 1 and made in inventory.squad_ids()
+
+    named = {
+        entry["id"]: entry["squadName"]
+        for entry in json.loads(inventory.squad_summaries())["squad"]
+    }
+    assert named[made] == "Ma 2e équipe"
+
+    inventory.save_squad(made, players[:23], name="Renommée")
+    named = {
+        entry["id"]: entry["squadName"]
+        for entry in json.loads(inventory.squad_summaries())["squad"]
+    }
+    assert named[made] == "Renommée"
+
+    assert inventory.delete_squad(made)
+    assert inventory.squad_ids() == [1]
+
+
+def test_the_squad_the_club_plays_with_cannot_be_deleted() -> None:
+    # Dropping slot 1 would leave the club with nothing to field.
+    from fut_inventory import ClubInventory
+
+    inventory = ClubInventory()
+    assert not inventory.delete_squad(1)
+    assert 1 in inventory.squad_ids()
