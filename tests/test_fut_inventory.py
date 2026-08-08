@@ -456,13 +456,21 @@ def test_cups_are_listed_and_active() -> None:
     assert active == [cup["tournamentId"] for cup in cups]
 
 
-def test_team_of_the_week_is_a_full_side_of_rare_cards() -> None:
+def test_team_of_the_week_is_a_full_side() -> None:
+    # A real Team of the Week is not simply the 23 best rares -- TOTW 1 carries
+    # ordinary in-form cards down into the sixties. Assert the shape, not a
+    # rating floor the real data does not meet.
     import fut_inventory as inventory
 
     squad = json.loads(inventory.totw_response(inventory.CardCatalogue()))
     assert len(squad["itemData"]) == 23
-    assert all(card["rareflag"] for card in squad["itemData"])
-    assert all(card["rating"] >= 80 for card in squad["itemData"])
+    assert squad["formation"]
+    ids = [card["id"] for card in squad["itemData"]]
+    assert len(set(ids)) == len(ids)
+    assert all(
+        card["resourceId"] & 0x00FF_FFFF == card["assetId"]
+        for card in squad["itemData"]
+    )
 
 
 def test_a_card_sent_to_the_club_is_in_the_club() -> None:
