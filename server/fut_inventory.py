@@ -1133,7 +1133,13 @@ class PackShop:
     def purchased_items(self) -> bytes:
         return json.dumps(
             {
-                # Empty on purpose. Reporting duplicates here froze the title
+                # Empty on purpose, and the binary says why the shape was
+                # wrong: CardsDLL carries GetCardDuplicate and HAS_DUPLICATE,
+                # so the client asks for *the card already owned* that a new
+                # one duplicates. Listing the new ids here points it at the
+                # card it is holding, which is very likely the loop it hung in.
+                #
+                # Reporting duplicates here froze the title
                 # outright: after buying a second Chamakh the client fetched
                 # squad/active, tradePile and this, and stopped dead. The pack
                 # response carries the same list without trouble, so the fault
