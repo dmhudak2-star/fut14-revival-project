@@ -705,3 +705,37 @@ def test_an_unknown_card_cannot_be_fielded() -> None:
     inventory.set_squad([999_999_999])
     # Nothing resolvable: the squad is left alone rather than emptied.
     assert [item["id"] for item in inventory.squad] == original
+
+
+def test_a_bought_card_waits_in_the_purchased_pile() -> None:
+    # The assign screen reads purchased/items. Sending a bought card straight
+    # into the club left that list empty, so "Assigner maintenant" had nothing
+    # to offer and backed out -- the pack flow, which works, goes through the
+    # pending pile first.
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, wallet = ClubInventory(), Wallet()
+    catalogue = CardCatalogue()
+    shop = PackShop(catalogue, wallet)
+    actions = CardActions(shop, wallet, inventory)
+
+    listing = json.loads(catalogue.auctions({"start": "0", "num": "1"}))["auctionInfo"][0]
+    _, won = catalogue.bid(listing["tradeId"], listing["buyNowPrice"], wallet)
+    bought = dict(won)
+    bought["itemState"] = "new"
+    shop.pending.append(bought)
+
+    waiting = json.loads(shop.purchased_items())["itemData"]
+    assert won["id"] in [item["id"] for item in waiting]
+    assert won["id"] not in [item["id"] for item in inventory.items]
+
+    # And assigning it moves it on, exactly as a pack card does.
+    actions.move({"itemData": [{"id": won["id"], "pile": 7}]})
+    assert not shop.pending
+    assert won["id"] in [item["id"] for item in inventory.items]

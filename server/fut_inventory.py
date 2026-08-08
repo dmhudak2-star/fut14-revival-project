@@ -1572,6 +1572,10 @@ class ClubSave:
             inventory.items = [
                 held for held in inventory.items if held["id"] != item
             ]
+        known = {item["id"] for item in actions.shop.pending}
+        for item in saved.get("pending", []):
+            if item["id"] not in known:
+                actions.shop.pending.append(item)
         if saved.get("squad"):
             inventory.set_squad([int(x) for x in saved["squad"]])
         actions.transfer = list(saved.get("transfer", []))
@@ -1593,6 +1597,7 @@ class ClubSave:
                 item for item in inventory.items if item["id"] not in original
             ],
             "sold": sorted(original - current),
+            "pending": actions.shop.pending,
             "squad": [item["id"] for item in inventory.squad],
             "transfer": actions.transfer,
             "listings": {str(key): value for key, value in actions.listings.items()},

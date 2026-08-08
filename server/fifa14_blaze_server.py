@@ -1967,13 +1967,16 @@ class IdentityHttpService:
                         amount = 0
                     payload, won = CARD_CATALOGUE.bid(trade_id, amount, WALLET)
                     if won is not None:
-                        # Through _keep, so the card reaches the club inventory
-                        # -- appending to the action list alone left it owned by
-                        # nothing: unassignable, and gone on the next restart.
+                        # A bought card goes to the pending pile, not straight
+                        # into the club. That is the route the pack flow takes
+                        # and the one that works: purchased/items is what the
+                        # assign screen reads, and sending the card directly to
+                        # the club left that list empty -- so "Assigner
+                        # maintenant" had nothing to offer and backed out.
                         item = dict(won)
-                        item["itemState"] = "free"
+                        item["itemState"] = "new"
                         item["untradeable"] = False
-                        CARD_ACTIONS._keep(item)
+                        PACK_SHOP.pending.append(item)
                         CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS)
                     owner.journal.event(
