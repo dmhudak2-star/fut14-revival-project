@@ -1566,3 +1566,19 @@ class ClubSave:
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(document, separators=(",", ":")))
+
+
+def totw_index_with_squad(catalogue: "CardCatalogue") -> bytes:
+    """The Team of the Week list, carrying the squad itself as well.
+
+    The screen asks clientdata/totw and then this, and rejected the plain list
+    it was given -- the squad had already been served successfully, so what it
+    refuses is this document. Which member it reads is not known, so the squad
+    summary, the cards and an empty user list all go out together; an
+    unrecognised sibling at the top level is skipped.
+    """
+    index = json.loads(totw_index())
+    squad = json.loads(totw_response(catalogue))
+    index["itemData"] = squad["itemData"]
+    index["formation"] = squad["formation"]
+    return json.dumps(index, separators=(",", ":")).encode()

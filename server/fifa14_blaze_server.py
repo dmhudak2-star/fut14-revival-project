@@ -470,7 +470,7 @@ from fut_inventory import (  # noqa: E402
     consumables_response,
     hub_response,
     store_catalogue,
-    totw_index,
+    totw_index_with_squad,
     totw_response,
     tournaments_response,
 )
@@ -1821,7 +1821,9 @@ class IdentityHttpService:
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
                     ),
-                    "/ut/game/fifa14/user/list": totw_index,
+                    "/ut/game/fifa14/user/list": (
+                        lambda: totw_index_with_squad(CARD_CATALOGUE)
+                    ),
                     "/ut/game/fifa14/clientdata/totw": (
                         lambda: totw_response(CARD_CATALOGUE)
                     ),
@@ -1916,6 +1918,21 @@ class IdentityHttpService:
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
                         },
+                    )
+                    return
+                # Anything else under /trade/. CardsDLL composes these from
+                # fragments -- "?tradeId=", "/expired", "/status?tradeIds=" --
+                # and an unanswered one reads as the listing being gone, which
+                # is what "la liste a expiré" says. Answer the ones we know and
+                # give the rest an empty, well-formed auction list rather than
+                # a 404.
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/trade"
+                ) and normalized_path.endswith("/expired") and self.command == "GET":
+                    self.reply(
+                        200,
+                        b'{"auctionInfo":[],"duplicateItemIdList":[],"total":0}\n',
+                        {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
                 # Bidding and buying. Both go through the same endpoint: a bid
