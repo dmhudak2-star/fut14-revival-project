@@ -1759,6 +1759,21 @@ class IdentityHttpService:
                 # Buying a pack is a POST to purchased/items, not to /store --
                 # the journal shows the client sending it there and getting a
                 # 404. /store is only the catalogue.
+                # The whole catalogue, generated: nine packs with their own
+                # prices and groups, rather than the single fixture entry.
+                if normalized_path in (
+                    "/ut/game/fifa14/store/purchasegroup/all",
+                    "/ut/game/fifa14/store",
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        store_catalogue() + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if (
                     normalized_path
                     in ("/ut/game/fifa14/purchased/items", "/ut/game/fifa14/store")
