@@ -408,11 +408,17 @@ SELL_PRICE_FALLBACK = 200
 # The club's cards. Built once at import from the icebreaker packs this build
 # ships, so every screen that asks about the club sees the same inventory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fut_inventory import CardCatalogue, ClubInventory, Wallet  # noqa: E402
+from fut_inventory import (  # noqa: E402
+    CardCatalogue,
+    ClubInventory,
+    PackShop,
+    Wallet,
+)
 
 CLUB_INVENTORY = ClubInventory()
 CARD_CATALOGUE = CardCatalogue()
 WALLET = Wallet()
+PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET)
 CLUB_NAME = "Fondateur FUT"
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
@@ -1664,6 +1670,51 @@ class IdentityHttpService:
                     self.reply(
                         200,
                         WALLET.auction_state() + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Buying the one pack the store advertises. A POST here is the
+                # purchase; the drawn cards come back in the reply and then
+                # again from purchased/items until the client takes them.
+                if normalized_path == "/ut/game/fifa14/store" and self.command == "POST":
+                    if not PACK_SHOP.can_afford():
+                        owner.journal.event(
+                            "fut_pack_refused",
+                            peer=self.client_address[0],
+                            coins=WALLET.coins,
+                        )
+                        self.reply(
+                            409,
+                            PACK_SHOP.refused() + b"\n",
+                            {"Content-Type": "application/json; charset=utf-8"},
+                        )
+                        return
+                    payload = PACK_SHOP.open_pack()
+                    owner.journal.event(
+                        "fut_pack_opened",
+                        peer=self.client_address[0],
+                        coins=WALLET.coins,
+                        items=len(PACK_SHOP.pending),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if (
+                    normalized_path == "/ut/game/fifa14/purchased/items"
+                    and self.command == "GET"
+                ):
+                    self.reply(
+                        200,
+                        PACK_SHOP.purchased_items() + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",

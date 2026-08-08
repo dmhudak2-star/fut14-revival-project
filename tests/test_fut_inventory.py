@@ -113,3 +113,38 @@ def test_a_quick_sell_pays_something() -> None:
     for item in INVENTORY.items:
         if item["itemType"] == "player":
             assert item["discardValue"] > 0
+
+
+def test_a_pack_costs_coins_and_returns_cards() -> None:
+    import random
+
+    from fut_inventory import CardCatalogue, GOLD_PACK_PRICE, PackShop, Wallet
+
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    before = wallet.coins
+    opened = json.loads(shop.open_pack(random.Random(7)))
+    assert wallet.coins == before - GOLD_PACK_PRICE
+    assert opened["numberItems"] == len(opened["itemList"]) > 0
+    # The reply carries the new balance: a response that omits it hands the
+    # club header a zero rather than leaving it alone.
+    assert opened["credits"] == wallet.coins
+
+
+def test_a_pack_is_refused_without_the_coins() -> None:
+    from fut_inventory import CardCatalogue, PackShop, Wallet
+
+    shop = PackShop(CardCatalogue(), Wallet(coins=10))
+    assert not shop.can_afford()
+    assert json.loads(shop.refused())["reason"] == "INSUFFICIENT_COINS"
+
+
+def test_drawn_cards_stay_pending_until_collected() -> None:
+    import random
+
+    from fut_inventory import CardCatalogue, PackShop, Wallet
+
+    shop = PackShop(CardCatalogue(), Wallet())
+    shop.open_pack(random.Random(3))
+    pending = json.loads(shop.purchased_items())
+    assert len(pending["itemData"]) == len(shop.pending) > 0

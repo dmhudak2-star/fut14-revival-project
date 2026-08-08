@@ -19,6 +19,7 @@ into the item shape the FUT endpoints expect.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 
 
@@ -438,3 +439,83 @@ class Wallet:
             },
             separators=(",", ":"),
         ).encode()
+
+
+# -- opening a pack --------------------------------------------------------
+
+GOLD_PACK_ID = 304
+GOLD_PACK_PRICE = 7_500
+PACK_ITEM_COUNT = 12
+PACK_ITEM_ID_BASE = 1_950_000_000
+
+
+class PackShop:
+    """Sells the one pack the store advertises, and draws its cards."""
+
+    def __init__(self, catalogue: "CardCatalogue", wallet: "Wallet") -> None:
+        self.catalogue = catalogue
+        self.wallet = wallet
+        self.purchases = 0
+        # Cards drawn but not yet acknowledged by the client. The purchased
+        # items endpoint reports these, which is how they reach the club.
+        self.pending: list[dict] = []
+        self._gold = [
+            card
+            for card in catalogue.cards
+            if "gold" in (card.get("rarity") or "").lower() and card.get("rating", 0) >= 75
+        ]
+
+    def can_afford(self) -> bool:
+        return self.wallet.coins >= GOLD_PACK_PRICE
+
+    def open_pack(self, rng: random.Random | None = None) -> bytes:
+        rng = rng or random.Random()
+        self.wallet.debit(GOLD_PACK_PRICE)
+        self.purchases += 1
+        drawn = []
+        pool = self._gold or self.catalogue.cards
+        for slot in range(PACK_ITEM_COUNT):
+            card = rng.choice(pool)
+            item = _player_item(
+                item_id=PACK_ITEM_ID_BASE + self.purchases * 100 + slot,
+                asset_id=card["assetId"],
+                rating=card.get("rating", 0),
+                rare=card.get("rareflag", 0),
+                play_style=0,
+                team_id=card.get("clubId", 0),
+                attributes=card.get("attributes", [0] * 6),
+                position=card.get("position") or FALLBACK_POSITION,
+                item_state="new",
+            )
+            item["untradeable"] = False
+            item["leagueId"] = card.get("leagueId", 0)
+            item["nation"] = card.get("nationId", 0)
+            drawn.append(item)
+        self.pending.extend(drawn)
+        return json.dumps(
+            {
+                "numberItems": len(drawn),
+                "purchasedPackId": GOLD_PACK_ID,
+                "itemList": drawn,
+                "duplicateItemIdList": [],
+                "credits": self.wallet.coins,
+                "totalCredits": self.wallet.coins,
+                "coins": self.wallet.coins,
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def purchased_items(self) -> bytes:
+        return json.dumps(
+            {
+                "duplicateItemIdList": [],
+                "itemData": self.pending,
+                "credits": self.wallet.coins,
+                "totalCredits": self.wallet.coins,
+                "coins": self.wallet.coins,
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def refused(self) -> bytes:
+        return json.dumps({"reason": "INSUFFICIENT_COINS"}, separators=(",", ":")).encode()
