@@ -55,3 +55,24 @@ endpoints expect:
 The transfer market, the store packs and the consumables are not modelled yet.
 `store/purchasegroup/all` still serves one deliberately invalid pack, so the
 store screen constructs without offering anything buyable.
+
+## Manager and consumables: deliberately not modelled
+
+Both were asked for, and both are being left out on purpose rather than
+overlooked.
+
+**Manager.** The PC revival serves `"manager":[]` on the active squad and
+`"manager":[{"id":0}]` on its empty-squad shape, and its FUT works. So a
+manager item is not required to field a side. Inventing one means inventing an
+asset id, and an asset id with nothing behind it is exactly the failure mode
+this file exists to avoid -- the record parses, the card draws blank, and the
+squad screen may reject the whole response rather than the one item. Not worth
+putting on the critical path to a first match.
+
+**Consumables.** Every player in the catalogue ships with contract 99 and
+fitness 99, no injury and no suspension. Consumables exist to restore those.
+There is nothing to restore, so nothing to consume, and an empty consumables
+list is the accurate answer rather than a placeholder.
+
+Both become worth adding once a match has actually been played, when contracts
+start decrementing and there is a real reason for the item to exist.
