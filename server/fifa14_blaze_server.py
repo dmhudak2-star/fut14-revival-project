@@ -574,9 +574,17 @@ class Fifa14Protocol:
                 ("FUTDYNAMICMESSAGES_REFRESH_INTERVAL", "300000"),
                 ("FUT_ENABLE_MENU", "1"),
                 ("ONLINE/NO_AUTO_SQUAD", "0"),
-                ("FUT/FORCE_TUTORIALS", "1"),
-                ("FUT/DISABLE_TUTORIALS", "0"),
-                ("FUT/ALWAYS_SHOW_SMART_TUTORIALS", "1"),
+                # Every session, however deep, ends on the same two calls:
+                # userdata, then the tutorial URL, then silence.  CardsDLL
+                # pairs RetrieveShouldShowTutorial with a separate
+                # RetrieveShouldShowTutorialComplete, so that retrieval is
+                # something DoInitialLoginSteps waits on -- and forcing
+                # tutorials on is what sends it there.  Turn the step off at
+                # its own switches rather than trying to satisfy a parser whose
+                # document shape is unknown.
+                ("FUT/FORCE_TUTORIALS", "0"),
+                ("FUT/DISABLE_TUTORIALS", "1"),
+                ("FUT/ALWAYS_SHOW_SMART_TUTORIALS", "0"),
                 ("FUT/IS_RETURNING_USER", "0"),
                 ("FUT_SKIP_ICEBREAKER_FLOW", "0"),
             ]
