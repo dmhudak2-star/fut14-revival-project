@@ -1302,17 +1302,41 @@ def active_tournaments_response() -> bytes:
     ).encode()
 
 
-def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
-    """Team of the Week, drawn from the highest-rated in-form cards.
+TOTW_FILE = Path(__file__).resolve().parent / "fifa14_totw.json"
 
-    Retail rotates this weekly. Here it is the best of the catalogue's rare
-    cards, which is what the screen exists to show.
+
+def _totw_asset_ids() -> list[int]:
+    """The real Team of the Week, if it was fetched.
+
+    wefut publishes one at /squad/1, titled "TOTW 1". The squads after it are
+    not the following weeks -- that path is a public gallery of user-built
+    sides -- so only pages that name themselves TOTW are kept, and the rest of
+    the screen falls back to the best rare cards in the catalogue.
     """
+    if not TOTW_FILE.exists():
+        return []
+    squads = json.loads(TOTW_FILE.read_text()).get("squads", [])
+    return list(squads[0]["assetIds"]) if squads else []
+
+
+def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
+    """Team of the Week."""
+    by_asset = {card["assetId"]: card for card in catalogue.cards}
     best = [
-        card
-        for card in catalogue.cards
-        if card.get("rareflag") and card.get("rating", 0) >= 80
-    ][:size]
+        by_asset[asset] for asset in _totw_asset_ids() if asset in by_asset
+    ]
+    if len(best) < size:
+        # Fill the bench from the catalogue's best rares, so the squad screen
+        # gets a full side rather than a partial one.
+        seen = {card["assetId"] for card in best}
+        best += [
+            card
+            for card in catalogue.cards
+            if card.get("rareflag")
+            and card.get("rating", 0) >= 80
+            and card["assetId"] not in seen
+        ][: size - len(best)]
+    best = best[:size]
     items = []
     for index, card in enumerate(best):
         items.append(
