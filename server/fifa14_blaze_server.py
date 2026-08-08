@@ -296,6 +296,13 @@ EASW_AUTH_PATHS = ("/authentication360", "/v2/authenticationNucleusPersona")
 # implementation of this same title.
 FUT_ROUTES: dict[str, bytes] = {
     "/ut/delete/auth": b"{}",
+    # Back to an empty object, and the reason is worth keeping. Wrapping the
+    # account in {"userInfo":{...,"credits":50000,...}} made the club header
+    # read -842150451, which is 0xCDCDCDCD -- uninitialised memory. The parser
+    # did not recognise the shape, so it never wrote the field at all, and the
+    # header printed whatever the allocator had left there. An empty object at
+    # least leaves it at a clean zero. The real currency source is still to be
+    # found; guessing at member names makes it worse, not better.
     "/ut/game/fifa14/user": b"{}",
     "/ut/game/fifa14/userdata": b"{}",
     # A club with no coins cannot buy a pack or bid on anything, so the store
@@ -1575,14 +1582,15 @@ class IdentityHttpService:
                     and self.command == "GET"
                 ):
                     # FutGetUserInfoServerResponse zeroes every account field
-                    # and treats all members as optional, so an empty object
-                    # keeps its no-user defaults without inventing a club,
-                    # inventory, currency or squad.  Matching stays
-                    # method-specific: a later create-user POST to the same
-                    # path must remain unhandled until it is observed.
+                    # and treats all members as optional -- which is why an
+                    # empty object here showed a zero balance in the club
+                    # header.  The currency belongs in this response, not in
+                    # user/credits.  Matching stays method-specific: a later
+                    # create-user POST to the same path must remain unhandled
+                    # until it is observed.
                     self.reply(
                         200,
-                        b"{}\n",
+                        FUT_ROUTES["/ut/game/fifa14/user"] + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",

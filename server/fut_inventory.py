@@ -34,20 +34,74 @@ FIRST_PLAYER_ITEM_ID = 1_600_000_001
 
 FORMATION = "f442"
 
-# No position is sent with a player item.
+# Positions come from the card catalogue, keyed by asset id.
 #
-# The first version of this file assigned one per squad slot, which put Messi
-# at right back and Neuer in midfield -- the pack squads are not in formation
-# order (slot 10 of the first pack is Neuer, whose attributes read as a
-# goalkeeper's: 86 diving, 81 handling, 90 kicking, 87 reflexes, 58 speed, 85
-# positioning). Nor can the position be inferred from the six attributes: once
-# reinterpreted for a keeper they overlap an outfield attacker's closely enough
-# that no rule separates Messi from Neuer.
+# Two earlier attempts were wrong and both are worth remembering. Assigning a
+# position per squad slot put Messi at right back, because the pack squads are
+# not in formation order -- slot 10 of the first pack is Neuer. Sending no
+# position at all, on the theory that the title would resolve it from the same
+# record it resolves the portrait and club badge from, made every player a
+# goalkeeper: it does not fall back, it defaults.
 #
-# The title already knows. It resolves each asset id against its own database
-# for the portrait, the nation and the club badge, and it would resolve the
-# position from the same record. Sending one only gives it a wrong answer to
-# prefer -- which is how Hart came to be labelled MOC.
+# So the position has to be supplied, and it has to be right. The catalogue in
+# `fifa14_cards.json` carries one per card, and its asset ids are the game's --
+# Messi is 158023 with club 241 there, exactly as in the icebreaker fixture.
+CARD_CATALOGUE = Path(__file__).resolve().parent / "fifa14_cards.json"
+
+# Used only when a card is missing from the catalogue. Outfield rather than GK,
+# because a wrong outfield position costs chemistry while a wrong goalkeeper
+# costs the match.
+FALLBACK_POSITION = "CM"
+
+# The eleven slots of f442, in the order the squad screen walks them, each with
+# the positions that can fill it from best fit to worst. The pack squads are
+# not in this order -- the first pack has its goalkeeper at slot 10 -- so the
+# starting eleven has to be arranged rather than taken as it comes.
+F442_SLOTS = [
+    ("GK", ("GK",)),
+    ("LB", ("LB", "LWB", "CB")),
+    ("CB", ("CB", "RB", "LB")),
+    ("CB", ("CB", "CDM", "RB")),
+    ("RB", ("RB", "RWB", "CB")),
+    ("LM", ("LM", "LW", "LWB", "CM")),
+    ("CM", ("CM", "CDM", "CAM")),
+    ("CM", ("CM", "CDM", "CAM")),
+    ("RM", ("RM", "RW", "RWB", "CM")),
+    ("ST", ("ST", "CF", "LW", "RW")),
+    ("ST", ("ST", "CF", "LW", "RW")),
+]
+
+
+def _arrange(players: list[dict]) -> list[dict]:
+    """Put the best fit in each slot, then bench whoever is left."""
+    remaining = list(players)
+    eleven: list[dict] = []
+    for _, preferred in F442_SLOTS:
+        pick = None
+        for position in preferred:
+            candidates = [p for p in remaining if p["preferredPosition"] == position]
+            if candidates:
+                pick = max(candidates, key=lambda p: p["rating"])
+                break
+        if pick is None:
+            # Nobody plays there; take the highest rated rather than leave the
+            # slot empty, which the squad screen treats as an incomplete side.
+            pick = max(remaining, key=lambda p: p["rating"])
+        remaining.remove(pick)
+        eleven.append(pick)
+    return eleven + sorted(remaining, key=lambda p: -p["rating"])
+
+
+def _positions_by_asset() -> dict[int, str]:
+    if not CARD_CATALOGUE.exists():
+        return {}
+    document = json.loads(CARD_CATALOGUE.read_text())
+    positions: dict[int, str] = {}
+    for card in document.get("cards", []):
+        position = (card.get("position") or "").strip()
+        if position:
+            positions.setdefault(int(card["assetId"]), position)
+    return positions
 
 # Kit, badge, stadium and ball. Without these the club has nothing to present
 # and the match cannot dress either side. Asset ids are the retail defaults the
@@ -90,6 +144,7 @@ def _player_item(
     play_style: int,
     team_id: int,
     attributes: list[int],
+    position: str,
     item_state: str = "free",
 ) -> dict:
     return {
@@ -97,6 +152,7 @@ def _player_item(
         "assetId": asset_id,
         "resourceId": RESOURCE_VERSION | asset_id,
         "rating": rating,
+        "preferredPosition": position,
         "teamid": team_id,
         "leagueId": 0,
         "nation": 0,
@@ -134,6 +190,7 @@ class ClubInventory:
     def __init__(self, pack_list: Path = PACK_LIST) -> None:
         document = json.loads(pack_list.read_text())
         packs = document["packList"]
+        positions = _positions_by_asset()
 
         self.items: list[dict] = []
         self.squad: list[dict] = []
@@ -150,6 +207,7 @@ class ClubInventory:
                     play_style=pack["playStyle"][slot],
                     team_id=pack["teamId"][slot],
                     attributes=[column[slot] for column in attributes],
+                    position=positions.get(asset_id, FALLBACK_POSITION),
                 )
                 self.items.append(item)
                 # The first pack becomes the starting squad; the rest stay in
@@ -159,6 +217,7 @@ class ClubInventory:
                     self.squad.append(item)
                 next_id += 1
 
+        self.squad = _arrange(self.squad)
         self.items.extend(_presentation_items())
 
     # -- responses -------------------------------------------------------
