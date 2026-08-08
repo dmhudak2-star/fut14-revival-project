@@ -54,6 +54,22 @@ Manager and consumables are deliberately absent; the reasoning is in that file.
 screenshot yet of eleven players on the squad screen. Everything about the
 inventory is server-side confirmation only.
 
+**The input path is ruled out, measured.** Pulsing START for 60 frames and
+reading the mailbox four times while it drains:
+
+```text
+avant  enabled=0 packet=0  buttons=0x0000 frames=0
+apres  enabled=1 packet=10 buttons=0x0010 frames=50
+apres  enabled=1 packet=18 buttons=0x0010 frames=42
+apres  enabled=1 packet=28 buttons=0x0010 frames=32
+apres  enabled=1 packet=38 buttons=0x0010 frames=22
+```
+
+The packet counter advances, which only happens when the title calls
+`XamInputGetState` -- so the game is polling the hook and being handed START,
+and the frame counter drains on schedule. The press is delivered. The title
+simply does not act on it. Do not spend time re-testing the hook.
+
 **Current blocker, and it is environmental.** After a cold relaunch the title
 loops through its intro clips and the title screen does not act on START.
 Virtual presses are delivered -- `pulse` writes the mailbox and the frame
