@@ -2097,8 +2097,12 @@ class IdentityHttpService:
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
-                if normalized_path.startswith(
-                    "/ut/game/fifa14/squad/"
+                # Creating a side posts to /squad with no id at all -- the
+                # body carries "id":0 and the name you typed. Matching only
+                # paths that ended in an id is why creation reported failure.
+                if (
+                    normalized_path == "/ut/game/fifa14/squad"
+                    or normalized_path.startswith("/ut/game/fifa14/squad/")
                 ) and self.command in ("PUT", "POST"):
                     try:
                         document = json.loads(body or b"{}")
@@ -2106,19 +2110,21 @@ class IdentityHttpService:
                         document = {}
                     squad = document.get("squad", document)
                     chosen: list[int] = []
+                    # Empty slots arrive as itemData id 0. Dropping them
+                    # shifted every player after the gap into the wrong
+                    # position, so keep them as the gaps they are.
                     for entry in (squad.get("players") or []):
                         data = entry.get("itemData") if isinstance(entry, dict) else None
                         raw = (data or {}).get("id") if isinstance(data, dict) else None
                         try:
-                            if raw:
-                                chosen.append(int(raw))
+                            chosen.append(int(raw or 0))
                         except (TypeError, ValueError):
-                            continue
+                            chosen.append(0)
                     tail = normalized_path.rsplit("/", 1)[-1]
                     try:
                         squad_id = int(tail)
                     except ValueError:
-                        squad_id = 0
+                        squad_id = int(squad.get("id") or 0)
                     saved_id = CLUB_INVENTORY.save_squad(
                         squad_id,
                         chosen,

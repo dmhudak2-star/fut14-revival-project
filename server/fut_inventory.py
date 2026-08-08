@@ -381,7 +381,14 @@ class ClubInventory:
         if not squad_id or squad_id not in squads:
             squad_id = squad_id or (max(squads) + 1 if squads else 1)
         by_id = {item["id"] for item in self.items}
-        kept = [item_id for item_id in item_ids if item_id in by_id]
+        # 0 is an empty slot, not an unknown card: keep it so the eleven do not
+        # shift up into each other's positions.
+        kept = [
+            item_id if item_id in by_id else 0
+            for item_id in item_ids
+        ]
+        if not any(kept):
+            kept = []
         entry = squads.get(squad_id, {})
         squads[squad_id] = {
             "name": name or entry.get("name") or f"Équipe {squad_id}",
