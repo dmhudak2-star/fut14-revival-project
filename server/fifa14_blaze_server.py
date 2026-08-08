@@ -1712,8 +1712,20 @@ class IdentityHttpService:
                 # Polled straight after every search, and it refreshes the
                 # header too, so it carries the balance as well.
                 if normalized_path in (
-                    "/ut/game/fifa14/trade/status",
                     "/ut/game/fifa14/tradePile",
+                    "/ut/game/fifa14/tradepile",
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        CARD_ACTIONS.trade_pile(WALLET.coins) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if normalized_path in (
+                    "/ut/game/fifa14/trade/status",
                     "/ut/game/fifa14/watchlist",
                 ) and self.command == "GET":
                     self.reply(
@@ -1775,6 +1787,48 @@ class IdentityHttpService:
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
                         },
+                    )
+                    return
+                # Putting a card on the market, and taking it back off.
+                if normalized_path in (
+                    "/ut/game/fifa14/auctionhouse",
+                    "/ut/game/fifa14/trade",
+                ) and self.command == "POST":
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    payload = CARD_ACTIONS.list_for_sale(document)
+                    owner.journal.event(
+                        "fut_item_listed",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        listings=len(CARD_ACTIONS.listings),
+                        # Kept so an unexpected body shape can be read back out
+                        # of the journal rather than guessed at again.
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/auctionhouse/"
+                ) and self.command == "DELETE":
+                    tail = normalized_path.rsplit("/", 1)[-1]
+                    try:
+                        trade_id = int(tail)
+                    except ValueError:
+                        trade_id = 0
+                    self.reply(
+                        200,
+                        CARD_ACTIONS.withdraw(trade_id) + b"\n",
+                        {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
                 # Send to club, list for transfer: each entry has to be

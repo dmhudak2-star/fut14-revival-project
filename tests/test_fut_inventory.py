@@ -259,3 +259,61 @@ def test_sending_a_card_to_the_club_takes_it_out_of_the_pack() -> None:
     }
     assert len(shop.pending) == pending_before - 1
     assert [item["id"] for item in actions.club] == [first]
+
+
+def _actions():
+    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet)
+    return CardActions(shop, wallet), shop, wallet
+
+
+def test_a_card_can_be_set_aside_for_listing() -> None:
+    import random
+
+    actions, shop, _ = _actions()
+    opened = json.loads(shop.open_pack(random.Random(9)))
+    first = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": first, "pile": 5}]})
+    # Pile 5 is the transfer list: the card leaves the club until it is listed.
+    assert [item["id"] for item in actions.transfer] == [first]
+    assert first not in [item["id"] for item in actions.club]
+
+
+def test_listing_returns_a_trade_id_and_shows_in_the_trade_pile() -> None:
+    import random
+
+    actions, shop, wallet = _actions()
+    opened = json.loads(shop.open_pack(random.Random(13)))
+    first = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": first, "pile": 5}]})
+
+    listing = json.loads(
+        actions.list_for_sale(
+            {"itemData": {"id": first}, "startingBid": 300, "buyNowPrice": 900}
+        )
+    )
+    # The trade id is what every later bid or withdrawal refers to.
+    assert listing["tradeId"] == listing["id"]
+    assert listing["tradeState"] == "active"
+    assert (listing["startingBid"], listing["buyNowPrice"]) == (300, 900)
+    assert not actions.transfer
+
+    pile = json.loads(actions.trade_pile(wallet.coins))
+    assert pile["total"] == 1
+    assert pile["auctionInfo"][0]["tradeId"] == listing["tradeId"]
+
+
+def test_withdrawing_puts_the_card_back() -> None:
+    import random
+
+    actions, shop, wallet = _actions()
+    opened = json.loads(shop.open_pack(random.Random(17)))
+    first = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": first, "pile": 5}]})
+    listing = json.loads(actions.list_for_sale({"itemData": {"id": first}}))
+
+    actions.withdraw(listing["tradeId"])
+    assert json.loads(actions.trade_pile(wallet.coins))["total"] == 0
+    assert [item["id"] for item in actions.transfer] == [first]

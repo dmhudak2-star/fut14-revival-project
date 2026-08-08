@@ -616,6 +616,11 @@ class CardActions:
         self.wallet = wallet
         # Cards taken out of a pack and kept.
         self.club: list[dict] = []
+        # Pile 5: cards set aside to be listed, not yet on the market.
+        self.transfer: list[dict] = []
+        # Cards actually listed, keyed by trade id.
+        self.listings: dict[int, dict] = {}
+        self._next_trade_id = 2_000_000_000
 
     def _take_pending(self, item_id: int) -> dict | None:
         for index, item in enumerate(self.shop.pending):
@@ -646,9 +651,20 @@ class CardActions:
             except (TypeError, ValueError):
                 pile = PILE_CLUB
             item = self._take_pending(item_id)
+            if item is None:
+                for index, owned in enumerate(self.club):
+                    if owned["id"] == item_id:
+                        item = self.club.pop(index)
+                        break
             if item is not None:
-                item["itemState"] = "free"
-                self.club.append(item)
+                if pile == PILE_TRANSFER:
+                    # Set aside to be listed. It leaves the club until it is
+                    # either listed or moved back.
+                    item["itemState"] = "forSale"
+                    self.transfer.append(item)
+                else:
+                    item["itemState"] = "free"
+                    self.club.append(item)
             results.append(
                 {
                     "id": item_id,
@@ -706,3 +722,93 @@ class CardActions:
             },
             separators=(",", ":"),
         ).encode()
+
+
+    def _find(self, item_id: int) -> dict | None:
+        for pool in (self.transfer, self.club, self.shop.pending):
+            for item in pool:
+                if item["id"] == item_id:
+                    return item
+        return None
+
+    def list_for_sale(self, document: dict) -> bytes:
+        """POST /auctionhouse -- put a card on the market.
+
+        The body names the item and the prices; the reply has to hand back a
+        trade id, because that is what the trade pile and every later bid or
+        withdrawal refer to.
+        """
+        item_data = document.get("itemData") if isinstance(document, dict) else None
+        if isinstance(item_data, list):
+            item_data = item_data[0] if item_data else None
+        item_id = None
+        if isinstance(item_data, dict):
+            item_id = item_data.get("id") or item_data.get("itemId")
+        if item_id is None:
+            item_id = document.get("itemId") or document.get("id")
+        try:
+            item_id = int(item_id)
+        except (TypeError, ValueError):
+            item_id = None
+
+        def price(key: str, fallback: int) -> int:
+            try:
+                return int(document.get(key) or fallback)
+            except (TypeError, ValueError):
+                return fallback
+
+        item = self._find(item_id) if item_id else None
+        starting = price("startingBid", 150)
+        buy_now = price("buyNowPrice", max(200, starting * 2))
+        duration = price("duration", 3600)
+
+        self._next_trade_id += 1
+        trade_id = self._next_trade_id
+        listing = {
+            "tradeId": trade_id,
+            "id": trade_id,
+            "itemData": item or {"id": item_id},
+            "tradeState": "active",
+            "startingBid": starting,
+            "buyNowPrice": buy_now,
+            "currentBid": 0,
+            "offers": 0,
+            "watched": False,
+            "bidState": "none",
+            "tradeOwner": True,
+            "expires": duration,
+            "sellerName": "Fondateur FUT",
+            "sellerEstablished": 2013,
+            "sellerId": 0,
+            "confidenceValue": 100,
+        }
+        self.listings[trade_id] = listing
+        for pool in (self.transfer, self.club):
+            for index, owned in enumerate(pool):
+                if owned["id"] == item_id:
+                    pool.pop(index)
+                    break
+        return json.dumps(listing, separators=(",", ":")).encode()
+
+    def trade_pile(self, coins: int) -> bytes:
+        """Everything currently listed, plus the balance the header reads."""
+        return json.dumps(
+            {
+                "auctionInfo": list(self.listings.values()),
+                "duplicateItemIdList": [],
+                "total": len(self.listings),
+                "credits": coins,
+                "totalCredits": coins,
+                "coins": coins,
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def withdraw(self, trade_id: int) -> bytes:
+        """Pull a listing back; the card returns to the transfer pile."""
+        listing = self.listings.pop(trade_id, None)
+        if listing and isinstance(listing.get("itemData"), dict):
+            item = listing["itemData"]
+            if "assetId" in item:
+                self.transfer.append(item)
+        return json.dumps({"id": trade_id}, separators=(",", ":")).encode()
