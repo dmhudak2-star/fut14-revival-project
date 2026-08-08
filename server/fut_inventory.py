@@ -458,9 +458,20 @@ class CardCatalogue:
             item["owners"] = 1
             item["lastSalePrice"] = 0
             listing = {
+                    # Order matters. These parsers read a stream of members and
+                    # an unrecognised one can end the object early, taking
+                    # everything after it with it -- which is consistent with
+                    # the prices showing (they come first) while "Temps
+                    # restant" stayed blank and the actions panel opened empty.
+                    #
+                    # So the timing goes near the front, and the stray "id"
+                    # member this code used to add -- which is not part of an
+                    # auction record -- is gone.
                     "tradeId": MARKET_TRADE_ID_BASE + offset + index,
-                    "itemData": item,
                     "tradeState": "active",
+                    "expires": AUCTION_DURATION,
+                    "startTime": _now(),
+                    "endtime": _now() + AUCTION_DURATION,
                     "buyNowPrice": price,
                     "startingBid": max(150, price // 2),
                     "currentBid": 0,
@@ -468,35 +479,11 @@ class CardCatalogue:
                     "watched": False,
                     "bidState": "none",
                     "tradeOwner": False,
-                    # "Temps restant" read as "--" with only a relative
-                    # `expires`, and an auction with no time left offers no
-                    # actions at all -- pressing A did nothing. CardsDLL's
-                    # member table carries startTime, endtime, endDateTime and
-                    # duration beside expires, so the screen works from
-                    # absolute bounds. Send both forms.
-                    # Two bounds only. Sending duration and endDateTime as
-                    # well emptied the detail panel entirely -- the prices that
-                    # had been showing disappeared -- so one of those two is
-                    # the wrong type or the wrong member, and adding four at
-                    # once made it impossible to say which.
-                    # Seconds remaining, not an absolute instant: sending the
-                    # end instant here emptied the detail panel outright, the
-                    # same failure as sending duration and endDateTime. The
-                    # relative form is what makes the prices and the Actions
-                    # entry appear.
-                    #
-                    # "Temps restant" still reads "--" and the Actions entry
-                    # shows on some cards and not others. Whatever drives that
-                    # is not this member, and three variants have now been
-                    # tried; the next attempt should watch what the screen
-                    # reads rather than permute the field.
-                    "expires": AUCTION_DURATION,
-                    "startTime": _now(),
-                    "endtime": _now() + AUCTION_DURATION,
                     "sellerName": "FUT",
                     "sellerEstablished": 2013,
                     "sellerId": 1,
                     "confidenceValue": 100,
+                    "itemData": item,
             }
             self.served[listing["tradeId"]] = listing
             listings.append(listing)
