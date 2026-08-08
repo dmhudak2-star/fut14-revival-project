@@ -94,6 +94,43 @@ def _arrange(players: list[dict]) -> list[dict]:
     return eleven + sorted(remaining, key=lambda p: -p["rating"])
 
 
+# Leagues the Xbox build does not appear to carry. A card from one of these
+# draws with "Club undefined" and the raw localisation key
+# "*leagueName_abbr15_0" instead of a league name -- the title is failing to
+# resolve the id, not mis-reading the card.
+#
+# Which leagues those are cannot be determined from here: the catalogue holds
+# 42 and the console knows some subset. This list is the suspect end of that
+# range -- lower divisions and regional competitions -- and is meant to be
+# corrected from what the screen actually shows rather than trusted as it is.
+UNRESOLVED_LEAGUES = {
+    2002,   # Nacional B
+    2025,   # Liga do Brasil B
+    332,    # Ukrayina Liha
+    336,    # Liga Postobón
+    347,    # South African FL
+    371,    # Scotland League
+}
+
+
+def _card_resolves(card: dict) -> bool:
+    """Keep only cards the title can actually draw.
+
+    A missing club or league leaves the card showing placeholder text where its
+    badge and competition should be, which is worse than the card not being
+    offered at all.
+    """
+    if not (card.get("name") or "").strip():
+        return False
+    if not card.get("clubId") or not card.get("nationId"):
+        return False
+    if card.get("leagueId") in UNRESOLVED_LEAGUES:
+        return False
+    if (card.get("club") or "").strip().lower() in ("", "undefined"):
+        return False
+    return True
+
+
 def _cards_by_asset() -> dict[int, dict]:
     """The catalogue keyed by asset id.
 
@@ -107,7 +144,8 @@ def _cards_by_asset() -> dict[int, dict]:
     document = json.loads(CARD_CATALOGUE.read_text())
     by_asset: dict[int, dict] = {}
     for card in document.get("cards", []):
-        by_asset.setdefault(int(card["assetId"]), card)
+        if _card_resolves(card):
+            by_asset.setdefault(int(card["assetId"]), card)
     return by_asset
 
 # Kit, badge, stadium and ball. Without these the club has nothing to present
@@ -375,7 +413,11 @@ class CardCatalogue:
     def __init__(self, path: Path = CARD_CATALOGUE) -> None:
         self.cards: list[dict] = []
         if path.exists():
-            self.cards = json.loads(path.read_text()).get("cards", [])
+            self.cards = [
+                card
+                for card in json.loads(path.read_text()).get("cards", [])
+                if _card_resolves(card)
+            ]
         # Listings are generated per search, so a bid arriving later refers to
         # a trade id that no longer exists anywhere unless it is remembered.
         self.served: dict[int, dict] = {}
