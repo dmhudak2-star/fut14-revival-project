@@ -2097,6 +2097,24 @@ class IdentityHttpService:
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
+                # One squad by id. Answering every id with the active side is
+                # why a newly created team came back holding the first team's
+                # players instead of being empty.
+                if (
+                    normalized_path.startswith("/ut/game/fifa14/squad/")
+                    and self.command == "GET"
+                    and normalized_path.rsplit("/", 1)[-1].isdigit()
+                ):
+                    squad_id = int(normalized_path.rsplit("/", 1)[-1])
+                    self.reply(
+                        200,
+                        CLUB_INVENTORY.squad_document(squad_id, CLUB_NAME) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Creating a side posts to /squad with no id at all -- the
                 # body carries "id":0 and the name you typed. Matching only
                 # paths that ended in an id is why creation reported failure.

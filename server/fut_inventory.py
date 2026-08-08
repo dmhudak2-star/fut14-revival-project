@@ -35,6 +35,7 @@ RESOURCE_VERSION = 0x0100_0000
 FIRST_PLAYER_ITEM_ID = 1_600_000_001
 
 FORMATION = "f442"
+CLUB_NAME_DEFAULT = "Fondateur FUT"
 
 # Positions come from the card catalogue, keyed by asset id.
 #
@@ -429,6 +430,56 @@ class ClubInventory:
                 }
             )
         return json.dumps({"squad": entries}, separators=(",", ":")).encode()
+
+    def squad_document(self, squad_id: int, name: str = "") -> bytes:
+        """One named side, by id.
+
+        Every squad id returned the active side, so a freshly created team came
+        back holding the first team's players -- it looked pre-filled when it
+        was in fact empty.
+        """
+        squads = self._squads()
+        squad = squads.get(squad_id)
+        if squad is None:
+            return self.active_squad_response(name or CLUB_NAME_DEFAULT)
+        by_id = {item["id"]: item for item in self.items}
+        players = []
+        for index in range(23):
+            item_id = squad["players"][index] if index < len(squad["players"]) else 0
+            item = by_id.get(item_id)
+            players.append(
+                {
+                    "index": index,
+                    # An empty slot is {"id": 0}, which is how the screen draws
+                    # a gap rather than a card.
+                    "itemData": item if item else {"id": 0},
+                    "kitNumber": index + 1 if item and index < 11 else 0,
+                }
+            )
+        fielded = [
+            by_id[i] for i in squad["players"][:11] if i in by_id
+        ]
+        rating = (
+            round(sum(item["rating"] for item in fielded) / len(fielded))
+            if fielded
+            else 0
+        )
+        return json.dumps(
+            {
+                "personaId": 0,
+                "id": squad_id,
+                "squadName": squad["name"],
+                "formation": squad["formation"],
+                "chemistry": 100 if fielded else 0,
+                "starRating": rating,
+                "rating": rating,
+                "changed": False,
+                "players": players,
+                "manager": [],
+                "actives": _presentation_items(),
+            },
+            separators=(",", ":"),
+        ).encode()
 
     def set_squad(self, item_ids: list[int]) -> None:
         """Replace the starting eleven and bench with these cards, in order.
