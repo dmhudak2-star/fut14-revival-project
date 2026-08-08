@@ -597,6 +597,12 @@ class ProtocolTests(unittest.TestCase):
                     # Generated from the pack table now, not a fixture.
                     "/ut/game/fifa14/store",
                     "/ut/game/fifa14/store/purchasegroup/all",
+                    # Modes are generated too.
+                    "/ut/game/fifa14/season/list",
+                    "/ut/game/fifa14/season/user",
+                    "/ut/game/fifa14/tournament/list",
+                    "/ut/game/fifa14/tournament/user/list",
+                    "/ut/game/fifa14/clientdata/totw",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(

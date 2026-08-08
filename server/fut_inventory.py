@@ -1118,3 +1118,145 @@ def _club_extras() -> list[dict]:
             )
             next_id += 1
     return items
+
+
+# -- the game modes --------------------------------------------------------
+#
+# Seasons, tournaments and Team of the Week. Each of these screens refuses an
+# empty list the way fcc_login2 refuses an empty squad, so "none available" is
+# not a neutral answer -- it is the error the screen reports.
+
+SEASON_DIVISIONS = [
+    (10, "Division 10", 4, 2, 400),
+    (9, "Division 9", 4, 2, 500),
+    (8, "Division 8", 5, 2, 650),
+    (7, "Division 7", 5, 3, 800),
+    (6, "Division 6", 6, 3, 1000),
+    (5, "Division 5", 6, 3, 1300),
+    (4, "Division 4", 7, 4, 1700),
+    (3, "Division 3", 7, 4, 2200),
+    (2, "Division 2", 8, 4, 3000),
+    (1, "Division 1", 10, 5, 5000),
+]
+
+TOURNAMENTS = [
+    (1, "Coupe des Fondateurs", "bronze", 1000, 5),
+    (2, "Coupe Nationale", "silver", 2500, 5),
+    (3, "Coupe des Champions", "gold", 5000, 5),
+    (4, "Coupe du Monde des Clubs", "gold", 7500, 6),
+]
+
+
+def seasons_response() -> bytes:
+    return json.dumps(
+        {
+            "seasons": [
+                {
+                    "seasonId": division,
+                    "division": division,
+                    "name": name,
+                    "matchesPlayed": 0,
+                    "matchesToPlay": matches,
+                    "pointsToPromote": promote,
+                    "points": 0,
+                    "won": 0,
+                    "draw": 0,
+                    "lost": 0,
+                    "coinsPerWin": coins,
+                    "trophiesWon": 0,
+                }
+                for division, name, matches, promote, coins in SEASON_DIVISIONS
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def season_user_response(division: int = 10) -> bytes:
+    """Where the club currently stands. Starts in the bottom division."""
+    entry = next(
+        (row for row in SEASON_DIVISIONS if row[0] == division), SEASON_DIVISIONS[0]
+    )
+    _, name, matches, promote, coins = entry
+    return json.dumps(
+        {
+            "seasonId": division,
+            "division": division,
+            "name": name,
+            "matchesPlayed": 0,
+            "matchesToPlay": matches,
+            "pointsToPromote": promote,
+            "points": 0,
+            "won": 0,
+            "draw": 0,
+            "lost": 0,
+            "coinsPerWin": coins,
+            "trophiesWon": 0,
+            "relegated": False,
+            "promoted": False,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def tournaments_response() -> bytes:
+    return json.dumps(
+        {
+            "tournament": [
+                {
+                    "tournamentId": identifier,
+                    "name": name,
+                    "level": level,
+                    "prize": prize,
+                    "rounds": rounds,
+                    "currentRound": 0,
+                    "entryFee": 0,
+                    "active": True,
+                    "won": 0,
+                }
+                for identifier, name, level, prize, rounds in TOURNAMENTS
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
+def active_tournaments_response() -> bytes:
+    return json.dumps(
+        {"tournamentId": [row[0] for row in TOURNAMENTS]}, separators=(",", ":")
+    ).encode()
+
+
+def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
+    """Team of the Week, drawn from the highest-rated in-form cards.
+
+    Retail rotates this weekly. Here it is the best of the catalogue's rare
+    cards, which is what the screen exists to show.
+    """
+    best = [
+        card
+        for card in catalogue.cards
+        if card.get("rareflag") and card.get("rating", 0) >= 80
+    ][:size]
+    items = []
+    for index, card in enumerate(best):
+        items.append(
+            _player_item(
+                item_id=1_850_000_000 + index,
+                asset_id=card["assetId"],
+                rating=card.get("rating", 0),
+                rare=card.get("rareflag", 1),
+                play_style=0,
+                team_id=card.get("clubId", 0),
+                attributes=card.get("attributes", [0] * 6),
+                position=card.get("position") or FALLBACK_POSITION,
+                item_state="free",
+                nation=card.get("nationId", 0),
+                league=card.get("leagueId", 0),
+                rarity=card.get("rarity", ""),
+            )
+        )
+    return json.dumps(
+        {"itemData": items, "formation": FORMATION, "squadName": "Équipe de la semaine"},
+        separators=(",", ":"),
+    ).encode()

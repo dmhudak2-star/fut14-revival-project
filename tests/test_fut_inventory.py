@@ -422,3 +422,44 @@ def test_the_club_search_can_isolate_a_type() -> None:
     assert players and kits
     assert {item["itemType"] for item in players} == {"player"}
     assert {item["itemType"] for item in kits} == {"kit"}
+
+
+def test_seasons_are_not_an_empty_list() -> None:
+    # These screens treat an empty list as an error, not as "nothing
+    # available" -- the same way fcc_login2 treats an empty squad.
+    import fut_inventory as inventory
+
+    seasons = json.loads(inventory.seasons_response())["seasons"]
+    assert len(seasons) == 10
+    assert {season["division"] for season in seasons} == set(range(1, 11))
+    for season in seasons:
+        assert season["matchesToPlay"] > 0
+        assert season["coinsPerWin"] > 0
+
+
+def test_the_club_starts_in_the_bottom_division() -> None:
+    import fut_inventory as inventory
+
+    standing = json.loads(inventory.season_user_response())
+    assert standing["division"] == 10
+    assert standing["matchesPlayed"] == 0
+    assert standing["promoted"] is False
+
+
+def test_cups_are_listed_and_active() -> None:
+    import fut_inventory as inventory
+
+    cups = json.loads(inventory.tournaments_response())["tournament"]
+    assert cups
+    assert all(cup["active"] and cup["rounds"] > 0 for cup in cups)
+    active = json.loads(inventory.active_tournaments_response())["tournamentId"]
+    assert active == [cup["tournamentId"] for cup in cups]
+
+
+def test_team_of_the_week_is_a_full_side_of_rare_cards() -> None:
+    import fut_inventory as inventory
+
+    squad = json.loads(inventory.totw_response(inventory.CardCatalogue()))
+    assert len(squad["itemData"]) == 23
+    assert all(card["rareflag"] for card in squad["itemData"])
+    assert all(card["rating"] >= 80 for card in squad["itemData"])

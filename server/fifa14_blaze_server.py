@@ -462,7 +462,12 @@ from fut_inventory import (  # noqa: E402
     ClubInventory,
     PackShop,
     Wallet,
+    active_tournaments_response,
+    season_user_response,
+    seasons_response,
     store_catalogue,
+    totw_response,
+    tournaments_response,
 )
 
 CLUB_INVENTORY = ClubInventory()
@@ -1761,6 +1766,38 @@ class IdentityHttpService:
                 # Buying a pack is a POST to purchased/items, not to /store --
                 # the journal shows the client sending it there and getting a
                 # 404. /store is only the catalogue.
+                # Seasons, cups and Team of the Week. Each of these screens
+                # treats an empty list as an error rather than as "nothing
+                # available" -- the same way fcc_login2 treats an empty squad --
+                # so serving a real one is what makes the mode selectable.
+                mode_responses = {
+                    "/ut/game/fifa14/season/list": seasons_response,
+                    "/ut/game/fifa14/season/user": season_user_response,
+                    "/ut/game/fifa14/tournament/list": tournaments_response,
+                    "/ut/game/fifa14/tournament/user/list": (
+                        active_tournaments_response
+                    ),
+                    "/ut/game/fifa14/clientdata/totw": (
+                        lambda: totw_response(CARD_CATALOGUE)
+                    ),
+                }
+                if normalized_path in mode_responses and self.command == "GET":
+                    payload = mode_responses[normalized_path]()
+                    owner.journal.event(
+                        "fut_mode_request",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # The whole catalogue, generated: nine packs with their own
                 # prices and groups, rather than the single fixture entry.
                 if normalized_path in (
