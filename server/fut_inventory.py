@@ -1295,25 +1295,23 @@ class CardActions:
             ]
 
     def _keep(self, item: dict) -> None:
-        """Put a card in the club, once.
+        """Put a card in the club.
 
-        A club holds one of any given card: the same item id arriving twice is
-        the same card, and the same asset in the same version is a duplicate
-        the club has no room for either.
+        A duplicate is allowed in. Refusing it here was wrong: owning a second
+        copy is legitimate, and it is the moment of keeping it that the game
+        offers to compare the two and decide -- sell one, swap, or hold both.
+        Silently dropping it made "send to club" do nothing at all for exactly
+        the card that needed a decision.
+
+        What is still refused is the same item id arriving twice, which is not
+        a second card but the same one counted again.
         """
-        signature = (item.get("assetId"), item.get("rareflag"))
-        for held in self.club:
-            if held["id"] == item["id"]:
-                return
-            if (held.get("assetId"), held.get("rareflag")) == signature:
-                return
+        if any(held["id"] == item["id"] for held in self.club):
+            return
         self.club.append(item)
         if self.inventory is not None:
-            for held in self.inventory.items:
-                if held["id"] == item["id"]:
-                    return
-                if (held.get("assetId"), held.get("rareflag")) == signature:
-                    return
+            if any(held["id"] == item["id"] for held in self.inventory.items):
+                return
             self.inventory.items.append(item)
 
     def _find(self, item_id: int) -> dict | None:

@@ -560,6 +560,39 @@ def test_listing_a_card_takes_it_out_of_the_club() -> None:
     assert after == owned - 1
 
 
+def test_a_duplicate_is_kept_and_flagged_rather_than_dropped() -> None:
+    # Refusing it on the way in was wrong: owning a second copy is legitimate,
+    # and keeping it is the moment the game offers to compare the two. Dropping
+    # it made "send to club" do nothing for exactly the card needing a choice.
+    import random
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, wallet = ClubInventory(), Wallet(coins=2_000_000)
+    shop = PackShop(CardCatalogue(), wallet, inventory)
+    actions = CardActions(shop, wallet, inventory)
+
+    first = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
+    for item in first["itemList"]:
+        actions._keep(dict(item))
+    owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+
+    second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
+    assert len(second["duplicateItemIdList"]) == second["numberItems"]
+    for item in second["itemList"]:
+        actions._keep(dict(item))
+
+    after = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
+    assert after == owned + second["numberItems"]
+
+
 def test_a_club_holds_one_of_any_card() -> None:
     import random
 
@@ -568,7 +601,7 @@ def test_a_club_holds_one_of_any_card() -> None:
     card = opened["itemList"][0]["id"]
     actions.move({"itemData": [{"id": card, "pile": 7}]})
     owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
-    # Sending the same card again must not add a second copy.
+    # The same item id is the same card, not a second one.
     actions.move({"itemData": [{"id": card, "pile": 7}]})
     assert (
         len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
