@@ -349,6 +349,8 @@ class ClubInventory:
 # returns the best matches for its filters.
 
 AUCTION_DURATION = 3600
+# A day, so a listing does not lapse while the screen is being read.
+AUCTION_WINDOW = 86400
 
 
 def _now() -> int:
@@ -473,9 +475,17 @@ class CardCatalogue:
                     # auction record -- is gone.
                     "tradeId": MARKET_TRADE_ID_BASE + offset + index,
                     "tradeState": "active",
-                    "expires": AUCTION_DURATION,
-                    "startTime": _now(),
-                    "endtime": _now() + AUCTION_DURATION,
+                    # Buying failed with "la liste a expiré" while the panel
+                    # itself worked, so the expiry check is what refuses it.
+                    # The bounds were this machine's clock, and the console has
+                    # been offline for years -- its clock is not this one's, so
+                    # any absolute comparison is a coin toss.
+                    #
+                    # So: a window that cannot be outside whatever the console
+                    # believes the time is, and a long relative countdown.
+                    "expires": AUCTION_WINDOW,
+                    "startTime": 0,
+                    "endtime": 2147483647,
                     "buyNowPrice": price,
                     "startingBid": max(150, price // 2),
                     "currentBid": 0,
