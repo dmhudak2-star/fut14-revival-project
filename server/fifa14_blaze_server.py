@@ -456,11 +456,13 @@ def with_balance(payload: bytes, coins: int) -> bytes:
 # ships, so every screen that asks about the club sees the same inventory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
+    GOLD_PACK_ID,
     CardActions,
     CardCatalogue,
     ClubInventory,
     PackShop,
     Wallet,
+    store_catalogue,
 )
 
 CLUB_INVENTORY = ClubInventory()
