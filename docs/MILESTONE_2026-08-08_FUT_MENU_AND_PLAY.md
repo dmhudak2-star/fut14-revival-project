@@ -45,3 +45,31 @@ Worth recording, because two presses went somewhere unintended:
 A 404 there surfaces as "un problème de communication est survenu avec les
 serveurs FIFA Ultimate Team", and the title returns to the FIFA main menu. Now
 answered `{"seasons":[]}`, the shape the PC revival carries.
+
+## A stuck button, and how it looked
+
+Worth writing down, because it cost an hour and looked like a game fault.
+
+After killing a cycle mid-press, the virtual controller was left holding a
+button:
+
+```text
+enabled          = 1
+packet           = 2000
+buttons          = 0x0010     <- START, held
+remaining_frames = 0
+```
+
+`0x0010` is START. `remaining_frames` had run out, but the button state was
+never cleared, so the pad reported START held down forever.
+
+A held button produces no edge, so nothing the title watches for ever fires.
+The symptom was the attract videos looping endlessly while every START and A
+this project sent appeared to do nothing -- which reads exactly like "the
+virtual input does not reach the video player", and sent me looking in the
+wrong place. The screen navigator made it worse by matching dark video frames
+against the `fut_error` signature at distance 20-40 and reporting a FUT error
+on a title that had only just booted.
+
+`xbox360_virtual_input.py <host> apply` clears the state. Check `status` before
+concluding the title is stuck: `buttons` should read `0x0000` at rest.
