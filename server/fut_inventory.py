@@ -502,6 +502,32 @@ class CardCatalogue:
             document.update({"credits": coins, "totalCredits": coins, "coins": coins})
         return json.dumps(document, separators=(",", ":")).encode()
 
+    def status_for(self, trade_ids: list[int], coins: int) -> bytes:
+        """Answer /trade/status?tradeIds=... with those auctions.
+
+        The client polls this for the specific auction it is about to bid on.
+        Answering with an empty list -- whatever was asked -- told it nothing
+        about that auction, and it refused with "Auction state is invalid for
+        bidding". The listing has to come back, by id.
+        """
+        found = [
+            self.served[trade_id]
+            for trade_id in trade_ids
+            if trade_id in self.served
+        ]
+        return json.dumps(
+            {
+                "auctionInfo": found,
+                "duplicateItemIdList": [],
+                "total": len(found),
+                "credits": coins,
+                "totalCredits": coins,
+                "coins": coins,
+            },
+            separators=(",", ":"),
+        ).encode()
+
+
     def bid(self, trade_id: int, amount: int, wallet: "Wallet") -> tuple[bytes, dict | None]:
         """Bid on, or buy outright, a listing this server served earlier.
 

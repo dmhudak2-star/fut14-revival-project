@@ -1747,6 +1747,39 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # The client asks about one auction by id before bidding on
+                # it; an empty answer reads as "Auction state is invalid for
+                # bidding", which is the string CardsDLL carries beside
+                # /status?tradeIds=%lld.
+                if (
+                    normalized_path == "/ut/game/fifa14/trade/status"
+                    and self.command == "GET"
+                    and parsed.query
+                ):
+                    asked: list[int] = []
+                    for raw in urllib.parse.parse_qs(parsed.query).get("tradeIds", []):
+                        for piece in raw.split(","):
+                            try:
+                                asked.append(int(piece))
+                            except ValueError:
+                                continue
+                    payload = CARD_CATALOGUE.status_for(asked, WALLET.coins)
+                    owner.journal.event(
+                        "fut_trade_status",
+                        peer=self.client_address[0],
+                        asked=len(asked),
+                        known=len(CARD_CATALOGUE.served),
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in (
                     "/ut/game/fifa14/trade/status",
                     "/ut/game/fifa14/watchlist",
