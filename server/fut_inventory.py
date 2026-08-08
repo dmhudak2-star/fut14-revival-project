@@ -372,12 +372,27 @@ class ClubInventory:
                     "kitNumber": index + 1 if index < 11 else 0,
                 }
             )
+        starters = self.squad[:11] or self.squad
+        rating = (
+            round(sum(item["rating"] for item in starters) / len(starters))
+            if starters
+            else 0
+        )
         return json.dumps(
             {
                 "personaId": 0,
                 "id": 1,
                 "squadName": name,
                 "formation": FORMATION,
+                # FutSquadLoadServerResponse keeps these at the root, and the
+                # squad screen never emitted a save without them: nothing in
+                # the journal, not even a rejected one. `changed` is the one
+                # that matters -- a squad that cannot mark itself modified has
+                # no reason to be written back.
+                "chemistry": 100,
+                "starRating": rating,
+                "rating": rating,
+                "changed": False,
                 "players": players,
                 "manager": [],
                 "actives": _presentation_items(),
