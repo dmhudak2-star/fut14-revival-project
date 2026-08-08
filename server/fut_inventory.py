@@ -326,7 +326,17 @@ class ClubInventory:
                 return True
 
             items = [item for item in items if wanted(item)]
-            count = number("count")
+            # The club search pages too, and honouring only `count` meant every
+            # page returned the same first results. The parameter it uses is
+            # not certain, so accept the spellings it could send.
+            start = 0
+            for key in ("start", "skip", "offset", "from"):
+                value = number(key)
+                if value:
+                    start = value
+                    break
+            count = number("count") or number("num") or 0
+            items = items[start:] if start else items
             if count:
                 items = items[:count]
         return json.dumps({"itemData": items}, separators=(",", ":")).encode()

@@ -2268,6 +2268,7 @@ class IdentityHttpService:
                         payload = CARD_CATALOGUE.auctions(query, coins=WALLET.coins)
                     owner.journal.event(
                         "fut_market_search",
+                        query=parsed.query[:160],
                         peer=self.client_address[0],
                         path=parsed.path,
                         filters=sorted(query),
