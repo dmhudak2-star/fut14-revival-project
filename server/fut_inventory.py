@@ -168,7 +168,9 @@ def _player_item(
         "suspension": 0,
         "training": 0,
         "playStyle": play_style,
-        "discardValue": 0,
+        # A quick sell pays this. Zero everywhere meant selling a card returned
+        # nothing, which is also how the balance first showed up wrong.
+        "discardValue": max(10, (rating - 40) ** 2 // 20) if rating else 0,
         "lastSalePrice": 0,
         "timestamp": 1,
         "untradeable": True,
@@ -269,3 +271,144 @@ class ClubInventory:
 
     def purchased_items_response(self) -> bytes:
         return b'{"duplicateItemIdList":[],"itemData":[]}'
+
+
+# -- the transfer market ---------------------------------------------------
+#
+# The club holds 92 cards. The catalogue holds 14019. The market is where the
+# difference becomes visible: it is the one screen whose job is to show players
+# you do not own.
+#
+# Listings are generated from the catalogue on demand rather than held, because
+# 14019 standing auctions is not a market, it is a phone book. Each search
+# returns the best matches for its filters.
+
+MARKET_ITEM_ID_BASE = 1_800_000_000
+MARKET_TRADE_ID_BASE = 1_900_000_000
+
+
+def _price_for(rating: int, rareflag: int) -> int:
+    """A plausible asking price, so the market is not uniformly free."""
+    base = max(150, (rating - 40) ** 2 * 3)
+    if rareflag:
+        base *= 2
+    return int(round(base / 50) * 50)
+
+
+class CardCatalogue:
+    """Every card in the game, searchable."""
+
+    def __init__(self, path: Path = CARD_CATALOGUE) -> None:
+        self.cards: list[dict] = []
+        if path.exists():
+            self.cards = json.loads(path.read_text()).get("cards", [])
+
+    def search(self, query: dict[str, str], limit: int = 40) -> list[dict]:
+        def wanted(card: dict) -> bool:
+            position = query.get("position", "any")
+            if position not in ("any", "", None) and card.get("position") != position:
+                return False
+            level = query.get("level", "any")
+            if level not in ("any", "", None):
+                rarity = (card.get("rarity") or "").lower()
+                if level.lower() not in rarity:
+                    return False
+            for key, field in (("nation", "nationId"), ("league", "leagueId"), ("team", "clubId")):
+                value = query.get(key)
+                if value not in (None, "", "-1") and str(card.get(field)) != value:
+                    return False
+            name = (query.get("maskedDefId") or query.get("name") or "").strip().lower()
+            if name and name not in (card.get("name") or "").lower():
+                return False
+            minr, maxr = query.get("minb"), query.get("maxb")
+            rating = card.get("rating", 0)
+            if minr and rating < int(minr):
+                return False
+            if maxr and rating > int(maxr):
+                return False
+            return True
+
+        matches = [card for card in self.cards if wanted(card)]
+        matches.sort(key=lambda card: -card.get("rating", 0))
+        return matches[:limit]
+
+    def auctions(self, query: dict[str, str], limit: int = 40) -> bytes:
+        listings = []
+        for offset, card in enumerate(self.search(query, limit)):
+            price = _price_for(card.get("rating", 0), card.get("rareflag", 0))
+            item = _player_item(
+                item_id=MARKET_ITEM_ID_BASE + offset,
+                asset_id=card["assetId"],
+                rating=card.get("rating", 0),
+                rare=card.get("rareflag", 0),
+                play_style=0,
+                team_id=card.get("clubId", 0),
+                attributes=card.get("attributes", [0] * 6),
+                position=card.get("position") or FALLBACK_POSITION,
+                item_state="forSale",
+            )
+            item["untradeable"] = False
+            item["leagueId"] = card.get("leagueId", 0)
+            item["nation"] = card.get("nationId", 0)
+            listings.append(
+                {
+                    "tradeId": MARKET_TRADE_ID_BASE + offset,
+                    "itemData": item,
+                    "tradeState": "active",
+                    "buyNowPrice": price,
+                    "startingBid": max(150, price // 2),
+                    "currentBid": 0,
+                    "offers": 0,
+                    "watched": False,
+                    "bidState": "none",
+                    "tradeOwner": False,
+                    "expires": 3600,
+                    "sellerName": "FUT",
+                    "sellerEstablished": 2013,
+                    "sellerId": 1,
+                    "confidenceValue": 100,
+                }
+            )
+        return json.dumps(
+            {"auctionInfo": listings, "duplicateItemIdList": [], "total": len(listings)},
+            separators=(",", ":"),
+        ).encode()
+
+
+# -- the coin balance ------------------------------------------------------
+#
+# The header reads its balance from whatever response last carried it, not at
+# login: it showed a clean zero until the first quick sell, then uninitialised
+# memory, because our quick-sell reply was an empty object and the parser never
+# wrote the field.
+#
+# `totalCredits` is in CardsDLL's JSON member table, next to `total` and
+# `totalGames`. `credits` and `coins` go out beside it: an unrecognised sibling
+# at the top level is skipped, so naming all three costs nothing and a wrapper
+# would have broken the parse, as {"userInfo":{...}} did.
+
+STARTING_COINS = 50_000
+
+
+class Wallet:
+    """The club's coin balance, held for the life of the server."""
+
+    def __init__(self, coins: int = STARTING_COINS) -> None:
+        self.coins = coins
+
+    def credit(self, amount: int) -> int:
+        self.coins = max(0, self.coins + int(amount))
+        return self.coins
+
+    def debit(self, amount: int) -> int:
+        return self.credit(-abs(int(amount)))
+
+    def response(self) -> bytes:
+        return json.dumps(
+            {
+                "totalCredits": self.coins,
+                "credits": self.coins,
+                "coins": self.coins,
+            },
+            separators=(",", ":"),
+        ).encode()

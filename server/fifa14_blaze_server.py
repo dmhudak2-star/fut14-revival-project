@@ -355,6 +355,12 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/delete/game/fifa14/item": b"{}",
     # The market parser reads all three members; omitting the count and the
     # duplicate list leaves two of them at whatever the constructor held.
+    # Polled right after a market search to refresh the state of the bids you
+    # have out. A 404 here raises an error popup over a search that otherwise
+    # worked. Nothing is bid on yet, so the list is empty.
+    "/ut/game/fifa14/trade/status": (
+        b'{"auctionInfo":[],"duplicateItemIdList":[],"total":0}'
+    ),
     "/ut/game/fifa14/tradePile": (
         b'{"auctionInfo":[],"duplicateItemIdList":[],"total":0}'
     ),
@@ -395,12 +401,18 @@ FUT_ROUTES: dict[str, bytes] = {
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.json"
 
+# What a quick sell pays when the request does not say which card went. The
+# real discardValue travels on the item; this is the floor.
+SELL_PRICE_FALLBACK = 200
+
 # The club's cards. Built once at import from the icebreaker packs this build
 # ships, so every screen that asks about the club sees the same inventory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fut_inventory import ClubInventory  # noqa: E402
+from fut_inventory import CardCatalogue, ClubInventory, Wallet  # noqa: E402
 
 CLUB_INVENTORY = ClubInventory()
+CARD_CATALOGUE = CardCatalogue()
+WALLET = Wallet()
 CLUB_NAME = "Fondateur FUT"
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
@@ -1639,6 +1651,73 @@ class IdentityHttpService:
                         CLUB_INVENTORY.purchased_items_response
                     ),
                 }
+                # A quick sell is what actually writes the header's balance, so
+                # its reply has to carry the new total. An empty object here is
+                # what left the header printing uninitialised memory.
+                if normalized_path == "/ut/delete/game/fifa14/item":
+                    WALLET.credit(SELL_PRICE_FALLBACK)
+                    payload = WALLET.response()
+                    owner.journal.event(
+                        "fut_quick_sell",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        coins=WALLET.coins,
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                if normalized_path in (
+                    "/ut/game/fifa14/user/credits",
+                    "/ut/game/fifa14/user",
+                ) and self.command == "GET":
+                    payload = WALLET.response()
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # The market is the one screen whose job is to show players the
+                # club does not own, so it is served from the catalogue rather
+                # than the inventory.
+                if normalized_path in (
+                    "/ut/game/fifa14/transfermarket",
+                    "/ut/game/fifa14/club",
+                ) and self.command == "GET" and parsed.query:
+                    query = {
+                        key: values[0]
+                        for key, values in urllib.parse.parse_qs(parsed.query).items()
+                    }
+                    if normalized_path.endswith("/club"):
+                        # A club search still searches the club.
+                        payload = CLUB_INVENTORY.club_response()
+                    else:
+                        payload = CARD_CATALOGUE.auctions(query, limit=40)
+                    owner.journal.event(
+                        "fut_market_search",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        filters=sorted(query),
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in club_responses and self.command == "GET":
                     payload = club_responses[normalized_path]()
                     owner.journal.event(

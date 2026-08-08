@@ -95,3 +95,21 @@ def test_the_club_holds_more_than_the_starting_squad() -> None:
     # Spares are what give the club and transfer screens something to show.
     players = [item for item in INVENTORY.items if item["itemType"] == "player"]
     assert len(players) > len(INVENTORY.squad)
+
+
+def test_the_wallet_starts_funded_and_names_the_field_three_ways() -> None:
+    # The header reads whichever member it knows; an unrecognised sibling at
+    # the top level is skipped, but a wrapper is not -- nesting these under
+    # "userInfo" made the balance print 0xCDCDCDCD.
+    from fut_inventory import Wallet
+
+    balance = json.loads(Wallet().response())
+    assert balance["totalCredits"] == balance["credits"] == balance["coins"]
+    assert balance["coins"] > 0
+
+
+def test_a_quick_sell_pays_something() -> None:
+    # discardValue was zero on every card, so selling one returned nothing.
+    for item in INVENTORY.items:
+        if item["itemType"] == "player":
+            assert item["discardValue"] > 0

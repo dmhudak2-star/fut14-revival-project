@@ -585,7 +585,14 @@ class ProtocolTests(unittest.TestCase):
             identity.start()
             try:
                 port = identity.server.server_address[1]
-                for path in sorted(SERVER.FUT_ROUTES):
+                # These three are answered from the wallet, whose balance
+                # moves, so a fixed body would only assert today's number.
+                dynamic = {
+                    "/ut/game/fifa14/user",
+                    "/ut/game/fifa14/user/credits",
+                    "/ut/delete/game/fifa14/item",
+                }
+                for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(
                         "127.0.0.1", port, timeout=2
                     )
