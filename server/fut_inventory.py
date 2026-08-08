@@ -441,6 +441,23 @@ class ClubInventory:
             )
         return json.dumps({"squad": entries}, separators=(",", ":")).encode()
 
+    def set_active(self, squad_id: int) -> None:
+        """Remember which side the club is playing with.
+
+        Nothing in the traffic says "make this one active" -- the choice is
+        made in the screen and never sent, so it was lost on leaving FUT. What
+        the client does do is load the chosen side by id, and that is taken as
+        the signal here. It is an inference, not a contract.
+        """
+        if squad_id in self._squads():
+            self.active_id = squad_id
+            players = self._squads()[squad_id]["players"]
+            if any(players):
+                self.set_squad([i for i in players if i])
+
+    def active_squad_id(self) -> int:
+        return getattr(self, "active_id", 1)
+
     def squad_document(self, squad_id: int, name: str = "") -> bytes:
         """One named side, by id.
 
@@ -1740,6 +1757,8 @@ class ClubSave:
                 tasks.complete(int(key), int(value))
         for key, value in (saved.get("squads") or {}).items():
             inventory._squads()[int(key)] = value
+        if saved.get("activeSquad"):
+            inventory.set_active(int(saved["activeSquad"]))
         if saved.get("squad"):
             inventory.set_squad([int(x) for x in saved["squad"]])
         actions.transfer = list(saved.get("transfer", []))
@@ -1764,6 +1783,7 @@ class ClubSave:
             "pending": actions.shop.pending,
             "squad": [item["id"] for item in inventory.squad],
             "tasks": {str(k): v for k, v in tasks.completed.items()} if tasks else {},
+            "activeSquad": inventory.active_squad_id(),
             "squads": {
                 str(key): value for key, value in inventory._squads().items()
             },

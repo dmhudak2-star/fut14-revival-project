@@ -1733,7 +1733,9 @@ class IdentityHttpService:
                 club_responses = {
                     "/ut/game/fifa14/squad/list": CLUB_INVENTORY.squad_summaries,
                     "/ut/game/fifa14/squad/active": (
-                        lambda: CLUB_INVENTORY.active_squad_response(CLUB_NAME)
+                        lambda: CLUB_INVENTORY.squad_document(
+                            CLUB_INVENTORY.active_squad_id(), CLUB_NAME
+                        )
                     ),
                     "/ut/game/fifa14/club": CLUB_INVENTORY.club_response,
                     "/ut/game/fifa14/purchased/items": (
@@ -2106,6 +2108,10 @@ class IdentityHttpService:
                     and normalized_path.rsplit("/", 1)[-1].isdigit()
                 ):
                     squad_id = int(normalized_path.rsplit("/", 1)[-1])
+                    # Loading a side by id is the only signal that it was
+                    # chosen; nothing else in the traffic says so.
+                    CLUB_INVENTORY.set_active(squad_id)
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
                     self.reply(
                         200,
                         CLUB_INVENTORY.squad_document(squad_id, CLUB_NAME) + b"\n",
