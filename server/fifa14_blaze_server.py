@@ -1800,9 +1800,7 @@ class IdentityHttpService:
                         # A club search still searches the club.
                         payload = CLUB_INVENTORY.club_response()
                     else:
-                        payload = CARD_CATALOGUE.auctions(
-                            query, limit=40, coins=WALLET.coins
-                        )
+                        payload = CARD_CATALOGUE.auctions(query, coins=WALLET.coins)
                     owner.journal.event(
                         "fut_market_search",
                         peer=self.client_address[0],

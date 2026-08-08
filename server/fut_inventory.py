@@ -304,43 +304,71 @@ class CardCatalogue:
         if path.exists():
             self.cards = json.loads(path.read_text()).get("cards", [])
 
-    def search(self, query: dict[str, str], limit: int = 40) -> list[dict]:
+    def search(self, query: dict[str, str]) -> tuple[list[dict], int]:
+        """Filtered, sorted, paged. Returns the page and the full match count.
+
+        The market's parameter names are its own -- `lev` not `level`,
+        `definitionId` for one specific player, `start` and `num` for paging.
+        Filtering on the names the club search uses meant none of them applied,
+        and ignoring `start` meant every page returned the same forty cards.
+        """
+
+        def number(key: str) -> int | None:
+            value = query.get(key)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        definition = number("definitionId") or number("maskedDefId")
+        level = (query.get("lev") or query.get("level") or "").strip().lower()
+        position = (query.get("pos") or query.get("position") or "").strip()
+        nation = number("nat") if query.get("nat") else number("nation")
+        league = number("leag") if query.get("leag") else number("league")
+        team = number("team")
+        min_rating, max_rating = number("minb"), number("maxb")
+
         def wanted(card: dict) -> bool:
-            position = query.get("position", "any")
-            if position not in ("any", "", None) and card.get("position") != position:
+            if definition and card.get("assetId") != definition:
                 return False
-            level = query.get("level", "any")
-            if level not in ("any", "", None):
-                rarity = (card.get("rarity") or "").lower()
-                if level.lower() not in rarity:
+            if level and level not in ("any", ""):
+                if level not in (card.get("rarity") or "").lower():
                     return False
-            for key, field in (("nation", "nationId"), ("league", "leagueId"), ("team", "clubId")):
-                value = query.get(key)
-                if value not in (None, "", "-1") and str(card.get(field)) != value:
+            if position and position not in ("any", ""):
+                if card.get("position") != position:
                     return False
-            name = (query.get("maskedDefId") or query.get("name") or "").strip().lower()
-            if name and name not in (card.get("name") or "").lower():
-                return False
-            minr, maxr = query.get("minb"), query.get("maxb")
+            for value, field in (
+                (nation, "nationId"),
+                (league, "leagueId"),
+                (team, "clubId"),
+            ):
+                if value not in (None, -1) and card.get(field) != value:
+                    return False
             rating = card.get("rating", 0)
-            if minr and rating < int(minr):
+            if min_rating is not None and rating < min_rating:
                 return False
-            if maxr and rating > int(maxr):
+            if max_rating is not None and rating > max_rating:
                 return False
             return True
 
         matches = [card for card in self.cards if wanted(card)]
-        matches.sort(key=lambda card: -card.get("rating", 0))
-        return matches[:limit]
+        matches.sort(key=lambda card: (-card.get("rating", 0), card.get("name", "")))
 
-    def auctions(
-        self, query: dict[str, str], limit: int = 40, coins: int | None = None
-    ) -> bytes:
+        start = number("start") or 0
+        count = number("num") or number("count") or 20
+        return matches[start : start + count], len(matches)
+
+    def auctions(self, query: dict[str, str], coins: int | None = None) -> bytes:
+        page, total = self.search(query)
         listings = []
-        for offset, card in enumerate(self.search(query, limit)):
+        try:
+            offset = int(query.get("start") or 0)
+        except ValueError:
+            offset = 0
+        for index, card in enumerate(page):
             price = _price_for(card.get("rating", 0), card.get("rareflag", 0))
             item = _player_item(
-                item_id=MARKET_ITEM_ID_BASE + offset,
+                item_id=MARKET_ITEM_ID_BASE + offset + index,
                 asset_id=card["assetId"],
                 rating=card.get("rating", 0),
                 rare=card.get("rareflag", 0),
@@ -355,7 +383,7 @@ class CardCatalogue:
             item["nation"] = card.get("nationId", 0)
             listings.append(
                 {
-                    "tradeId": MARKET_TRADE_ID_BASE + offset,
+                    "tradeId": MARKET_TRADE_ID_BASE + offset + index,
                     "itemData": item,
                     "tradeState": "active",
                     "buyNowPrice": price,
@@ -372,19 +400,15 @@ class CardCatalogue:
                     "confidenceValue": 100,
                 }
             )
-        # The balance rides along. These response constructors zero their
-        # fields before parsing, so a search reply without it hands the header
-        # a real zero -- which is exactly what visiting the market did to a
-        # balance that was 50400 on the server at the time.
+        # `total` is the size of the whole result set, not of this page: it is
+        # what the screen pages against.
         document = {
             "auctionInfo": listings,
             "duplicateItemIdList": [],
-            "total": len(listings),
+            "total": total,
         }
         if coins is not None:
-            document.update(
-                {"credits": coins, "totalCredits": coins, "coins": coins}
-            )
+            document.update({"credits": coins, "totalCredits": coins, "coins": coins})
         return json.dumps(document, separators=(",", ":")).encode()
 
 

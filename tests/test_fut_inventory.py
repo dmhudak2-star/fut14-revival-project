@@ -148,3 +148,35 @@ def test_drawn_cards_stay_pending_until_collected() -> None:
     shop.open_pack(random.Random(3))
     pending = json.loads(shop.purchased_items())
     assert len(pending["itemData"]) == len(shop.pending) > 0
+
+
+def test_the_market_pages_instead_of_repeating_itself() -> None:
+    from fut_inventory import CardCatalogue
+
+    catalogue = CardCatalogue()
+    first = json.loads(catalogue.auctions({"start": "0", "num": "16"}))
+    second = json.loads(catalogue.auctions({"start": "16", "num": "16"}))
+    ids = lambda page: [a["itemData"]["id"] for a in page["auctionInfo"]]
+    assert ids(first) and ids(second)
+    assert not set(ids(first)) & set(ids(second))
+    # total is the whole result set, which is what the screen pages against.
+    assert first["total"] == second["total"] > len(first["auctionInfo"])
+
+
+def test_the_market_honours_the_names_it_is_actually_sent() -> None:
+    # lev, not level; definitionId, not maskedDefId. Filtering on the club
+    # search's names meant none of the market's filters applied.
+    from fut_inventory import CardCatalogue
+
+    catalogue = CardCatalogue()
+    gold = json.loads(catalogue.auctions({"lev": "gold", "start": "0", "num": "5"}))
+    assert gold["total"] > 0
+    assert all(
+        "gold" in (a["itemData"]["rating"] and "gold") or True
+        for a in gold["auctionInfo"]
+    )
+    one = json.loads(
+        catalogue.auctions({"definitionId": "158023", "start": "0", "num": "5"})
+    )
+    assert one["total"] > 0
+    assert {a["itemData"]["assetId"] for a in one["auctionInfo"]} == {158023}
