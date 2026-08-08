@@ -479,7 +479,7 @@ from fut_inventory import (  # noqa: E402
 CLUB_INVENTORY = ClubInventory()
 CARD_CATALOGUE = CardCatalogue()
 WALLET = Wallet()
-PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET)
+PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET, CLUB_INVENTORY)
 CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
 
 # Entering FUT needs a relaunch, so without this every session started from the

@@ -809,3 +809,44 @@ def test_manager_tasks_are_recorded_and_survive() -> None:
         restored = ManagerTasks()
         ClubSave(path).load(ClubInventory(), Wallet(), actions, restored)
         assert restored.completed == tasks.completed
+
+
+def test_a_card_pulled_twice_is_reported_as_a_duplicate() -> None:
+    # duplicateItemIdList was always empty, so a player packed twice was never
+    # offered as a duplicate and the screen had no reason to treat it apart.
+    import random
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, wallet = ClubInventory(), Wallet(coins=2_000_000)
+    shop = PackShop(CardCatalogue(), wallet, inventory)
+    actions = CardActions(shop, wallet, inventory)
+
+    first = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
+    assert first["duplicateItemIdList"] == []
+    for item in first["itemList"]:
+        actions._keep(dict(item))
+
+    # The same draw again: every card is now one the club holds.
+    second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
+    assert len(second["duplicateItemIdList"]) == second["numberItems"]
+
+
+def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
+    from fut_inventory import CardCatalogue, ClubInventory, PackShop, Wallet
+
+    inventory = ClubInventory()
+    shop = PackShop(CardCatalogue(), Wallet(), inventory)
+    base = {"id": 1, "assetId": 158023, "rareflag": 0}
+    rare = {"id": 2, "assetId": 158023, "rareflag": 1}
+    inventory.items.append(base)
+    # Same player, different version: not a repeat.
+    assert shop._duplicates([rare]) == []
+    assert shop._duplicates([dict(base, id=3)]) == [3]

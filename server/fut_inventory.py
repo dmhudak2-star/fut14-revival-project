@@ -1025,9 +1025,17 @@ def store_catalogue(timestamp: int = 2147483647) -> bytes:
 class PackShop:
     """Sells any pack in the catalogue, and draws cards that match its tier."""
 
-    def __init__(self, catalogue: "CardCatalogue", wallet: "Wallet") -> None:
+    def __init__(
+        self,
+        catalogue: "CardCatalogue",
+        wallet: "Wallet",
+        inventory: "ClubInventory | None" = None,
+    ) -> None:
         self.catalogue = catalogue
         self.wallet = wallet
+        # Needed to tell a duplicate from a new card: a duplicate is one the
+        # club already holds, which is a question only the club can answer.
+        self.inventory = inventory
         self.purchases = 0
         # Cards drawn but not yet acknowledged by the client. The purchased
         # items endpoint reports these, which is how they reach the club.
@@ -1090,7 +1098,10 @@ class PackShop:
                 "numberItems": len(drawn),
                 "purchasedPackId": int(pack_id),
                 "itemList": drawn,
-                "duplicateItemIdList": [],
+                # Cards the club already holds. This was always empty, so a
+                # player pulled twice was never offered as a duplicate and the
+                # screen had no reason to treat it differently.
+                "duplicateItemIdList": self._duplicates(drawn),
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
                 "coins": self.wallet.coins,
@@ -1098,10 +1109,31 @@ class PackShop:
             separators=(",", ":"),
         ).encode()
 
+    def _duplicates(self, drawn: list[dict]) -> list[int]:
+        """The ids among these the club already owns.
+
+        A duplicate is the same asset in the same version -- a rare Messi and a
+        base Messi are two different cards, and only one of them is a repeat.
+        Cards drawn twice inside a single pack count too, after the first.
+        """
+        owned = set()
+        if self.inventory is not None:
+            owned = {
+                (item.get("assetId"), item.get("rareflag"))
+                for item in self.inventory.items
+            }
+        duplicates, seen = [], set()
+        for item in drawn:
+            signature = (item.get("assetId"), item.get("rareflag"))
+            if signature in owned or signature in seen:
+                duplicates.append(item["id"])
+            seen.add(signature)
+        return duplicates
+
     def purchased_items(self) -> bytes:
         return json.dumps(
             {
-                "duplicateItemIdList": [],
+                "duplicateItemIdList": self._duplicates(self.pending),
                 "itemData": self.pending,
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
