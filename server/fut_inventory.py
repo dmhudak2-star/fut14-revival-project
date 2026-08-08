@@ -1350,3 +1350,35 @@ def hub_response(inventory: "ClubInventory", listings: int) -> bytes:
         {"auctionCount": listings, "clubPlayers": players},
         separators=(",", ":"),
     ).encode()
+
+
+def club_stats_response(inventory: "ClubInventory") -> bytes:
+    """The Mon Club counters: players, rares, staff, stadiums, kits, badges.
+
+    They all read zero because the stats endpoints answered with an empty
+    entries list -- a club full of cards reporting nothing owned.
+
+    The key numbers are the screen's own slots; they are recovered from what
+    the screen displays rather than from a document, so the mapping is a
+    reading and not a certainty. The counts themselves are exact.
+    """
+    def count(kind: str) -> int:
+        return sum(1 for item in inventory.items if item.get("itemType") == kind)
+
+    players = count("player")
+    rares = sum(
+        1
+        for item in inventory.items
+        if item.get("itemType") == "player" and item.get("rareflag")
+    )
+    entries = [
+        {"key": 0, "value": players},
+        {"key": 1, "value": rares},
+        {"key": 2, "value": count("staff") + count("manager")},
+        {"key": 3, "value": count("stadium")},
+        {"key": 4, "value": count("kit")},
+        {"key": 5, "value": count("badge")},
+        {"key": 6, "value": count("ball")},
+        {"key": 7, "value": 0},
+    ]
+    return json.dumps({"entries": entries}, separators=(",", ":")).encode()

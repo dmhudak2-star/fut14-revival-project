@@ -465,6 +465,7 @@ from fut_inventory import (  # noqa: E402
     active_tournaments_response,
     season_user_response,
     seasons_response,
+    club_stats_response,
     hub_response,
     store_catalogue,
     totw_response,
@@ -2146,6 +2147,22 @@ class IdentityHttpService:
                 # not know, and the login step waiting on the response never
                 # completes. Do not extend this list without watching where the
                 # fan-out stops.
+                # Mon Club's counters -- players, rares, staff, stadiums,
+                # kits, badges, balls -- all read zero because these answered
+                # with an empty entries list, so a club full of cards reported
+                # owning nothing.
+                if normalized_path.startswith(
+                    "/ut/game/fifa14/club/stats/"
+                ) and self.command == "GET":
+                    self.reply(
+                        200,
+                        club_stats_response(CLUB_INVENTORY) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # The My Club and transfer tiles read their counts here, and
                 # both were fixed: the club tile stayed at 92 as cards arrived
                 # and the market tile always read zero.
