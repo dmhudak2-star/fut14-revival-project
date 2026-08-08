@@ -602,11 +602,13 @@ class ProtocolTests(unittest.TestCase):
                     client.request("GET", path)
                     response = client.getresponse()
                     self.assertEqual(response.status, 200, path)
-                    self.assertEqual(
-                        response.read().strip(),
-                        SERVER.FUT_ROUTES[path],
-                        path,
-                    )
+                    # Every FUT reply now carries the coin total as well, so
+                    # compare the fixture's own members rather than the whole
+                    # body.
+                    body = __import__("json").loads(response.read())
+                    expected = __import__("json").loads(SERVER.FUT_ROUTES[path])
+                    for key, value in expected.items():
+                        self.assertEqual(body.get(key), value, f"{path}:{key}")
                     client.close()
             finally:
                 identity.stop()

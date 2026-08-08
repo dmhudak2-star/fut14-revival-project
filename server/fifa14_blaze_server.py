@@ -405,6 +405,36 @@ ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.jso
 # real discardValue travels on the item; this is the floor.
 SELL_PRICE_FALLBACK = 200
 
+
+def with_balance(payload: bytes, coins: int) -> bytes:
+    """Add the coin total to any JSON object we answer a FUT route with.
+
+    The club header is refreshed from whichever response last carried a
+    balance, and these response constructors zero their fields before parsing.
+    So a reply that omits the total does not leave the header alone -- it sets
+    it to zero. That is why the balance read 0 from the moment FUT started
+    while the server held 50000: some response in the login fan-out was
+    zeroing it, and finding which one by elimination would have cost a relaunch
+    per candidate.
+
+    Naming the total three ways is deliberate. `totalCredits` is the member in
+    CardsDLL's own JSON table; `credits` and `coins` ride along because an
+    unrecognised sibling at the top level is skipped. A wrapper is not -- when
+    these were nested under `userInfo` the header printed 0xCDCDCDCD.
+    """
+    if not payload.startswith(b"{"):
+        return payload
+    try:
+        document = json.loads(payload)
+    except ValueError:
+        return payload
+    if not isinstance(document, dict):
+        return payload
+    document.setdefault("credits", coins)
+    document.setdefault("totalCredits", coins)
+    document.setdefault("coins", coins)
+    return json.dumps(document, separators=(",", ":")).encode()
+
 # The club's cards. Built once at import from the icebreaker packs this build
 # ships, so every screen that asks about the club sees the same inventory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1612,7 +1642,9 @@ class IdentityHttpService:
                     # until it is observed.
                     self.reply(
                         200,
-                        FUT_ROUTES["/ut/game/fifa14/user"] + b"\n",
+                        with_balance(
+                            FUT_ROUTES["/ut/game/fifa14/user"], WALLET.coins
+                        ) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -1788,7 +1820,9 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path in club_responses and self.command == "GET":
-                    payload = club_responses[normalized_path]()
+                    payload = with_balance(
+                        club_responses[normalized_path](), WALLET.coins
+                    )
                     owner.journal.event(
                         "fut_club_response",
                         peer=self.client_address[0],
@@ -1814,7 +1848,7 @@ class IdentityHttpService:
                     )
                     self.reply(
                         200,
-                        FUT_ROUTES[normalized_path] + b"\n",
+                        with_balance(FUT_ROUTES[normalized_path], WALLET.coins) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
