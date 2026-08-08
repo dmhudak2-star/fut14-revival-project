@@ -301,7 +301,14 @@ FUT_ROUTES: dict[str, bytes] = {
     # A club with no coins cannot buy a pack or bid on anything, so the store
     # and market screens render but do nothing. Give the founding club a
     # working balance.
-    "/ut/game/fifa14/user/credits": b'{"credits":50000}',
+    # The parser reads a currencies array, not a "credits" number. Sending the
+    # latter left the balance at whatever the response constructor held, which
+    # is what showed up in the club header as a negative figure.
+    "/ut/game/fifa14/user/credits": (
+        b'{"currencies":[{"name":"COINS","funds":50000,"finalFunds":50000},'
+        b'{"name":"POINTS","funds":0,"finalFunds":0}],'
+        b'"unopenedPacks":{"preOrderPacks":0,"recoveredPacks":0}}'
+    ),
     "/ut/game/fifa14/user/historical": b"{}",
     "/ut/game/fifa14/match": b"{}",
     "/ut/game/fifa14/match/ready": b"{}",

@@ -32,13 +32,22 @@ RESOURCE_VERSION = 0x0100_0000
 # with the presentation items below.
 FIRST_PLAYER_ITEM_ID = 1_600_000_001
 
-# f442, in the slot order the squad screen walks: eleven starters, then the
-# bench and reserves.
 FORMATION = "f442"
-POSITIONS = [
-    "GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST",
-    "GK", "CB", "LB", "RB", "CM", "CM", "RM", "LM", "ST", "ST", "CF", "CAM",
-]
+
+# No position is sent with a player item.
+#
+# The first version of this file assigned one per squad slot, which put Messi
+# at right back and Neuer in midfield -- the pack squads are not in formation
+# order (slot 10 of the first pack is Neuer, whose attributes read as a
+# goalkeeper's: 86 diving, 81 handling, 90 kicking, 87 reflexes, 58 speed, 85
+# positioning). Nor can the position be inferred from the six attributes: once
+# reinterpreted for a keeper they overlap an outfield attacker's closely enough
+# that no rule separates Messi from Neuer.
+#
+# The title already knows. It resolves each asset id against its own database
+# for the portrait, the nation and the club badge, and it would resolve the
+# position from the same record. Sending one only gives it a wrong answer to
+# prefer -- which is how Hart came to be labelled MOC.
 
 # Kit, badge, stadium and ball. Without these the club has nothing to present
 # and the match cannot dress either side. Asset ids are the retail defaults the
@@ -81,7 +90,6 @@ def _player_item(
     play_style: int,
     team_id: int,
     attributes: list[int],
-    position: str,
     item_state: str = "free",
 ) -> dict:
     return {
@@ -89,7 +97,6 @@ def _player_item(
         "assetId": asset_id,
         "resourceId": RESOURCE_VERSION | asset_id,
         "rating": rating,
-        "preferredPosition": position,
         "teamid": team_id,
         "leagueId": 0,
         "nation": 0,
@@ -143,7 +150,6 @@ class ClubInventory:
                     play_style=pack["playStyle"][slot],
                     team_id=pack["teamId"][slot],
                     attributes=[column[slot] for column in attributes],
-                    position=POSITIONS[slot % len(POSITIONS)],
                 )
                 self.items.append(item)
                 # The first pack becomes the starting squad; the rest stay in
