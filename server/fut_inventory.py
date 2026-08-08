@@ -438,11 +438,17 @@ class CardCatalogue:
                 team_id=card.get("clubId", 0),
                 attributes=card.get("attributes", [0] * 6),
                 position=card.get("position") or FALLBACK_POSITION,
-                item_state="forSale",
+                # "forSale" marks a card *you* have listed, and the screen
+                # offers no bid or buy on your own listing -- pressing A did
+                # nothing at all. A card on someone else's auction is "free".
+                item_state="free",
+                nation=card.get("nationId", 0),
+                league=card.get("leagueId", 0),
+                rarity=card.get("rarity", ""),
             )
             item["untradeable"] = False
-            item["leagueId"] = card.get("leagueId", 0)
-            item["nation"] = card.get("nationId", 0)
+            item["owners"] = 1
+            item["lastSalePrice"] = 0
             listing = {
                     "tradeId": MARKET_TRADE_ID_BASE + offset + index,
                     "itemData": item,
