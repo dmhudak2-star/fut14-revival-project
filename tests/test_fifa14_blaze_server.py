@@ -118,8 +118,11 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(values["CARDS/DIRECTED_BLAZEENV"], "prod")
         self.assertEqual(values["FCC/FUT_DEPLOY_LANGUAGE"], "en_US")
-        self.assertEqual(values["FUT/FORCE_TUTORIALS"], "1")
-        self.assertEqual(values["FUT/DISABLE_TUTORIALS"], "0")
+        # Tutorials stay off: the client asks for the tutorial feed either
+        # way, so these keys buy nothing, and forcing them on pointed the
+        # login at a document this server cannot yet shape correctly.
+        self.assertEqual(values["FUT/FORCE_TUTORIALS"], "0")
+        self.assertEqual(values["FUT/DISABLE_TUTORIALS"], "1")
 
     def test_osdk_roster_declares_local_base_roster(self) -> None:
         response = self.protocol.handle(

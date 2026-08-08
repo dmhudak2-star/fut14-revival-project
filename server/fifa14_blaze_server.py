@@ -1853,12 +1853,30 @@ class IdentityHttpService:
                         {"Content-Type": "application/xml; charset=utf-8"},
                     )
                     return
-                if normalized_path in ("/messages", "/tutorials", "/fut/messages", "/fut/tutorials"):
+                if normalized_path in ("/messages", "/fut/messages"):
                     self.reply(
                         200,
                         b'<?xml version="1.0" encoding="UTF-8"?>\n<MESSAGES>\n</MESSAGES>\n',
                         {"Content-Type": "application/xml; charset=utf-8"},
                     )
+                    return
+                if normalized_path in ("/tutorials", "/fut/tutorials"):
+                    # Every recorded session ends on this request, whatever
+                    # else changes, and disabling FUT/DISABLE_TUTORIALS and
+                    # FUT/FORCE_TUTORIALS did not stop the client making it --
+                    # so it is not gated by those keys and the only thing left
+                    # to vary is the answer.  An empty <MESSAGES> document was
+                    # a guess whose shape was never checked against the
+                    # parser; 404 is the one answer whose meaning is
+                    # unambiguous.  If the client can treat "no tutorials" as
+                    # ordinary, this is what tells it so.
+                    owner.journal.event(
+                        "fut_tutorial_feed_declined",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        path=parsed.path,
+                    )
+                    self.reply(404, b"not found\n", {"Content-Type": "text/plain"})
                     return
                 if parsed.path == "/sponsored-events":
                     # The title only needs a valid non-empty URL during the
