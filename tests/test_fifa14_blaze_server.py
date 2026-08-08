@@ -603,6 +603,11 @@ class ProtocolTests(unittest.TestCase):
                     "/ut/game/fifa14/tournament/list",
                     "/ut/game/fifa14/tournament/user/list",
                     "/ut/game/fifa14/clientdata/totw",
+                    # Club counters are computed from the inventory now.
+                    "/ut/game/fifa14/club/stats/staff",
+                    "/ut/game/fifa14/club/stats/year",
+                    "/ut/game/fifa14/club/stats/consumables",
+                    "/ut/game/fifa14/club/stats/newcards",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(
