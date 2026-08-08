@@ -313,6 +313,13 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/game/fifa14/leaderboards/options": b"{}",
     "/ut/game/fifa14/utStats": b"{}",
     "/ut/game/fifa14/clubUser": b'{"users":[]}',
+    # The club-creation screen PUTs the chosen name here and treats a 404 as a
+    # connection failure -- "une erreur s'est produite lors de la connexion a
+    # FIFA 14 Ultimate Team".  The PC revival never saw this route because the
+    # PC client posts its club through clubUser instead; this one is the Xbox
+    # client's own.  An empty object acknowledges the rename without inventing
+    # club, crest, kit or inventory state.
+    "/ut/game/fifa14/user/club": b"{}",
     "/ut/game/fifa14/club/stats/staff": b'{"bonus":[]}',
     "/ut/game/fifa14/club/stats/year": b'{"entries":[]}',
     "/ut/game/fifa14/club/stats/consumables": b'{"entries":[]}',
