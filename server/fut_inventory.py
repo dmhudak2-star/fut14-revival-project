@@ -479,6 +479,17 @@ class CardCatalogue:
                     # had been showing disappeared -- so one of those two is
                     # the wrong type or the wrong member, and adding four at
                     # once made it impossible to say which.
+                    # Seconds remaining, not an absolute instant: sending the
+                    # end instant here emptied the detail panel outright, the
+                    # same failure as sending duration and endDateTime. The
+                    # relative form is what makes the prices and the Actions
+                    # entry appear.
+                    #
+                    # "Temps restant" still reads "--" and the Actions entry
+                    # shows on some cards and not others. Whatever drives that
+                    # is not this member, and three variants have now been
+                    # tried; the next attempt should watch what the screen
+                    # reads rather than permute the field.
                     "expires": AUCTION_DURATION,
                     "startTime": _now(),
                     "endtime": _now() + AUCTION_DURATION,
