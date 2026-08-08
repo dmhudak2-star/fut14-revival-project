@@ -317,3 +317,60 @@ def test_withdrawing_puts_the_card_back() -> None:
     actions.withdraw(listing["tradeId"])
     assert json.loads(actions.trade_pile(wallet.coins))["total"] == 0
     assert [item["id"] for item in actions.transfer] == [first]
+
+
+def test_buying_a_listing_debits_the_wallet_and_hands_over_the_card() -> None:
+    from fut_inventory import CardCatalogue, Wallet
+
+    catalogue = CardCatalogue()
+    wallet = Wallet()
+    page = json.loads(catalogue.auctions({"start": "0", "num": "3"}, wallet.coins))
+    listing = page["auctionInfo"][0]
+
+    before = wallet.coins
+    reply, won = catalogue.bid(
+        listing["tradeId"], listing["buyNowPrice"], wallet
+    )
+    document = json.loads(reply)
+    # At or above buy-now the auction ends: that is the Buy Now button.
+    assert document["tradeState"] == "closed"
+    assert wallet.coins == before - listing["buyNowPrice"]
+    assert won is not None
+
+
+def test_a_bid_below_buy_now_leaves_the_auction_running() -> None:
+    from fut_inventory import CardCatalogue, Wallet
+
+    catalogue = CardCatalogue()
+    wallet = Wallet()
+    page = json.loads(catalogue.auctions({"start": "0", "num": "3"}, wallet.coins))
+    listing = page["auctionInfo"][0]
+
+    reply, won = catalogue.bid(listing["tradeId"], listing["startingBid"], wallet)
+    assert json.loads(reply)["tradeState"] == "active"
+    assert won is None
+
+
+def test_bidding_beyond_the_balance_is_refused() -> None:
+    from fut_inventory import CardCatalogue, Wallet
+
+    catalogue = CardCatalogue()
+    wallet = Wallet()
+    page = json.loads(catalogue.auctions({"start": "0", "num": "1"}, wallet.coins))
+    trade = page["auctionInfo"][0]["tradeId"]
+    before = wallet.coins
+    reply, won = catalogue.bid(trade, wallet.coins + 1, wallet)
+    assert json.loads(reply)["reason"] == "INSUFFICIENT_COINS"
+    assert wallet.coins == before and won is None
+
+
+def test_a_search_result_can_still_be_bid_on_afterwards() -> None:
+    # Listings are generated per search, so the trade id has to survive the
+    # response or every later bid refers to something that no longer exists.
+    from fut_inventory import CardCatalogue, Wallet
+
+    catalogue = CardCatalogue()
+    wallet = Wallet()
+    page = json.loads(catalogue.auctions({"start": "0", "num": "2"}, wallet.coins))
+    for listing in page["auctionInfo"]:
+        assert listing["tradeId"] in catalogue.served

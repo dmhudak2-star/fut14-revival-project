@@ -93,16 +93,21 @@ def _arrange(players: list[dict]) -> list[dict]:
     return eleven + sorted(remaining, key=lambda p: -p["rating"])
 
 
-def _positions_by_asset() -> dict[int, str]:
+def _cards_by_asset() -> dict[int, dict]:
+    """The catalogue keyed by asset id.
+
+    The icebreaker packs carry an asset id, a rating, a rare flag, a club and
+    six attributes -- but no position, nation or league. Leaving those at zero
+    is why a club search for, say, a Cameroonian centre back returned the whole
+    squad: every card matched every nation, because every card had nation 0.
+    """
     if not CARD_CATALOGUE.exists():
         return {}
     document = json.loads(CARD_CATALOGUE.read_text())
-    positions: dict[int, str] = {}
+    by_asset: dict[int, dict] = {}
     for card in document.get("cards", []):
-        position = (card.get("position") or "").strip()
-        if position:
-            positions.setdefault(int(card["assetId"]), position)
-    return positions
+        by_asset.setdefault(int(card["assetId"]), card)
+    return by_asset
 
 # Kit, badge, stadium and ball. Without these the club has nothing to present
 # and the match cannot dress either side. Asset ids are the retail defaults the
@@ -147,6 +152,9 @@ def _player_item(
     attributes: list[int],
     position: str,
     item_state: str = "free",
+    nation: int = 0,
+    league: int = 0,
+    rarity: str = "",
 ) -> dict:
     return {
         "id": item_id,
@@ -155,8 +163,11 @@ def _player_item(
         "rating": rating,
         "preferredPosition": position,
         "teamid": team_id,
-        "leagueId": 0,
-        "nation": 0,
+        "leagueId": league,
+        "nation": nation,
+        # Kept for our own filtering; the client ignores members it does not
+        # know at the top level of an item.
+        "rarity": rarity,
         "itemType": "player",
         "itemState": item_state,
         "formation": FORMATION,
@@ -193,7 +204,7 @@ class ClubInventory:
     def __init__(self, pack_list: Path = PACK_LIST) -> None:
         document = json.loads(pack_list.read_text())
         packs = document["packList"]
-        positions = _positions_by_asset()
+        catalogue = _cards_by_asset()
 
         self.items: list[dict] = []
         self.squad: list[dict] = []
@@ -210,7 +221,11 @@ class ClubInventory:
                     play_style=pack["playStyle"][slot],
                     team_id=pack["teamId"][slot],
                     attributes=[column[slot] for column in attributes],
-                    position=positions.get(asset_id, FALLBACK_POSITION),
+                    position=(catalogue.get(asset_id) or {}).get("position")
+                    or FALLBACK_POSITION,
+                    nation=(catalogue.get(asset_id) or {}).get("nationId", 0),
+                    league=(catalogue.get(asset_id) or {}).get("leagueId", 0),
+                    rarity=(catalogue.get(asset_id) or {}).get("rarity", ""),
                 )
                 self.items.append(item)
                 # The first pack becomes the starting squad; the rest stay in
@@ -225,8 +240,52 @@ class ClubInventory:
 
     # -- responses -------------------------------------------------------
 
-    def club_response(self) -> bytes:
-        return json.dumps({"itemData": self.items}, separators=(",", ":")).encode()
+    def club_response(self, query: dict[str, str] | None = None) -> bytes:
+        """The club, filtered the way the club-search screen asks for it.
+
+        Its parameter names are not the market's: `level`, `nation`, `league`,
+        `team`, `position`, `count`. Ignoring them returned the whole club for
+        every search, so looking for a Cameroonian centre back listed everyone.
+        """
+        items = self.items
+        if query:
+
+            def number(key: str) -> int | None:
+                try:
+                    return int(query[key])
+                except (KeyError, TypeError, ValueError):
+                    return None
+
+            level = (query.get("level") or "").strip().lower()
+            position = (query.get("position") or "").strip()
+            nation, league = number("nation"), number("league")
+            team = number("team")
+            kind = (query.get("type") or "").strip().lower()
+
+            def wanted(item: dict) -> bool:
+                if kind and kind not in ("any", ""):
+                    if item.get("itemType") != kind:
+                        return False
+                if position and position not in ("any", ""):
+                    if item.get("preferredPosition") != position:
+                        return False
+                if level and level not in ("any", ""):
+                    if level not in (item.get("rarity") or "").lower():
+                        return False
+                for value, field in (
+                    (nation, "nation"),
+                    (league, "leagueId"),
+                    (team, "teamid"),
+                ):
+                    if value not in (None, -1) and item.get(field) != value:
+                        return False
+                return True
+
+            items = [item for item in items if wanted(item)]
+            count = number("count")
+            if count:
+                items = items[:count]
+        return json.dumps({"itemData": items}, separators=(",", ":")).encode()
 
     def squad_list_response(self, name: str) -> bytes:
         rating = round(sum(item["rating"] for item in self.squad[:11]) / 11)
@@ -303,6 +362,9 @@ class CardCatalogue:
         self.cards: list[dict] = []
         if path.exists():
             self.cards = json.loads(path.read_text()).get("cards", [])
+        # Listings are generated per search, so a bid arriving later refers to
+        # a trade id that no longer exists anywhere unless it is remembered.
+        self.served: dict[int, dict] = {}
 
     def search(self, query: dict[str, str]) -> tuple[list[dict], int]:
         """Filtered, sorted, paged. Returns the page and the full match count.
@@ -381,8 +443,7 @@ class CardCatalogue:
             item["untradeable"] = False
             item["leagueId"] = card.get("leagueId", 0)
             item["nation"] = card.get("nationId", 0)
-            listings.append(
-                {
+            listing = {
                     "tradeId": MARKET_TRADE_ID_BASE + offset + index,
                     "itemData": item,
                     "tradeState": "active",
@@ -398,8 +459,9 @@ class CardCatalogue:
                     "sellerEstablished": 2013,
                     "sellerId": 1,
                     "confidenceValue": 100,
-                }
-            )
+            }
+            self.served[listing["tradeId"]] = listing
+            listings.append(listing)
         # `total` is the size of the whole result set, not of this page: it is
         # what the screen pages against.
         document = {
@@ -410,6 +472,46 @@ class CardCatalogue:
         if coins is not None:
             document.update({"credits": coins, "totalCredits": coins, "coins": coins})
         return json.dumps(document, separators=(",", ":")).encode()
+
+    def bid(self, trade_id: int, amount: int, wallet: "Wallet") -> tuple[bytes, dict | None]:
+        """Bid on, or buy outright, a listing this server served earlier.
+
+        Returns the reply and the item won, if the bid took it. A bid at or
+        above the buy-now price ends the auction immediately, which is how the
+        Buy Now button behaves; anything less is recorded as the standing bid.
+        """
+        listing = self.served.get(trade_id)
+        if listing is None:
+            return (
+                json.dumps(
+                    {"reason": "INVALID_REQUEST", "tradeId": trade_id},
+                    separators=(",", ":"),
+                ).encode(),
+                None,
+            )
+        buy_now = int(listing.get("buyNowPrice") or 0)
+        if amount > wallet.coins:
+            return (
+                json.dumps(
+                    {"reason": "INSUFFICIENT_COINS", "credits": wallet.coins},
+                    separators=(",", ":"),
+                ).encode(),
+                None,
+            )
+        wallet.debit(amount)
+        won = buy_now and amount >= buy_now
+        listing = dict(listing)
+        listing["currentBid"] = amount
+        listing["bidState"] = "highest"
+        listing["tradeState"] = "closed" if won else "active"
+        listing["offers"] = int(listing.get("offers") or 0) + 1
+        listing["credits"] = wallet.coins
+        listing["totalCredits"] = wallet.coins
+        listing["coins"] = wallet.coins
+        self.served[trade_id] = listing
+        item = listing.get("itemData") if won else None
+        return json.dumps(listing, separators=(",", ":")).encode(), item
+
 
 
 # -- the coin balance ------------------------------------------------------

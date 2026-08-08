@@ -1789,6 +1789,56 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # Bidding and buying. Both go through the same endpoint: a bid
+                # at or above the buy-now price ends the auction, which is what
+                # the Buy Now button does.
+                if (
+                    normalized_path.startswith("/ut/game/fifa14/trade/")
+                    and normalized_path.endswith("/bid")
+                    and self.command in ("PUT", "POST")
+                ):
+                    parts = normalized_path.split("/")
+                    try:
+                        trade_id = int(parts[-2])
+                    except (IndexError, ValueError):
+                        trade_id = 0
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    try:
+                        amount = int(
+                            document.get("bid")
+                            or document.get("buyNowPrice")
+                            or document.get("amount")
+                            or 0
+                        )
+                    except (TypeError, ValueError):
+                        amount = 0
+                    payload, won = CARD_CATALOGUE.bid(trade_id, amount, WALLET)
+                    if won is not None:
+                        item = dict(won)
+                        item["itemState"] = "free"
+                        item["untradeable"] = False
+                        CARD_ACTIONS.club.append(item)
+                    owner.journal.event(
+                        "fut_bid",
+                        peer=self.client_address[0],
+                        trade=trade_id,
+                        amount=amount,
+                        won=won is not None,
+                        coins=WALLET.coins,
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Putting a card on the market, and taking it back off.
                 if normalized_path in (
                     "/ut/game/fifa14/auctionhouse",
@@ -1926,8 +1976,9 @@ class IdentityHttpService:
                         for key, values in urllib.parse.parse_qs(parsed.query).items()
                     }
                     if normalized_path.endswith("/club"):
-                        # A club search still searches the club.
-                        payload = CLUB_INVENTORY.club_response()
+                        # A club search still searches the club -- but it does
+                        # search it now, rather than returning all of it.
+                        payload = CLUB_INVENTORY.club_response(query)
                     else:
                         payload = CARD_CATALOGUE.auctions(query, coins=WALLET.coins)
                     owner.journal.event(
