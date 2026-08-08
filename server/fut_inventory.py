@@ -633,7 +633,7 @@ class CardCatalogue:
 # at the top level is skipped, so naming all three costs nothing and a wrapper
 # would have broken the parse, as {"userInfo":{...}} did.
 
-STARTING_COINS = 50_000
+STARTING_COINS = 1_000_000
 
 
 class Wallet:
