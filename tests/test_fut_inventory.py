@@ -8,7 +8,7 @@ from pathlib import Path
 SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
-from fut_inventory import ClubInventory, RESOURCE_VERSION
+from fut_inventory import GOLD_PACK_ID, ClubInventory, RESOURCE_VERSION
 
 
 INVENTORY = ClubInventory()
@@ -118,12 +118,18 @@ def test_a_quick_sell_pays_something() -> None:
 def test_a_pack_costs_coins_and_returns_cards() -> None:
     import random
 
-    from fut_inventory import CardCatalogue, GOLD_PACK_PRICE, PackShop, Wallet
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        GOLD_PACK_PRICE,
+        CardCatalogue,
+        PackShop,
+        Wallet,
+    )
 
     wallet = Wallet()
     shop = PackShop(CardCatalogue(), wallet)
     before = wallet.coins
-    opened = json.loads(shop.open_pack(random.Random(7)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(7)))
     assert wallet.coins == before - GOLD_PACK_PRICE
     assert opened["numberItems"] == len(opened["itemList"]) > 0
     # The reply carries the new balance: a response that omits it hands the
@@ -132,7 +138,7 @@ def test_a_pack_costs_coins_and_returns_cards() -> None:
 
 
 def test_a_pack_is_refused_without_the_coins() -> None:
-    from fut_inventory import CardCatalogue, PackShop, Wallet
+    from fut_inventory import GOLD_PACK_ID, CardCatalogue, PackShop, Wallet
 
     shop = PackShop(CardCatalogue(), Wallet(coins=10))
     assert not shop.can_afford()
@@ -142,10 +148,10 @@ def test_a_pack_is_refused_without_the_coins() -> None:
 def test_drawn_cards_stay_pending_until_collected() -> None:
     import random
 
-    from fut_inventory import CardCatalogue, PackShop, Wallet
+    from fut_inventory import GOLD_PACK_ID, CardCatalogue, PackShop, Wallet
 
     shop = PackShop(CardCatalogue(), Wallet())
-    shop.open_pack(random.Random(3))
+    shop.open_pack(GOLD_PACK_ID, random.Random(3))
     pending = json.loads(shop.purchased_items())
     assert len(pending["itemData"]) == len(shop.pending) > 0
 
@@ -221,12 +227,18 @@ def test_quick_sell_takes_a_list_of_ids() -> None:
     # named no item and the screen errored.
     import random
 
-    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        PackShop,
+        Wallet,
+    )
 
     wallet = Wallet()
     shop = PackShop(CardCatalogue(), wallet)
     actions = CardActions(shop, wallet)
-    opened = json.loads(shop.open_pack(random.Random(11)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(11)))
     ids = [item["id"] for item in opened["itemList"]]
 
     before = wallet.coins
@@ -240,12 +252,18 @@ def test_quick_sell_takes_a_list_of_ids() -> None:
 def test_sending_a_card_to_the_club_takes_it_out_of_the_pack() -> None:
     import random
 
-    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        PackShop,
+        Wallet,
+    )
 
     wallet = Wallet()
     shop = PackShop(CardCatalogue(), wallet)
     actions = CardActions(shop, wallet)
-    opened = json.loads(shop.open_pack(random.Random(5)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(5)))
     first = opened["itemList"][0]["id"]
     pending_before = len(shop.pending)
 
@@ -262,7 +280,13 @@ def test_sending_a_card_to_the_club_takes_it_out_of_the_pack() -> None:
 
 
 def _actions():
-    from fut_inventory import CardActions, CardCatalogue, PackShop, Wallet
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        PackShop,
+        Wallet,
+    )
 
     wallet = Wallet()
     shop = PackShop(CardCatalogue(), wallet)
@@ -273,7 +297,7 @@ def test_a_card_can_be_set_aside_for_listing() -> None:
     import random
 
     actions, shop, _ = _actions()
-    opened = json.loads(shop.open_pack(random.Random(9)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(9)))
     first = opened["itemList"][0]["id"]
     actions.move({"itemData": [{"id": first, "pile": 5}]})
     # Pile 5 is the transfer list: the card leaves the club until it is listed.
@@ -285,7 +309,7 @@ def test_listing_returns_a_trade_id_and_shows_in_the_trade_pile() -> None:
     import random
 
     actions, shop, wallet = _actions()
-    opened = json.loads(shop.open_pack(random.Random(13)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(13)))
     first = opened["itemList"][0]["id"]
     actions.move({"itemData": [{"id": first, "pile": 5}]})
 
@@ -309,7 +333,7 @@ def test_withdrawing_puts_the_card_back() -> None:
     import random
 
     actions, shop, wallet = _actions()
-    opened = json.loads(shop.open_pack(random.Random(17)))
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(17)))
     first = opened["itemList"][0]["id"]
     actions.move({"itemData": [{"id": first, "pile": 5}]})
     listing = json.loads(actions.list_for_sale({"itemData": {"id": first}}))

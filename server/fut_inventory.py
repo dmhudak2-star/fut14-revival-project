@@ -648,14 +648,90 @@ class Wallet:
 
 # -- opening a pack --------------------------------------------------------
 
+# The nine packs FIFA 14 sells. Tier decides which cards can come out, count
+# how many, and rares how many of them are rare -- a gold pack that draws
+# bronze cards is not a gold pack.
+PACK_SPECS: dict[int, dict] = {
+    103: {"name": "Bronze Pack", "tier": "bronze", "coins": 400, "points": 0,
+          "count": 12, "rares": 1, "premium": False, "group": "Bronze Packs"},
+    104: {"name": "Premium Bronze Pack", "tier": "bronze", "coins": 750,
+          "points": 0, "count": 12, "rares": 3, "premium": True,
+          "group": "Bronze Packs"},
+    203: {"name": "Silver Pack", "tier": "silver", "coins": 2500, "points": 50,
+          "count": 12, "rares": 1, "premium": False, "group": "Silver Packs"},
+    204: {"name": "Premium Silver Pack", "tier": "silver", "coins": 3750,
+          "points": 75, "count": 12, "rares": 3, "premium": True,
+          "group": "Silver Packs"},
+    303: {"name": "Gold Pack", "tier": "gold", "coins": 5000, "points": 100,
+          "count": 12, "rares": 1, "premium": False, "group": "Gold Packs"},
+    304: {"name": "Premium Gold Pack", "tier": "gold", "coins": 7500,
+          "points": 150, "count": 12, "rares": 3, "premium": True,
+          "group": "Gold Packs"},
+    305: {"name": "Jumbo Gold Pack", "tier": "gold", "coins": 10000,
+          "points": 0, "count": 24, "rares": 7, "premium": True,
+          "group": "Gold Packs"},
+    306: {"name": "Gold Players Pack", "tier": "gold", "coins": 15000,
+          "points": 0, "count": 12, "rares": 1, "premium": False,
+          "group": "Gold Packs"},
+    307: {"name": "Premium Gold Players Pack", "tier": "gold", "coins": 25000,
+          "points": 0, "count": 12, "rares": 3, "premium": True,
+          "group": "Gold Packs"},
+}
+
 GOLD_PACK_ID = 304
-GOLD_PACK_PRICE = 7_500
-PACK_ITEM_COUNT = 12
+GOLD_PACK_PRICE = PACK_SPECS[GOLD_PACK_ID]["coins"]
 PACK_ITEM_ID_BASE = 1_950_000_000
+
+# Which ratings belong to which tier, so a bronze pack cannot hand you Messi.
+TIER_RATINGS = {
+    "bronze": (0, 64),
+    "silver": (65, 74),
+    "gold": (75, 99),
+}
+
+
+def store_catalogue(timestamp: int = 2147483647) -> bytes:
+    """Every pack, priced, grouped and buyable."""
+    purchases = []
+    for index, (pack_id, spec) in enumerate(sorted(PACK_SPECS.items())):
+        currencies = [
+            {"name": "coins", "funds": spec["coins"], "finalFunds": spec["coins"]}
+        ]
+        if spec["points"]:
+            currencies.append(
+                {
+                    "name": "points",
+                    "funds": spec["points"],
+                    "finalFunds": spec["points"],
+                }
+            )
+        purchases.append(
+            {
+                "id": pack_id,
+                "assetId": pack_id % 100,
+                "actionType": "CREATEPACK",
+                "packType": "CARDPACK",
+                "description": f"FUT_STORE_PACK_{pack_id}_DESC",
+                "displayGroup": {"priority": index, "value": spec["tier"]},
+                "displayGroupAssetId": index,
+                "displayGroupUseDefaultImage": True,
+                "useDefaultImage": True,
+                "isPremium": spec["premium"],
+                "dealType": "REGULAR",
+                "saleType": "NONE",
+                "state": "active",
+                "visible": 1,
+                "sortPriority": index,
+                "currencies": currencies,
+            }
+        )
+    return json.dumps(
+        {"purchase": purchases, "timestamp": timestamp}, separators=(",", ":")
+    ).encode()
 
 
 class PackShop:
-    """Sells the one pack the store advertises, and draws its cards."""
+    """Sells any pack in the catalogue, and draws cards that match its tier."""
 
     def __init__(self, catalogue: "CardCatalogue", wallet: "Wallet") -> None:
         self.catalogue = catalogue
@@ -664,23 +740,42 @@ class PackShop:
         # Cards drawn but not yet acknowledged by the client. The purchased
         # items endpoint reports these, which is how they reach the club.
         self.pending: list[dict] = []
-        self._gold = [
-            card
-            for card in catalogue.cards
-            if "gold" in (card.get("rarity") or "").lower() and card.get("rating", 0) >= 75
-        ]
+        self._pools: dict[str, list[dict]] = {}
+        for tier, (low, high) in TIER_RATINGS.items():
+            self._pools[tier] = [
+                card
+                for card in catalogue.cards
+                if low <= card.get("rating", 0) <= high
+            ]
 
-    def can_afford(self) -> bool:
-        return self.wallet.coins >= GOLD_PACK_PRICE
+    def spec(self, pack_id: int) -> dict | None:
+        return PACK_SPECS.get(int(pack_id))
 
-    def open_pack(self, rng: random.Random | None = None) -> bytes:
+    def price(self, pack_id: int) -> int:
+        spec = self.spec(pack_id)
+        return int(spec["coins"]) if spec else GOLD_PACK_PRICE
+
+    def can_afford(self, pack_id: int = GOLD_PACK_ID) -> bool:
+        return self.wallet.coins >= self.price(pack_id)
+
+    def open_pack(
+        self, pack_id: int = GOLD_PACK_ID, rng: random.Random | None = None
+    ) -> bytes:
         rng = rng or random.Random()
-        self.wallet.debit(GOLD_PACK_PRICE)
+        spec = self.spec(pack_id) or PACK_SPECS[GOLD_PACK_ID]
+        self.wallet.debit(int(spec["coins"]))
         self.purchases += 1
+
+        pool = self._pools.get(spec["tier"]) or self.catalogue.cards
+        rares = [card for card in pool if card.get("rareflag")]
+        commons = [card for card in pool if not card.get("rareflag")] or pool
+
         drawn = []
-        pool = self._gold or self.catalogue.cards
-        for slot in range(PACK_ITEM_COUNT):
-            card = rng.choice(pool)
+        for slot in range(int(spec["count"])):
+            # The rare slots come first, as retail does -- a pack that promises
+            # three rares has to actually contain three.
+            source = rares if slot < int(spec["rares"]) and rares else commons
+            card = rng.choice(source)
             item = _player_item(
                 item_id=PACK_ITEM_ID_BASE + self.purchases * 100 + slot,
                 asset_id=card["assetId"],
@@ -691,16 +786,17 @@ class PackShop:
                 attributes=card.get("attributes", [0] * 6),
                 position=card.get("position") or FALLBACK_POSITION,
                 item_state="new",
+                nation=card.get("nationId", 0),
+                league=card.get("leagueId", 0),
+                rarity=card.get("rarity", ""),
             )
             item["untradeable"] = False
-            item["leagueId"] = card.get("leagueId", 0)
-            item["nation"] = card.get("nationId", 0)
             drawn.append(item)
         self.pending.extend(drawn)
         return json.dumps(
             {
                 "numberItems": len(drawn),
-                "purchasedPackId": GOLD_PACK_ID,
+                "purchasedPackId": int(pack_id),
                 "itemList": drawn,
                 "duplicateItemIdList": [],
                 "credits": self.wallet.coins,
