@@ -597,3 +597,88 @@ class PackShop:
 
     def refused(self) -> bytes:
         return json.dumps({"reason": "INSUFFICIENT_COINS"}, separators=(",", ":")).encode()
+
+
+# -- what you can do with a card -------------------------------------------
+#
+# Retail pile numbers. Squad membership is not a pile: players in the eleven
+# are still owned in the club.
+PILE_TRANSFER = 5
+PILE_PURCHASED = 6
+PILE_CLUB = 7
+
+
+class CardActions:
+    """Moving cards between piles, and quick-selling them."""
+
+    def __init__(self, shop: "PackShop", wallet: "Wallet") -> None:
+        self.shop = shop
+        self.wallet = wallet
+        # Cards taken out of a pack and kept.
+        self.club: list[dict] = []
+
+    def _take_pending(self, item_id: int) -> dict | None:
+        for index, item in enumerate(self.shop.pending):
+            if item["id"] == item_id:
+                return self.shop.pending.pop(index)
+        return None
+
+    def move(self, document: dict) -> bytes:
+        """PUT /item -- send to club, or to the transfer list.
+
+        The body is {"itemData":[{"id":N,"pile":7}, ...]} and each entry has to
+        be acknowledged individually. Answering with a club search, which is
+        what the old fixture did, acknowledges nothing: the card stays in the
+        pack screen and the button appears dead.
+        """
+        entries = document.get("itemData") if isinstance(document, dict) else None
+        results = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                item_id = int(entry.get("id") or entry.get("itemId") or 0)
+            except (TypeError, ValueError):
+                continue
+            pile = entry.get("pile", PILE_CLUB)
+            try:
+                pile = int(pile)
+            except (TypeError, ValueError):
+                pile = PILE_CLUB
+            item = self._take_pending(item_id)
+            if item is not None:
+                item["itemState"] = "free"
+                self.club.append(item)
+            results.append(
+                {
+                    "id": item_id,
+                    "success": True,
+                    "reason": "",
+                    "errorCode": 0,
+                    "pile": pile,
+                }
+            )
+        return json.dumps({"itemData": results}, separators=(",", ":")).encode()
+
+    def discard(self, item_id: int | None = None) -> bytes:
+        """Quick sell.
+
+        `totalCredits` here is what this sale paid, not the resulting balance --
+        the absolute figure comes from /user/credits. Returning the whole
+        balance made the sale appear to pay tens of thousands.
+        """
+        item = self._take_pending(item_id) if item_id else None
+        if item is None:
+            for index, owned in enumerate(self.club):
+                if item_id and owned["id"] == item_id:
+                    item = self.club.pop(index)
+                    break
+        awarded = int(item["discardValue"]) if item else 200
+        self.wallet.credit(awarded)
+        return json.dumps(
+            {
+                "totalCredits": awarded,
+                "items": [{"id": item_id}] if item_id else [],
+            },
+            separators=(",", ":"),
+        ).encode()

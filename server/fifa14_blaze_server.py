@@ -336,10 +336,16 @@ FUT_ROUTES: dict[str, bytes] = {
     "/ut/game/fifa14/clientdata/totw": b"{}",
     "/ut/game/fifa14/clientdata/managerquest": b'{"entries":[]}',
     "/ut/game/fifa14/eventfeed": b"{}",
-    "/ut/game/fifa14/hub": b"{}",
+    # The My Club tile reads clubPlayers from here; an empty object is why it
+    # showed zero cards while the club held them.
+    "/ut/game/fifa14/hub": b'{"auctionCount":0,"clubPlayers":92}',
     "/ut/game/fifa14/leaderboards/options": b"{}",
     "/ut/game/fifa14/utStats": b"{}",
-    "/ut/game/fifa14/clubUser": b'{"users":[]}',
+    # FutGetClubUsersServerResponse reads a `user` array, singular, whose
+    # entries carry persona/personaId/public. `users` matched nothing.
+    "/ut/game/fifa14/clubUser": (
+        b'{"user":[{"persona":"Fondateur FUT","personaId":0,"public":false}]}'
+    ),
     # The club-creation screen PUTs the chosen name here and treats a 404 as a
     # connection failure -- "une erreur s'est produite lors de la connexion a
     # FIFA 14 Ultimate Team".  The PC revival never saw this route because the
@@ -450,6 +456,7 @@ def with_balance(payload: bytes, coins: int) -> bytes:
 # ships, so every screen that asks about the club sees the same inventory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
+    CardActions,
     CardCatalogue,
     ClubInventory,
     PackShop,
@@ -460,6 +467,7 @@ CLUB_INVENTORY = ClubInventory()
 CARD_CATALOGUE = CardCatalogue()
 WALLET = Wallet()
 PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET)
+CARD_ACTIONS = CardActions(PACK_SHOP, WALLET)
 CLUB_NAME = "Fondateur FUT"
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
@@ -1720,7 +1728,14 @@ class IdentityHttpService:
                 # Buying the one pack the store advertises. A POST here is the
                 # purchase; the drawn cards come back in the reply and then
                 # again from purchased/items until the client takes them.
-                if normalized_path == "/ut/game/fifa14/store" and self.command == "POST":
+                # Buying a pack is a POST to purchased/items, not to /store --
+                # the journal shows the client sending it there and getting a
+                # 404. /store is only the catalogue.
+                if (
+                    normalized_path
+                    in ("/ut/game/fifa14/purchased/items", "/ut/game/fifa14/store")
+                    and self.command == "POST"
+                ):
                     if not PACK_SHOP.can_afford():
                         owner.journal.event(
                             "fut_pack_refused",
@@ -1762,14 +1777,55 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # Send to club, list for transfer: each entry has to be
+                # acknowledged. Answering with a club search acknowledges
+                # nothing and the button looks dead.
+                if normalized_path == "/ut/game/fifa14/item" and self.command in (
+                    "PUT",
+                    "POST",
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    payload = CARD_ACTIONS.move(document)
+                    owner.journal.event(
+                        "fut_item_move",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        club=len(CARD_ACTIONS.club),
+                        pending=len(PACK_SHOP.pending),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path == "/ut/delete/game/fifa14/item":
-                    WALLET.credit(SELL_PRICE_FALLBACK)
-                    payload = WALLET.response()
+                    item_id = None
+                    for candidate in urllib.parse.parse_qs(parsed.query).get("id", []):
+                        try:
+                            item_id = int(candidate)
+                        except ValueError:
+                            pass
+                    if item_id is None:
+                        try:
+                            document = json.loads(body or b"{}")
+                            ids = document.get("itemId") or document.get("id")
+                            item_id = int(ids) if ids is not None else None
+                        except (ValueError, TypeError):
+                            item_id = None
+                    payload = CARD_ACTIONS.discard(item_id)
                     owner.journal.event(
                         "fut_quick_sell",
                         peer=self.client_address[0],
                         path=parsed.path,
                         coins=WALLET.coins,
+                        item=item_id,
                     )
                     self.reply(
                         200,
