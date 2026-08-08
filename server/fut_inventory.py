@@ -1646,7 +1646,7 @@ class ClubSave:
         self.path = path
 
     def load(self, inventory: "ClubInventory", wallet: "Wallet",
-             actions: "CardActions") -> bool:
+             actions: "CardActions", tasks: "ManagerTasks | None" = None) -> bool:
         if not self.path.exists():
             return False
         try:
@@ -1667,6 +1667,9 @@ class ClubSave:
         for item in saved.get("pending", []):
             if item["id"] not in known:
                 actions.shop.pending.append(item)
+        if tasks is not None:
+            for key, value in (saved.get("tasks") or {}).items():
+                tasks.complete(int(key), int(value))
         for key, value in (saved.get("squads") or {}).items():
             inventory._squads()[int(key)] = value
         if saved.get("squad"):
@@ -1678,7 +1681,7 @@ class ClubSave:
         return True
 
     def save(self, inventory: "ClubInventory", wallet: "Wallet",
-             actions: "CardActions") -> None:
+             actions: "CardActions", tasks: "ManagerTasks | None" = None) -> None:
         starting = ClubInventory()
         original = {item["id"] for item in starting.items}
         current = {item["id"] for item in inventory.items}
@@ -1692,6 +1695,7 @@ class ClubSave:
             "sold": sorted(original - current),
             "pending": actions.shop.pending,
             "squad": [item["id"] for item in inventory.squad],
+            "tasks": {str(k): v for k, v in tasks.completed.items()} if tasks else {},
             "squads": {
                 str(key): value for key, value in inventory._squads().items()
             },
@@ -1716,3 +1720,48 @@ def totw_index_with_squad(catalogue: "CardCatalogue") -> bytes:
     index["itemData"] = squad["itemData"]
     index["formation"] = squad["formation"]
     return json.dumps(index, separators=(",", ":")).encode()
+
+
+# -- manager tasks ---------------------------------------------------------
+#
+# The thirteen tasks on the club hub. They were answered with a fixed empty
+# entries list, so nothing you completed was ever recorded: the progress bar
+# stayed at 0/13 and every task reset on the next launch.
+
+class ManagerTasks:
+    """What the manager has done, kept and reloaded."""
+
+    def __init__(self) -> None:
+        self.completed: dict[int, int] = {}
+
+    def complete(self, task: int, value: int = 1) -> None:
+        self.completed[int(task)] = int(value)
+
+    def apply(self, document: dict) -> int:
+        """Take whatever the client reports and record it.
+
+        The body arrives as an entries array of key/value pairs, the same shape
+        it is served in, so a task marked done comes back as its own key.
+        """
+        entries = document.get("entries") if isinstance(document, dict) else None
+        count = 0
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                self.complete(int(entry.get("key")), int(entry.get("value") or 1))
+                count += 1
+            except (TypeError, ValueError):
+                continue
+        return count
+
+    def response(self) -> bytes:
+        return json.dumps(
+            {
+                "entries": [
+                    {"key": key, "value": value}
+                    for key, value in sorted(self.completed.items())
+                ]
+            },
+            separators=(",", ":"),
+        ).encode()

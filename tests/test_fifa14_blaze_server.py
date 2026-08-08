@@ -610,6 +610,8 @@ class ProtocolTests(unittest.TestCase):
                     "/ut/game/fifa14/club/stats/newcards",
                     # Counted from the club, which grows as cards are kept.
                     "/ut/game/fifa14/hub",
+                    # Manager tasks are tracked, not fixed.
+                    "/ut/game/fifa14/clientdata/managerquest",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(

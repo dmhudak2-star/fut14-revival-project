@@ -777,3 +777,35 @@ def test_the_squad_the_club_plays_with_cannot_be_deleted() -> None:
     inventory = ClubInventory()
     assert not inventory.delete_squad(1)
     assert 1 in inventory.squad_ids()
+
+
+def test_manager_tasks_are_recorded_and_survive() -> None:
+    # They were a fixed empty list, so nothing completed was recorded: the bar
+    # stayed at 0/13 and every task reset on the next launch.
+    import tempfile
+    from pathlib import Path
+
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        ClubSave,
+        ManagerTasks,
+        PackShop,
+        Wallet,
+    )
+
+    tasks = ManagerTasks()
+    assert tasks.apply({"entries": [{"key": 0, "value": 1}, {"key": 3, "value": 1}]}) == 2
+    done = {entry["key"] for entry in json.loads(tasks.response())["entries"]}
+    assert done == {0, 3}
+
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "club.json"
+        inventory, wallet = ClubInventory(), Wallet()
+        actions = CardActions(PackShop(CardCatalogue(), wallet), wallet, inventory)
+        ClubSave(path).save(inventory, wallet, actions, tasks)
+
+        restored = ManagerTasks()
+        ClubSave(path).load(ClubInventory(), Wallet(), actions, restored)
+        assert restored.completed == tasks.completed
