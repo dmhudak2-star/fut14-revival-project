@@ -345,6 +345,10 @@ FUT_ROUTES: dict[str, bytes] = {
         b'{"squad":[{"id":1,"squadName":"FIFA 14 TOTY","rating":95,'
         b'"chemistry":78,"formation":"f442"}]}'
     ),
+    # Entering Saison Joueur Solo asks for this list; a 404 surfaces as "un
+    # probleme de communication est survenu avec les serveurs FIFA Ultimate
+    # Team".  The PC revival carries the same empty-seasons shape.
+    "/ut/game/fifa14/season/list": b'{"seasons":[]}',
     "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
     "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
     # A visible-but-invalid single entry keeps the store screen constructible
