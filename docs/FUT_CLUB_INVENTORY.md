@@ -76,3 +76,27 @@ list is the accurate answer rather than a placeholder.
 
 Both become worth adding once a match has actually been played, when contracts
 start decrementing and there is a real reason for the item to exist.
+
+## The consumables are placeholders, and the screen shows it
+
+Screenshot: `runtime/screens/conso-143655.png`
+
+The club search lists them, so the plumbing works -- counts, family filter,
+paging. But every card draws **NOT FOUND**, every one is labelled *Entraînement
+équipe* whatever kind it is meant to be, and every effect reads **+0**.
+
+The cause is the one this file already states for players, applied to
+consumables and missed: the title resolves a card's name, art and effect from
+its `assetId`. The consumables here were given invented ids -- 1000, 1001,
+1002 -- which match nothing on the disc. So the art is missing, the type falls
+back to a default, and the bonus is nothing.
+
+The players work because their ids are real, taken from the icebreaker packs
+and the wefut catalogue. There is no equivalent source for consumables: the
+wefut catalogue holds players only, and `cards_ng_db.db` -- which would carry
+them -- still does not decode.
+
+So consumables cannot be made to work by adjusting the responses. Until real
+consumable asset ids are found, the counts and the search will keep listing
+cards the title cannot draw, and applying one will keep doing nothing, because
+there is nothing behind it to apply.
