@@ -1321,6 +1321,23 @@ class CardActions:
         """
         if any(held["id"] == item["id"] for held in self.club):
             return
+
+        # A card the club already holds. Retail would offer to compare the two
+        # here, and that screen is driven by duplicateItemIdList -- the field
+        # that froze the title outright, so it cannot be turned back on until
+        # its shape is known.
+        #
+        # Until then the duplicate is quick-sold and its value credited. That
+        # is not the retail choice, but it is a defined outcome: the club keeps
+        # one of each card, the coins are real, and nothing happens silently.
+        signature = (item.get("assetId"), item.get("rareflag"))
+        if signature[0] is not None:
+            for held in (self.inventory.items if self.inventory else self.club):
+                if (held.get("assetId"), held.get("rareflag")) == signature:
+                    self.wallet.credit(int(item.get("discardValue") or 0))
+                    self.last_duplicate = item
+                    return
+
         self.club.append(item)
         if self.inventory is not None:
             if any(held["id"] == item["id"] for held in self.inventory.items):

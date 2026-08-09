@@ -560,10 +560,11 @@ def test_listing_a_card_takes_it_out_of_the_club() -> None:
     assert after == owned - 1
 
 
-def test_a_duplicate_is_kept_and_flagged_rather_than_dropped() -> None:
-    # Refusing it on the way in was wrong: owning a second copy is legitimate,
-    # and keeping it is the moment the game offers to compare the two. Dropping
-    # it made "send to club" do nothing for exactly the card needing a choice.
+def test_a_duplicate_is_sold_rather_than_stacked_or_dropped() -> None:
+    # Retail would offer to compare the two here, and that screen is driven by
+    # duplicateItemIdList -- the field that froze the title, so it cannot be
+    # turned back on yet. Until then the duplicate is quick-sold: the club
+    # keeps one of each, the coins are real, and nothing happens silently.
     import random
 
     from fut_inventory import (
@@ -586,11 +587,14 @@ def test_a_duplicate_is_kept_and_flagged_rather_than_dropped() -> None:
 
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
     assert len(second["duplicateItemIdList"]) == second["numberItems"]
+
+    before_coins = wallet.coins
     for item in second["itemList"]:
         actions._keep(dict(item))
 
     after = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
-    assert after == owned + second["numberItems"]
+    assert after == owned, "the club keeps one of each card"
+    assert wallet.coins > before_coins, "and the duplicate pays its discard value"
 
 
 def test_a_club_holds_one_of_any_card() -> None:
