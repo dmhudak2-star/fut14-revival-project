@@ -136,3 +136,39 @@ it; the challenge document has to be found.
 Neither of these needs another relaunch to investigate. Both need more of
 CardsDLL dumped than the 192 KB read so far -- the member table runs past it,
 which is how `expires` was found at `0x89030D30` only after extending the dump.
+
+## Team of the Week: what is known, and what is not
+
+Every TOTW string in CardsDLL, with addresses:
+
+```text
+0x89012148  GetGameHubTOTWData
+0x8901224C  GetTOTWSquads
+0x89012554  EVENT_CARDS_REQUEST_TOTW_CHALLENGE_DATA_FAILURE
+0x89012584  EVENT_CARDS_REQUEST_TOTW_CHALLENGE_DATA_SUCCESS
+0x89015D10  GOTO_TOTW_CHALLENGE
+0x89016184  external/ion_fut/components/Tile/MetroPanel_TOTWChallenge.swf
+0x890161C4  CentralTOTW
+0x890161D0  TOTWDefault
+0x890161DC  FUT_GH_TOTW_C_0
+0x8902D7DC  /totw
+```
+
+The only URL fragments for the feature are `/totw` and `/userHubData`, both of
+which are `clientdata` paths this server already answers. **So the endpoint was
+never missing.** `clientdata/totw` is fetched and accepted; the screen still
+reports none available.
+
+What the names say is that the screen wants *challenge* data --
+`TOTW_CHALLENGE`, `GOTO_TOTW_CHALLENGE`, `MetroPanel_TOTWChallenge.swf`, and a
+request event with its own success and failure cases. A squad is not that.
+
+**No shape for that document has been found**, and it is not being guessed at.
+Two invented shapes froze the title outright tonight -- `duplicateItemIdList`
+filled with the wrong ids, and a generated cup list -- each costing a relaunch.
+The squad document previously placed on `/ut/game/fifa14/user/list` was itself
+a guess and has been withdrawn; that path is very likely the FUT user list.
+
+The next step is to disassemble around `GetTOTWSquads` (`0x8901224C`) and the
+challenge request event, and read what the response parser expects. Not to try
+another shape.

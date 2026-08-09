@@ -1852,8 +1852,15 @@ class IdentityHttpService:
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
                     ),
+                    # Plain and minimal. The squad document put here was a
+                    # guess -- /ut/game/fifa14/user/list is very likely the FUT
+                    # user list, not a Team of the Week index, and the two
+                    # fragments CardsDLL carries for this feature are "/totw"
+                    # and "/userHubData", both clientdata paths already served.
+                    # So the endpoint was never the problem; the content is,
+                    # and its shape is unknown.
                     "/ut/game/fifa14/user/list": (
-                        lambda: totw_index_with_squad(CARD_CATALOGUE)
+                        lambda: b'{"userInfo":[]}'
                     ),
                     "/ut/game/fifa14/clientdata/totw": (
                         lambda: totw_response(CARD_CATALOGUE)
