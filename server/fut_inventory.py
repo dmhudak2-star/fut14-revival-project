@@ -1757,33 +1757,49 @@ def hub_response(inventory: "ClubInventory", listings: int) -> bytes:
     ).encode()
 
 
-# The order the consumable tabs are laid out in. The screen reads a count per
-# slot, so the slot has to mean the same thing to both sides.
-CONSUMABLE_ORDER = ("contract", "fitness", "healing", "training", "position",
-                    "playStyle")
+# The member names CardsDLL's JSON table carries for consumables, between
+# 0x89030F9C and 0x89031148. The response is an object with these members, not
+# an entries array -- numbered keys meant nothing to it, which is why the apply
+# screen reported none available while the club held sixteen.
+CONSUMABLE_MEMBERS = {
+    "contract": ("consumablesContract", "consumablesContractPlayer"),
+    "fitness": ("consumablesFitness", "consumablesFitnessPlayer"),
+    "healing": ("consumablesHealing",),
+    "training": ("consumablesTraining", "consumablesTrainingPlayer"),
+    "position": ("consumablesPosition",),
+    "playStyle": ("consumablesTrainingPlayerPlayStyle",),
+}
+
+# Sent at zero so every slot the screen knows about is present rather than
+# missing, which reads as "unknown" instead of "none".
+CONSUMABLE_ZEROS = (
+    "consumablesContractManager",
+    "consumablesFitnessTeam",
+    "consumablesTrainingGk",
+    "consumablesTrainingGkPlayStyle",
+    "consumablesTrainingManager",
+    "consumablesTrainingManagerLeagueModifier",
+    "consumablesFormationManager",
+)
 
 
 def consumable_stats_response(inventory: "ClubInventory") -> bytes:
-    """How many of each consumable the club holds.
-
-    club/stats/consumables was being answered with the generic club counters --
-    players, staff, stadiums -- which say nothing about consumables, so the
-    apply screen reported none available while the club held sixteen.
-    """
+    """How many of each consumable the club holds, under the real member names."""
     held: dict[str, int] = {}
     for item in inventory.items:
         kind = item.get("consumableType") or item.get("itemType")
         if kind in CONSUMABLE_TYPES:
             held[kind] = held.get(kind, 0) + int(item.get("count") or 1)
-    return json.dumps(
-        {
-            "entries": [
-                {"key": index, "value": held.get(kind, 0)}
-                for index, kind in enumerate(CONSUMABLE_ORDER)
-            ]
-        },
-        separators=(",", ":"),
-    ).encode()
+
+    document: dict[str, int] = {name: 0 for name in CONSUMABLE_ZEROS}
+    total = 0
+    for kind, members in CONSUMABLE_MEMBERS.items():
+        count = held.get(kind, 0)
+        total += count
+        for member in members:
+            document[member] = count
+    document["consumables"] = total
+    return json.dumps(document, separators=(",", ":")).encode()
 
 
 def club_stats_response(inventory: "ClubInventory") -> bytes:

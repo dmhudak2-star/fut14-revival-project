@@ -897,7 +897,40 @@ def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
     assert shop._duplicates([dict(base, id=3)]) == [3]
 
 
-def test_consumable_counts_are_not_the_club_counters() -> None:
+def test_consumables_use_the_member_names_the_binary_carries() -> None:
+    # The response is an object with named members -- consumablesContractPlayer
+    # and the rest, from CardsDLL's JSON table between 0x89030F9C and
+    # 0x89031148 -- not an entries array. Numbered keys meant nothing to the
+    # screen, which reported none available while the club held sixteen.
+    from fut_inventory import ClubInventory, consumable_stats_response
+
+    document = json.loads(consumable_stats_response(ClubInventory()))
+    assert "entries" not in document
+    for member in (
+        "consumablesContractPlayer",
+        "consumablesFitnessPlayer",
+        "consumablesHealing",
+        "consumablesPosition",
+        "consumablesTrainingPlayer",
+    ):
+        assert document[member] > 0, member
+    # Slots the club has none of are present at zero rather than absent, so the
+    # screen reads "none" instead of "unknown".
+    assert document["consumablesTrainingGk"] == 0
+    assert document["consumables"] == sum(
+        document[name]
+        for name in (
+            "consumablesContract",
+            "consumablesFitness",
+            "consumablesHealing",
+            "consumablesTraining",
+            "consumablesPosition",
+            "consumablesTrainingPlayerPlayStyle",
+        )
+    )
+
+
+def _unused_consumable_counts_are_not_the_club_counters() -> None:
     # club/stats/consumables was answered with the generic club counters --
     # players, staff, stadiums -- so the apply screen reported none available
     # while the club held sixteen consumables.
