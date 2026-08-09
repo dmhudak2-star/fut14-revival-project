@@ -914,9 +914,11 @@ def test_consumables_use_the_member_names_the_binary_carries() -> None:
         "consumablesTrainingPlayer",
     ):
         assert document[member] > 0, member
-    # Slots the club has none of are present at zero rather than absent, so the
-    # screen reads "none" instead of "unknown".
-    assert document["consumablesTrainingGk"] == 0
+    # No member goes out at zero while the club holds consumables. Applying
+    # from the squad screen decides from these counts alone, so a goalkeeper
+    # made it read consumablesTrainingGk -- zero -- and report none available.
+    assert document["consumablesTrainingGk"] > 0
+    assert all(value > 0 for value in document.values())
     assert document["consumables"] == sum(
         document[name]
         for name in (

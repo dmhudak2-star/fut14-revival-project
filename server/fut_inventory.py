@@ -1786,17 +1786,21 @@ CONSUMABLE_MEMBERS = {
     "playStyle": ("consumablesTrainingPlayerPlayStyle",),
 }
 
-# Sent at zero so every slot the screen knows about is present rather than
-# missing, which reads as "unknown" instead of "none".
-CONSUMABLE_ZEROS = (
-    "consumablesContractManager",
-    "consumablesFitnessTeam",
-    "consumablesTrainingGk",
-    "consumablesTrainingGkPlayStyle",
-    "consumablesTrainingManager",
-    "consumablesTrainingManagerLeagueModifier",
-    "consumablesFormationManager",
-)
+# The remaining members, each fed from the kind it belongs to. They used to go
+# out at zero, and that is what "Pas d'élément disponible" was reporting when
+# applying from the squad screen: that screen decides from these counts alone,
+# and picking a goalkeeper makes it read consumablesTrainingGk -- which was
+# zero. The club's consumables are generic, so there is no reason to declare
+# them absent for the goalkeeper, team or manager variants.
+CONSUMABLE_VARIANTS = {
+    "consumablesContractManager": "contract",
+    "consumablesFitnessTeam": "fitness",
+    "consumablesTrainingGk": "training",
+    "consumablesTrainingGkPlayStyle": "playStyle",
+    "consumablesTrainingManager": "training",
+    "consumablesTrainingManagerLeagueModifier": "training",
+    "consumablesFormationManager": "position",
+}
 
 
 def consumable_stats_response(inventory: "ClubInventory") -> bytes:
@@ -1807,7 +1811,9 @@ def consumable_stats_response(inventory: "ClubInventory") -> bytes:
         if kind in CONSUMABLE_TYPES:
             held[kind] = held.get(kind, 0) + int(item.get("count") or 1)
 
-    document: dict[str, int] = {name: 0 for name in CONSUMABLE_ZEROS}
+    document: dict[str, int] = {
+        name: held.get(kind, 0) for name, kind in CONSUMABLE_VARIANTS.items()
+    }
     total = 0
     for kind, members in CONSUMABLE_MEMBERS.items():
         count = held.get(kind, 0)
