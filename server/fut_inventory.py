@@ -1757,6 +1757,35 @@ def hub_response(inventory: "ClubInventory", listings: int) -> bytes:
     ).encode()
 
 
+# The order the consumable tabs are laid out in. The screen reads a count per
+# slot, so the slot has to mean the same thing to both sides.
+CONSUMABLE_ORDER = ("contract", "fitness", "healing", "training", "position",
+                    "playStyle")
+
+
+def consumable_stats_response(inventory: "ClubInventory") -> bytes:
+    """How many of each consumable the club holds.
+
+    club/stats/consumables was being answered with the generic club counters --
+    players, staff, stadiums -- which say nothing about consumables, so the
+    apply screen reported none available while the club held sixteen.
+    """
+    held: dict[str, int] = {}
+    for item in inventory.items:
+        kind = item.get("consumableType") or item.get("itemType")
+        if kind in CONSUMABLE_TYPES:
+            held[kind] = held.get(kind, 0) + int(item.get("count") or 1)
+    return json.dumps(
+        {
+            "entries": [
+                {"key": index, "value": held.get(kind, 0)}
+                for index, kind in enumerate(CONSUMABLE_ORDER)
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
 def club_stats_response(inventory: "ClubInventory") -> bytes:
     """The Mon Club counters: players, rares, staff, stadiums, kits, badges.
 

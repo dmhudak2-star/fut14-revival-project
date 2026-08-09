@@ -895,3 +895,24 @@ def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
     # Same player, different version: not a repeat.
     assert shop._duplicates([rare]) == []
     assert shop._duplicates([dict(base, id=3)]) == [3]
+
+
+def test_consumable_counts_are_not_the_club_counters() -> None:
+    # club/stats/consumables was answered with the generic club counters --
+    # players, staff, stadiums -- so the apply screen reported none available
+    # while the club held sixteen consumables.
+    from fut_inventory import (
+        CONSUMABLE_ORDER,
+        ClubInventory,
+        club_stats_response,
+        consumable_stats_response,
+    )
+
+    inventory = ClubInventory()
+    consumables = json.loads(consumable_stats_response(inventory))["entries"]
+    generic = json.loads(club_stats_response(inventory))["entries"]
+
+    assert len(consumables) == len(CONSUMABLE_ORDER)
+    assert all(entry["value"] > 0 for entry in consumables)
+    # And it is genuinely a different answer, not the same document renamed.
+    assert [e["value"] for e in consumables] != [e["value"] for e in generic]

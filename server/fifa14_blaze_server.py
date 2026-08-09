@@ -468,6 +468,7 @@ from fut_inventory import (  # noqa: E402
     season_user_response,
     seasons_response,
     club_stats_response,
+    consumable_stats_response,
     consumables_response,
     hub_response,
     store_catalogue,
@@ -2366,9 +2367,16 @@ class IdentityHttpService:
                 if normalized_path.startswith(
                     "/ut/game/fifa14/club/stats/"
                 ) and self.command == "GET":
+                    # The consumables tab asks here and needs counts per
+                    # consumable, not the club's player and stadium counters.
+                    body_out = (
+                        consumable_stats_response(CLUB_INVENTORY)
+                        if normalized_path.endswith("/consumables")
+                        else club_stats_response(CLUB_INVENTORY)
+                    )
                     self.reply(
                         200,
-                        club_stats_response(CLUB_INVENTORY) + b"\n",
+                        body_out + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
