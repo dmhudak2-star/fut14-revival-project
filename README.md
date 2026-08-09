@@ -591,3 +591,30 @@ and a reversible cleanup path. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and
 Original source code in this repository is available under the MIT License.
 EA, Microsoft and third-party assets remain the property of their respective
 owners and are not covered by this license.
+
+## Starting FUT
+
+One command, from the repository root:
+
+```bash
+tools/fut.sh
+```
+
+It clears the account state, restarts the Blaze server, boots the title,
+navigates to the FIFA main menu, applies the `helperFunctions` patch there and
+hands the pad back. Then pick Ultimate Team.
+
+The ordering is not incidental. Entering FUT needs two runtime patches: the
+launch one (hostnames, plaintext redirector, native FUT-resource redirect) and
+`helperFunctions`, which has to land **at the FIFA main menu, before Ultimate
+Team is selected**. Applied from inside the FUT loader it does nothing -- the
+launcher has already been walked past, the trace stops at `accountinfo`,
+`/ut/auth` never follows and CardsDLL is never mapped.
+
+Re-entering FUT always needs a full relaunch: the title keeps its FUT session in
+memory and rewrites the account state within seconds of the file being cleared.
+
+```bash
+tools/fut.sh --patch     # menu patch only, title already up
+tools/fut.sh --server    # restart the server only
+```
