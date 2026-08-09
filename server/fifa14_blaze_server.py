@@ -2004,10 +2004,18 @@ class IdentityHttpService:
                         # assign screen reads, and sending the card directly to
                         # the club left that list empty -- so "Assigner
                         # maintenant" had nothing to offer and backed out.
+                        # Into the pending pile *and* into the club. The
+                        # pending pile alone lost the card: the journal shows
+                        # the assign arriving with pending already empty and
+                        # the club unchanged at 55, so a bought player was paid
+                        # for and then owned by nobody. Being in both means the
+                        # assign screen can still offer it, and it cannot go
+                        # missing if that hand-off fails.
                         item = dict(won)
                         item["itemState"] = "new"
                         item["untradeable"] = False
                         PACK_SHOP.pending.append(item)
+                        CARD_ACTIONS._keep(dict(item, itemState="free"))
                         CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
                     CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
                     owner.journal.event(

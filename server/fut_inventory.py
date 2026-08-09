@@ -662,11 +662,11 @@ class CardCatalogue:
                 return False
             return True
 
-        matches = [
-            card
-            for card in self.cards
-            if wanted(card) and card["assetId"] not in self.sold
-        ]
+        # No exclusion by asset. Removing a bought player took every version
+        # of him off the market -- the three Benatias share one asset id, so
+        # buying the 90 hid the 86 and the 84 as well. A market carries many
+        # copies of the same card; that is what a market is.
+        matches = [card for card in self.cards if wanted(card)]
         matches.sort(key=lambda card: (-card.get("rating", 0), card.get("name", "")))
 
         start = number("start") or 0
