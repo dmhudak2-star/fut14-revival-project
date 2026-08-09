@@ -1706,8 +1706,38 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
                 rarity=card.get("rarity", ""),
             )
         )
+    # The screen wants a challenge, not a squad: CardsDLL names
+    # RequestChallengeData, GetChallengeData, GetTotalChallenges and
+    # SetSelectedChallengeInfo, and its JSON table carries `squadChallenge`
+    # at 0x8902FFD8 beside `squadId`. So a challenge is a squad you play
+    # against, and the document lists them.
+    #
+    # The member names below are the ones the binary actually carries;
+    # the arrangement around them is still inferred, which is why this is
+    # kept small -- an invented shape froze the title twice tonight.
+    challenges = [
+        {
+            "squadId": index + 1,
+            "squadName": squad.get("name", f"TOTW {index + 1}"),
+            "formation": FORMATION,
+            "opponentTeam": 0,
+            "opponentRating": max(
+                (card.get("rating", 0) for card in []), default=0
+            ),
+        }
+        for index, squad in enumerate(
+            json.loads(TOTW_FILE.read_text()).get("squads", [])
+            if TOTW_FILE.exists()
+            else []
+        )
+    ]
     return json.dumps(
-        {"itemData": items, "formation": FORMATION, "squadName": "Équipe de la semaine"},
+        {
+            "itemData": items,
+            "formation": FORMATION,
+            "squadName": "Équipe de la semaine",
+            "squadChallenge": challenges,
+        },
         separators=(",", ":"),
     ).encode()
 
