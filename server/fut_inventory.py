@@ -1092,22 +1092,47 @@ class PackShop:
             )
             item["untradeable"] = False
             drawn.append(item)
+        self._mark_duplicates(drawn)
         self.pending.extend(drawn)
         return json.dumps(
             {
                 "numberItems": len(drawn),
                 "purchasedPackId": int(pack_id),
                 "itemList": drawn,
-                # Cards the club already holds. This was always empty, so a
-                # player pulled twice was never offered as a duplicate and the
-                # screen had no reason to treat it differently.
-                "duplicateItemIdList": self._duplicates(drawn),
+                # Left empty: the per-card duplicateItemId above is what
+                # names the pair, and filling this with the new ids is what
+                # froze the title.
+                "duplicateItemIdList": [],
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
                 "coins": self.wallet.coins,
             },
             separators=(",", ":"),
         ).encode()
+
+    def _mark_duplicates(self, drawn: list[dict]) -> None:
+        """Tell each new card which owned card it duplicates.
+
+        CardsDLL carries `duplicateItemId` -- singular -- next to
+        `duplicateItemIdList`, and that is the shape that makes sense: a new
+        card names the one it repeats, so the compare screen knows what to put
+        beside it.
+
+        Filling the plural list with the *new* ids is what froze the title: the
+        screen was being told to compare each card against itself.
+        """
+        owned: dict[tuple, int] = {}
+        if self.inventory is not None:
+            for item in self.inventory.items:
+                key = (item.get("assetId"), item.get("rareflag"))
+                owned.setdefault(key, item["id"])
+        for item in drawn:
+            key = (item.get("assetId"), item.get("rareflag"))
+            existing = owned.get(key)
+            if existing and existing != item["id"]:
+                item["duplicateItemId"] = existing
+            else:
+                owned.setdefault(key, item["id"])
 
     def _duplicates(self, drawn: list[dict]) -> list[int]:
         """The ids among these the club already owns.
@@ -1322,22 +1347,10 @@ class CardActions:
         if any(held["id"] == item["id"] for held in self.club):
             return
 
-        # A card the club already holds. Retail would offer to compare the two
-        # here, and that screen is driven by duplicateItemIdList -- the field
-        # that froze the title outright, so it cannot be turned back on until
-        # its shape is known.
-        #
-        # Until then the duplicate is quick-sold and its value credited. That
-        # is not the retail choice, but it is a defined outcome: the club keeps
-        # one of each card, the coins are real, and nothing happens silently.
-        signature = (item.get("assetId"), item.get("rareflag"))
-        if signature[0] is not None:
-            for held in (self.inventory.items if self.inventory else self.club):
-                if (held.get("assetId"), held.get("rareflag")) == signature:
-                    self.wallet.credit(int(item.get("discardValue") or 0))
-                    self.last_duplicate = item
-                    return
-
+        # Duplicates are allowed in. The card carries duplicateItemId naming
+        # the one it repeats, so the screen can offer the comparison itself --
+        # which is the retail behaviour, and better than deciding for the
+        # player as the auto-sell stopgap did.
         self.club.append(item)
         if self.inventory is not None:
             if any(held["id"] == item["id"] for held in self.inventory.items):

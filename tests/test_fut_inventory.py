@@ -560,7 +560,7 @@ def test_listing_a_card_takes_it_out_of_the_club() -> None:
     assert after == owned - 1
 
 
-def test_a_duplicate_is_sold_rather_than_stacked_or_dropped() -> None:
+def test_a_duplicate_is_kept_and_names_what_it_repeats() -> None:
     # Retail would offer to compare the two here, and that screen is driven by
     # duplicateItemIdList -- the field that froze the title, so it cannot be
     # turned back on yet. Until then the duplicate is quick-sold: the club
@@ -586,15 +586,14 @@ def test_a_duplicate_is_sold_rather_than_stacked_or_dropped() -> None:
     owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
 
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
-    assert len(second["duplicateItemIdList"]) == second["numberItems"]
-
-    before_coins = wallet.coins
+    assert all(item.get("duplicateItemId") for item in second["itemList"])
     for item in second["itemList"]:
         actions._keep(dict(item))
 
+    # The duplicate is kept: the card names what it repeats, so the screen can
+    # offer the choice rather than the server making it.
     after = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
-    assert after == owned, "the club keeps one of each card"
-    assert wallet.coins > before_coins, "and the duplicate pays its discard value"
+    assert after == owned + second["numberItems"]
 
 
 def test_a_club_holds_one_of_any_card() -> None:
@@ -867,13 +866,19 @@ def test_a_card_pulled_twice_is_reported_as_a_duplicate() -> None:
     actions = CardActions(shop, wallet, inventory)
 
     first = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
-    assert first["duplicateItemIdList"] == []
+    assert not any(item.get("duplicateItemId") for item in first["itemList"])
     for item in first["itemList"]:
         actions._keep(dict(item))
 
-    # The same draw again: every card is now one the club holds.
+    # The same draw again: every card names the one it repeats. The per-card
+    # duplicateItemId is what the compare screen reads; the plural list stays
+    # empty, because filling it with the new ids froze the title.
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
-    assert len(second["duplicateItemIdList"]) == second["numberItems"]
+    assert second["duplicateItemIdList"] == []
+    marked = [item for item in second["itemList"] if item.get("duplicateItemId")]
+    assert len(marked) == second["numberItems"]
+    owned = {item["id"] for item in inventory.items}
+    assert all(item["duplicateItemId"] in owned for item in marked)
 
 
 def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
