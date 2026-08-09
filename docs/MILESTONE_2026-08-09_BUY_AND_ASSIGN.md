@@ -47,3 +47,24 @@ An error message on this title names a plausible cause, not the real one:
 
 Every fix that landed first time came from the binary's strings or the journal.
 Every guess reasoned from the web app cost a relaunch and produced nothing.
+
+
+## Confirmed on console: the player who could not be bought
+
+One particular player -- Benatia -- could never be bought into the club while
+everyone else could. Two separate faults, neither of them about him:
+
+**Market item ids came from the page position.** `MARKET_ITEM_ID_BASE + offset
++ index`, so the same slot in the same search always produced the same item id.
+The club refuses an id it already holds, so the second attempt at that slot was
+dropped on arrival. Ids are now issued per listing served.
+
+**Buying hid every version of the player.** A purchase excluded the whole asset
+id from later searches, and the three Benatia cards -- 90, 86 and 84 -- share
+one. Buying the 90 took all three off the market. That exclusion is gone: a
+market carries many copies of the same card, which is what a market is.
+
+A test had encoded the wrong behaviour here, requiring a bought card to vanish
+from the market. It was corrected rather than the code.
+
+Confirmed working by the user: Benatia bought and held.
