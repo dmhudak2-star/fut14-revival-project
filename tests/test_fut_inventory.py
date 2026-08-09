@@ -671,11 +671,13 @@ def test_the_club_survives_a_restart() -> None:
         assert purse.coins == coins
 
 
-def test_a_bought_card_joins_the_club_and_leaves_the_market() -> None:
+def test_a_bought_card_joins_the_club() -> None:
     # Buying credited nothing to the club: the card went into a side list the
     # inventory never saw, so it could not be assigned and vanished on restart.
-    # And the market regenerated the same listing, so the player just paid for
-    # was still for sale.
+    #
+    # The market keeps offering the card afterwards, and that is correct -- it
+    # carries many copies of the same player. Hiding them by asset id took
+    # every version of Benatia off the market when one was bought.
     from fut_inventory import (
         CardActions,
         CardCatalogue,
@@ -695,10 +697,6 @@ def test_a_bought_card_joins_the_club_and_leaves_the_market() -> None:
     actions._keep(dict(won))
 
     assert any(item["assetId"] == asset for item in inventory.items)
-    again = json.loads(catalogue.auctions({"start": "0", "num": "2"}))
-    assert all(
-        entry["itemData"]["assetId"] != asset for entry in again["auctionInfo"]
-    )
 
 
 def test_a_bought_card_can_be_put_in_the_squad() -> None:
