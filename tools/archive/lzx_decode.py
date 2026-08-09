@@ -139,25 +139,33 @@ class HuffmanTable:
         self.first_code: dict[int, int] = {}
         self.first_symbol: dict[int, int] = {}
         self.sorted_symbols: list[int] = []
+        # Counted once. Recounting inside decode() made every bit read a scan
+        # of the whole length vector -- correct, and slow enough that a full
+        # database took minutes rather than seconds.
+        self.counts: dict[int, int] = {}
+        by_length: dict[int, list[int]] = {}
+        for symbol, value in enumerate(lengths):
+            if value:
+                by_length.setdefault(value, []).append(symbol)
         code = 0
         for length in range(1, self.max_length + 1):
+            group = by_length.get(length, ())
             self.first_code[length] = code
             self.first_symbol[length] = len(self.sorted_symbols)
-            self.sorted_symbols.extend(
-                symbol for symbol, value in enumerate(lengths) if value == length
-            )
-            code = (code + sum(1 for value in lengths if value == length)) << 1
+            self.counts[length] = len(group)
+            self.sorted_symbols.extend(group)
+            code = (code + len(group)) << 1
 
     def decode(self, reader: BitReader) -> int:
         code = 0
         for length in range(1, self.max_length + 1):
             code = (code << 1) | reader.read(1)
-            first = self.first_code.get(length)
-            if first is None:
+            count = self.counts.get(length)
+            if not count:
                 continue
-            count = sum(1 for value in self.lengths if value == length)
-            if count and code - first < count:
-                return self.sorted_symbols[self.first_symbol[length] + code - first]
+            offset = code - self.first_code[length]
+            if offset < count:
+                return self.sorted_symbols[self.first_symbol[length] + offset]
         raise ValueError("Invalid Huffman code in LZX stream")
 
 
@@ -206,6 +214,161 @@ def read_lengths(
 # Every resource sampled from this archive decodes with a 128 KiB window, and
 # a wrong size silently mis-sizes the main tree rather than failing cleanly.
 DEFAULT_WINDOW_BITS = 17
+
+
+FRAME_SIZE = 0x8000
+
+
+def split_frames(chunk: bytes) -> list[tuple[int, int, int]]:
+    """Split a chunk into its frames as ``(raw, offset, packed)``.
+
+    A frame is either ``FF <u16 raw> <u16 packed>`` or a bare ``<u16 packed>``
+    standing for a full 32 KiB of output. This is the framing XCompress emits
+    on the 360, and the reason a chunk does not decode as one bitstream: the
+    two bytes before each frame are a length, not data, and a decoder reading
+    straight through them desynchronises a few frames in.
+
+    Reading the whole archive this way accounts for every declared byte --
+    ten chunks of eight full frames and a last of four, 2 730 320 in total,
+    exactly what the container announces.
+    """
+    frames: list[tuple[int, int, int]] = []
+    position = 0
+    while position + 2 <= len(chunk):
+        if chunk[position] == 0xFF:
+            if position + 5 > len(chunk):
+                break
+            raw, packed = struct.unpack(">HH", chunk[position + 1 : position + 5])
+            position += 5
+        else:
+            packed = struct.unpack(">H", chunk[position : position + 2])[0]
+            raw = FRAME_SIZE
+            position += 2
+        if not packed or position + packed > len(chunk):
+            break
+        frames.append((raw, position, packed))
+        position += packed
+    return frames
+
+
+class LzxStream:
+    """An LZX decoder whose state outlives the frame it is reading.
+
+    Blocks run across frame boundaries -- a block announces a size far larger
+    than the 32 KiB a frame carries -- so the window, the Huffman trees, the
+    repeated offsets and the number of bytes left in the current block all have
+    to persist. Only the bit reader restarts, because each frame's bitstream is
+    byte-aligned and preceded by its own length.
+    """
+
+    def __init__(self, window_bits: int = DEFAULT_WINDOW_BITS) -> None:
+        slots = position_slots(window_bits)
+        self.main_elements = MAIN_TREE_ELEMENTS + slots * 8
+        self.main_lengths = [0] * self.main_elements
+        self.length_lengths = [0] * LENGTH_TREE_ELEMENTS
+        self.main: HuffmanTable | None = None
+        self.lengths: HuffmanTable | None = None
+        self.aligned: HuffmanTable | None = None
+        self.block_type = 0
+        self.block_remaining = 0
+        self.r0 = self.r1 = self.r2 = 1
+        self.window = bytearray()
+        self.header_read = False
+        self.e8_size = 0
+
+    def decode_frame(self, data: bytes, out_size: int) -> bytes:
+        reader = BitReader(data)
+        if not self.header_read:
+            self.header_read = True
+            # Announced once for the whole stream, not once per frame.
+            if reader.read(1):
+                self.e8_size = (reader.read(16) << 16) | reader.read(16)
+        start = len(self.window)
+        while len(self.window) - start < out_size:
+            if self.block_remaining == 0:
+                self._start_block(reader)
+            self._decode_symbols(reader, start + out_size)
+        return bytes(self.window[start : start + out_size])
+
+    def _start_block(self, reader: BitReader) -> None:
+        self.block_type = reader.read(3)
+        self.block_remaining = (
+            (reader.read(8) << 16) | (reader.read(8) << 8) | reader.read(8)
+        )
+        if self.block_type == UNCOMPRESSED:
+            reader.align()
+            self.r0 = int.from_bytes(reader.read_bytes_aligned(4), "little")
+            self.r1 = int.from_bytes(reader.read_bytes_aligned(4), "little")
+            self.r2 = int.from_bytes(reader.read_bytes_aligned(4), "little")
+            return
+        if self.block_type == ALIGNED:
+            self.aligned = HuffmanTable(
+                [reader.read(3) for _ in range(ALIGNED_TREE_ELEMENTS)]
+            )
+        elif self.block_type == VERBATIM:
+            self.aligned = None
+        else:
+            raise ValueError(f"Unsupported LZX block type {self.block_type}")
+        read_lengths(reader, self.main_lengths, 0, 256)
+        read_lengths(reader, self.main_lengths, 256, self.main_elements)
+        self.main = HuffmanTable(self.main_lengths)
+        read_lengths(reader, self.length_lengths, 0, NUM_SECONDARY_LENGTHS)
+        self.lengths = HuffmanTable(self.length_lengths)
+
+    def _decode_symbols(self, reader: BitReader, limit: int) -> None:
+        output = self.window
+        if self.block_type == UNCOMPRESSED:
+            take = min(self.block_remaining, limit - len(output))
+            output.extend(reader.read_bytes_aligned(take))
+            self.block_remaining -= take
+            return
+
+        assert self.main is not None and self.lengths is not None
+        while self.block_remaining > 0 and len(output) < limit:
+            symbol = self.main.decode(reader)
+            if symbol < 256:
+                output.append(symbol)
+                self.block_remaining -= 1
+                continue
+
+            symbol -= 256
+            length_header = symbol & 7
+            position_slot = symbol >> 3
+            if length_header == 7:
+                match_length = self.lengths.decode(reader) + 7 + MIN_MATCH
+            else:
+                match_length = length_header + MIN_MATCH
+
+            if position_slot == 0:
+                match_offset = self.r0
+            elif position_slot == 1:
+                match_offset, self.r1 = self.r1, self.r0
+                self.r0 = match_offset
+            elif position_slot == 2:
+                match_offset, self.r2 = self.r2, self.r0
+                self.r0 = match_offset
+            else:
+                extra = EXTRA_BITS[position_slot]
+                if self.aligned is not None and extra >= 3:
+                    verbatim = reader.read(extra - 3) << 3
+                    match_offset = (
+                        POSITION_BASE[position_slot]
+                        - 2
+                        + verbatim
+                        + self.aligned.decode(reader)
+                    )
+                else:
+                    match_offset = (
+                        POSITION_BASE[position_slot] - 2 + reader.read(extra)
+                    )
+                self.r0, self.r1, self.r2 = match_offset, self.r0, self.r1
+
+            if match_offset > len(output):
+                raise ValueError("LZX match reaches before the start of the window")
+            start = len(output) - match_offset
+            for step in range(match_length):
+                output.append(output[start + step])
+            self.block_remaining -= match_length
 
 
 def decode_block(
@@ -353,8 +516,11 @@ def decode_container(blob: bytes) -> bytes:
     # Each chunk carries its own eight-byte (stored, block type) descriptor
     # immediately before its data, and every chunk's data starts on a sixteen
     # byte boundary -- so the descriptor always sits at 8 mod 16, and the gap
-    # after a chunk is whatever padding that alignment needs. Verified against
-    # all 27 chunks of the multi-chunk resources in the TU archive.
+    # after a chunk is whatever padding that alignment needs. Measured against
+    # the eleven descriptors of the card database, which is the same rule the
+    # title update's resources follow; an earlier version counted the
+    # descriptor twice and landed sixteen bytes past every one of them, which
+    # only ever showed up on a resource of more than one chunk.
     output = bytearray()
     cursor = 40
     for index in range(chunk_count):
@@ -371,7 +537,7 @@ def decode_container(blob: bytes) -> bytes:
         # whenever that end falls 1..8 bytes into a 16-byte unit, which is
         # every single-chunk resource and most two-chunk ones; it is 16 bytes
         # short otherwise, and an 11-chunk archive hits that case reliably.
-        end_of_data = cursor + 8 + stored_size
+        end_of_data = cursor + stored_size
         cursor = align_to(end_of_data + 8, 16) - 8
     if len(output) != total:
         raise ValueError(f"Decoded {len(output)} bytes, container declares {total}")
@@ -385,13 +551,26 @@ def align_to(value: int, boundary: int) -> int:
 def decode_chunk(chunk: bytes, total: int, produced: int, chunk_size: int) -> bytes:
     """Decode one chunk, framed or not.
 
-    A chunk whose output fits sixteen bits carries an ``FF`` frame header with
-    both sizes; one that does not cannot, and its bitstream starts at once.
+    A chunk is a run of frames, each at most 32 KiB of output: ``FF`` and both
+    sizes when the frame is short, a bare compressed length when it is full.
+    A resource small enough to fit one frame is the ``FF`` case and nothing
+    else, which is why reading only that case worked on every single-frame
+    resource in the title update and on none of the databases.
+
+    The decoder's state carries across the frames of a chunk but not between
+    chunks -- each chunk restarts the window, which is what makes the container
+    randomly addressable.
     """
-    if chunk[:1] == b"\xff":
-        raw_size, packed_size = struct.unpack(">HH", chunk[1:5])
-        return decode_block(chunk[5 : 5 + packed_size], raw_size)
-    return decode_block(chunk, min(total - produced, chunk_size))
+    stream = LzxStream()
+    remaining = min(total - produced, chunk_size)
+    out = bytearray()
+    for raw_size, offset, packed_size in split_frames(chunk):
+        if remaining <= 0:
+            break
+        take = min(raw_size, remaining)
+        out += stream.decode_frame(chunk[offset : offset + packed_size], take)
+        remaining -= take
+    return bytes(out)
 
 
 def _unused_single_chunk_path(blob, chunk_count, total, stored_size):

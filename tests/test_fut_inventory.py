@@ -919,6 +919,10 @@ def test_consumables_use_the_member_names_the_binary_carries() -> None:
     # made it read consumablesTrainingGk -- zero -- and report none available.
     assert document["consumablesTrainingGk"] > 0
     assert all(value > 0 for value in document.values())
+    # The aggregate members cover their family once each. Chemistry styles
+    # have no aggregate of their own -- the binary carries one member for an
+    # outfielder's and one for a keeper's, and nothing above them -- so the
+    # total counts both.
     assert document["consumables"] == sum(
         document[name]
         for name in (
@@ -928,6 +932,7 @@ def test_consumables_use_the_member_names_the_binary_carries() -> None:
             "consumablesTraining",
             "consumablesPosition",
             "consumablesTrainingPlayerPlayStyle",
+            "consumablesTrainingGkPlayStyle",
         )
     )
 
@@ -961,9 +966,37 @@ def test_the_club_search_understands_the_consumable_family() -> None:
     from fut_inventory import ClubInventory
 
     inventory = ClubInventory()
-    family = json.loads(inventory.club_response({"type": "consumable", "count": "50"}))
-    one_kind = json.loads(inventory.club_response({"type": "contract", "count": "50"}))
+    # Past the club's whole stock of consumables, or both answers come back
+    # capped at the page size and the comparison says nothing.
+    family = json.loads(inventory.club_response({"type": "consumable", "count": "500"}))
+    one_kind = json.loads(inventory.club_response({"type": "contract", "count": "500"}))
 
     assert len(family["itemData"]) > len(one_kind["itemData"]) > 0
     # Asking for the family must not sweep in players.
     assert all(item["itemType"] != "player" for item in family["itemData"])
+
+
+def test_consumables_come_from_the_game_database() -> None:
+    # They were invented once: three grades a family, asset ids counted up
+    # from 1000. Every card drew NOT FOUND art, all of them were named
+    # "Entrainement equipe", and applying one did nothing -- the title reads a
+    # consumable's name and effect out of its own database by subtype, and
+    # draws it by asset id, so neither is ours to pick.
+    from fut_inventory import CONSUMABLE_TYPES
+
+    consumables = [
+        item for item in INVENTORY.items
+        if item.get("consumableType") in CONSUMABLE_TYPES
+    ]
+    assert consumables
+
+    subtypes = {item["cardsubtypeid"] for item in consumables}
+    # A single subtype is what "all of them are the same card" looks like.
+    assert len(subtypes) > 40
+    assert all(item["assetId"] < 1000 for item in consumables)
+    # Each card names the member CardsDLL counts it under, and a keeper's
+    # training card is a different member from an outfielder's.
+    members = {item["consumableMember"] for item in consumables}
+    assert "consumablesTrainingGk" in members
+    assert "consumablesTrainingPlayer" in members
+    assert "consumablesContractManager" in members

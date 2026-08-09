@@ -106,3 +106,53 @@ def test_history_seeds_the_window_without_being_returned() -> None:
         chunk, 1 << 20, partial=True, history=b"x" * 4096
     )
     assert seeded == plain
+
+
+# -- the frame layer -------------------------------------------------------
+#
+# A chunk is not one bitstream. It is a run of frames, each at most 32 KiB of
+# output, and the two bytes before each are its compressed length. Reading
+# straight through them decoded the first frames and then desynchronised,
+# which is why the databases came out at 45% with their tail as noise.
+
+
+def test_a_short_frame_carries_both_its_sizes() -> None:
+    chunk = b"\xff" + struct.pack(">HH", 23, 4) + b"abcd"
+    assert lzx_decode.split_frames(chunk) == [(23, 5, 4)]
+
+
+def test_a_full_frame_carries_only_its_compressed_length() -> None:
+    # No FF, so the frame produces a whole 32 KiB and the two bytes are the
+    # packed size alone.
+    chunk = struct.pack(">H", 6) + b"abcdef"
+    assert lzx_decode.split_frames(chunk) == [(lzx_decode.FRAME_SIZE, 2, 6)]
+
+
+def test_frames_run_one_after_another() -> None:
+    chunk = (
+        struct.pack(">H", 4)
+        + b"aaaa"
+        + b"\xff"
+        + struct.pack(">HH", 100, 3)
+        + b"bbb"
+        + struct.pack(">H", 2)
+        + b"cc"
+    )
+    assert lzx_decode.split_frames(chunk) == [
+        (lzx_decode.FRAME_SIZE, 2, 4),
+        (100, 11, 3),
+        (lzx_decode.FRAME_SIZE, 16, 2),
+    ]
+
+
+def test_a_frame_running_past_the_chunk_is_dropped() -> None:
+    # Trailing padding after the last frame reads as a length far larger than
+    # what is left. Taking it would walk off the end of the chunk.
+    chunk = struct.pack(">H", 4) + b"aaaa" + struct.pack(">H", 9999) + b"bb"
+    assert lzx_decode.split_frames(chunk) == [(lzx_decode.FRAME_SIZE, 2, 4)]
+
+
+def test_padding_of_a_single_byte_ends_the_run() -> None:
+    assert lzx_decode.split_frames(struct.pack(">H", 2) + b"ab" + b"\x00") == [
+        (lzx_decode.FRAME_SIZE, 2, 2)
+    ]

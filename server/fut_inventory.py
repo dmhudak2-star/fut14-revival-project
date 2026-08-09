@@ -1479,16 +1479,24 @@ class CardActions:
 
 CLUB_ITEM_ID_BASE = 1_750_000_000
 
-# Contracts and fitness are what a club actually runs out of; the rest are the
-# cosmetics the club and stadium screens present.
-CONSUMABLE_KINDS = [
-    ("contract", "Contract", [(1, 7), (2, 15), (3, 28)]),
-    ("fitness", "Fitness", [(1, 25), (2, 50), (3, 75)]),
-    ("healing", "Healing", [(1, 1), (2, 3), (3, 7)]),
-    ("training", "Training", [(1, 1), (2, 3), (3, 5)]),
-    ("position", "Position", [(1, 1)]),
-    ("playStyle", "Chemistry Style", [(1, 1), (2, 1), (3, 1)]),
-]
+# The consumables come out of the game's own card database -- see
+# tools/build_consumables.py. They used to be invented here: three grades per
+# family with asset ids counted up from 1000, which drew NOT FOUND art on every
+# card, named all of them "Entraînement equipe" and applied nothing. The title
+# looks a consumable up by its subtype and draws it by its asset id, so neither
+# is ours to choose.
+CONSUMABLE_FILE = Path(__file__).resolve().parent / "fifa14_consumables.json"
+
+# Contracts and fitness are what a club actually runs out of, so it carries a
+# stack of each; one of everything else is enough to apply it.
+CONSUMABLE_COPIES = {"contract": 5, "fitness": 5, "healing": 3}
+
+
+def _consumable_catalogue() -> list[dict]:
+    try:
+        return json.loads(CONSUMABLE_FILE.read_text())["consumables"]
+    except (OSError, ValueError, KeyError):
+        return []
 
 CLUB_ITEM_KINDS = [
     ("kit", 14, 6300000, 4),
@@ -1505,26 +1513,30 @@ def _club_extras() -> list[dict]:
     items: list[dict] = []
     next_id = CLUB_ITEM_ID_BASE
 
-    for kind, label, grades in CONSUMABLE_KINDS:
-        for index, (grade, amount) in enumerate(grades):
+    for card in _consumable_catalogue():
+        kind = card["itemType"]
+        for _ in range(CONSUMABLE_COPIES.get(kind, 1)):
             items.append(
                 {
                     "id": next_id,
-                    "assetId": 1000 + index,
-                    "resourceId": RESOURCE_VERSION | (1000 + index),
-                    "rating": 0,
-                    "itemType": "training" if kind == "training" else kind,
+                    "assetId": card["assetId"],
+                    "resourceId": RESOURCE_VERSION | card["assetId"],
+                    "definitionId": card["definitionId"],
+                    "rating": card["rating"],
+                    "itemType": kind,
                     "itemState": "free",
-                    "cardsubtypeid": grade,
+                    # What the title looks the card up by: its name, its
+                    # description and what applying it does all come from here.
+                    "cardsubtypeid": card["cardsubtypeid"],
                     "discardValue": 0,
                     "lastSalePrice": 0,
                     "timestamp": 1,
                     "untradeable": False,
-                    "rareflag": 1 if grade > 1 else 0,
+                    "rareflag": 1 if card["rare"] else 0,
                     "consumableType": kind,
-                    "consumableLabel": label,
-                    "amount": amount,
-                    "count": 5,
+                    "consumableMember": card["member"],
+                    "amount": card["amount"],
+                    "count": 1,
                 }
             )
             next_id += 1
@@ -1777,49 +1789,71 @@ def hub_response(inventory: "ClubInventory", listings: int) -> bytes:
 # 0x89030F9C and 0x89031148. The response is an object with these members, not
 # an entries array -- numbered keys meant nothing to it, which is why the apply
 # screen reported none available while the club held sixteen.
+#
+# Each card names the one it belongs to -- tools/build_consumables.py takes it
+# from the subtype block the card sits in, which is how the database and these
+# member names line up: 201 against 202 for a player's contract and a
+# manager's, 219 against 220 for a player's fitness and the team's.
 CONSUMABLE_MEMBERS = {
-    "contract": ("consumablesContract", "consumablesContractPlayer"),
-    "fitness": ("consumablesFitness", "consumablesFitnessPlayer"),
-    "healing": ("consumablesHealing",),
-    "training": ("consumablesTraining", "consumablesTrainingPlayer"),
-    "position": ("consumablesPosition",),
-    "playStyle": ("consumablesTrainingPlayerPlayStyle",),
+    "contract": "consumablesContractPlayer",
+    "fitness": "consumablesFitnessPlayer",
+    "healing": "consumablesHealing",
+    "training": "consumablesTrainingPlayer",
+    "position": "consumablesPosition",
+    "playStyle": "consumablesTrainingPlayerPlayStyle",
 }
 
-# The remaining members, each fed from the kind it belongs to. They used to go
-# out at zero, and that is what "Pas d'élément disponible" was reporting when
-# applying from the squad screen: that screen decides from these counts alone,
-# and picking a goalkeeper makes it read consumablesTrainingGk -- which was
-# zero. The club's consumables are generic, so there is no reason to declare
-# them absent for the goalkeeper, team or manager variants.
-CONSUMABLE_VARIANTS = {
-    "consumablesContractManager": "contract",
-    "consumablesFitnessTeam": "fitness",
-    "consumablesTrainingGk": "training",
-    "consumablesTrainingGkPlayStyle": "playStyle",
+# The rest of the members. Every one is a real distinction the game makes --
+# a keeper's training card is not an outfielder's -- and the club now holds
+# cards for each, so the counts are counted rather than shared out.
+#
+# They used to go out at zero, and that is what "Pas d'élément disponible" was
+# reporting when applying from the squad screen: that screen decides from these
+# counts alone, and picking a goalkeeper makes it read consumablesTrainingGk.
+# The manager's own cards are in the database -- subtypes 250 to 273 and 300
+# to 340 -- but nothing in it says which member each block belongs to, and
+# guessing would put the wrong card under the wrong name. So these members
+# report their family's count, which is what they did before any of this and
+# what stopped the popup: a count that is too generous costs nothing, a zero
+# refuses to apply anything.
+CONSUMABLE_FALLBACKS = {
     "consumablesTrainingManager": "training",
     "consumablesTrainingManagerLeagueModifier": "training",
     "consumablesFormationManager": "position",
 }
 
+# The three the game also asks for in aggregate. Each is its family's count
+# rather than the sum of the members under it: the members that fall back
+# would be counted twice, and a club of 242 consumables would report 300.
+CONSUMABLE_TOTALS = {
+    "consumablesContract": "contract",
+    "consumablesFitness": "fitness",
+    "consumablesTraining": "training",
+}
+
 
 def consumable_stats_response(inventory: "ClubInventory") -> bytes:
     """How many of each consumable the club holds, under the real member names."""
-    held: dict[str, int] = {}
+    held: dict[str, int] = {member: 0 for member in CONSUMABLE_MEMBERS.values()}
+    by_kind: dict[str, int] = {}
+
+    total = 0
     for item in inventory.items:
         kind = item.get("consumableType") or item.get("itemType")
-        if kind in CONSUMABLE_TYPES:
-            held[kind] = held.get(kind, 0) + int(item.get("count") or 1)
-
-    document: dict[str, int] = {
-        name: held.get(kind, 0) for name, kind in CONSUMABLE_VARIANTS.items()
-    }
-    total = 0
-    for kind, members in CONSUMABLE_MEMBERS.items():
-        count = held.get(kind, 0)
+        if kind not in CONSUMABLE_TYPES:
+            continue
+        count = int(item.get("count") or 1)
         total += count
-        for member in members:
-            document[member] = count
+        by_kind[kind] = by_kind.get(kind, 0) + count
+        member = item.get("consumableMember")
+        if member:
+            held[member] = held.get(member, 0) + count
+
+    document = dict(held)
+    for member, kind in CONSUMABLE_FALLBACKS.items():
+        document[member] = by_kind.get(kind, 0)
+    for name, kind in CONSUMABLE_TOTALS.items():
+        document[name] = by_kind.get(kind, 0)
     document["consumables"] = total
     return json.dumps(document, separators=(",", ":")).encode()
 
