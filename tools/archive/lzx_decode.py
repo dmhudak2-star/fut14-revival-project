@@ -284,7 +284,10 @@ def decode_block(
         lengths = HuffmanTable(length_lengths)
 
         produced = 0
-        while produced < block_size and len(output) < expected:
+        # The history seeds the window, so the limit has to count new bytes
+        # here too -- comparing the whole buffer meant a seeded call was
+        # already "full" and decoded nothing at all.
+        while produced < block_size and len(output) - produced_before < expected:
             symbol = main.decode(reader)
             if symbol < 256:
                 output.append(symbol)
@@ -325,6 +328,11 @@ def decode_block(
                 output.append(output[start + step])
             produced += match_length
 
+    if partial:
+        # However much the stream held. Truncating to the requested amount
+        # would throw away the tail of a chunk that produced more than the
+        # caller's estimate, and these chunks do not announce their length.
+        return bytes(output[produced_before:])
     return bytes(output[produced_before : produced_before + expected])
 
 
