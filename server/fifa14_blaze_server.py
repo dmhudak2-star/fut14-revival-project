@@ -2295,6 +2295,10 @@ class IdentityHttpService:
                         peer=self.client_address[0],
                         path=parsed.path,
                         filters=sorted(query),
+                        # The values, not just the names: knowing the screen
+                        # asks type=consumable is what identified the mismatch.
+                        values={k: v for k, v in query.items() if k in
+                                ("type", "level", "position", "cat")},
                         bytes=len(payload),
                     )
                     self.reply(

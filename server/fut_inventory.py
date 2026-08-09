@@ -308,7 +308,18 @@ class ClubInventory:
 
             def wanted(item: dict) -> bool:
                 if kind and kind not in ("any", ""):
-                    if item.get("itemType") != kind:
+                    # The consumables screen asks for the family, not each
+                    # kind: it reads the counts, then searches the club for
+                    # "consumable". Comparing that against itemType -- which is
+                    # contract, fitness, healing and so on -- matched nothing,
+                    # so the screen found the counts and then no items.
+                    if kind in ("consumable", "consumables"):
+                        if (
+                            item.get("itemType") not in CONSUMABLE_TYPES
+                            and item.get("consumableType") not in CONSUMABLE_TYPES
+                        ):
+                            return False
+                    elif item.get("itemType") != kind:
                         return False
                 if position and position not in ("any", ""):
                     if item.get("preferredPosition") != position:
@@ -1196,6 +1207,11 @@ class PackShop:
 #
 # Retail pile numbers. Squad membership is not a pile: players in the eleven
 # are still owned in the club.
+CONSUMABLE_TYPES = {
+    "contract", "fitness", "healing", "training", "position", "playStyle",
+}
+
+
 PILE_TRANSFER = 5
 PILE_PURCHASED = 6
 PILE_CLUB = 7
@@ -1834,9 +1850,7 @@ def club_stats_response(inventory: "ClubInventory") -> bytes:
     return json.dumps({"entries": entries}, separators=(",", ":")).encode()
 
 
-CONSUMABLE_TYPES = {
-    "contract", "fitness", "healing", "training", "position", "playStyle",
-}
+
 
 
 def consumables_response(inventory: "ClubInventory") -> bytes:

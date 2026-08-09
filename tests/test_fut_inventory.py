@@ -949,3 +949,19 @@ def _unused_consumable_counts_are_not_the_club_counters() -> None:
     assert all(entry["value"] > 0 for entry in consumables)
     # And it is genuinely a different answer, not the same document renamed.
     assert [e["value"] for e in consumables] != [e["value"] for e in generic]
+
+
+def test_the_club_search_understands_the_consumable_family() -> None:
+    # The consumables screen reads the counts and then searches the club for
+    # "consumable" -- the family, not each kind. Comparing that against
+    # itemType, which is contract, fitness, healing and so on, matched nothing:
+    # the screen found counts and then no items.
+    from fut_inventory import ClubInventory
+
+    inventory = ClubInventory()
+    family = json.loads(inventory.club_response({"type": "consumable", "count": "50"}))
+    one_kind = json.loads(inventory.club_response({"type": "contract", "count": "50"}))
+
+    assert len(family["itemData"]) > len(one_kind["itemData"]) > 0
+    # Asking for the family must not sweep in players.
+    assert all(item["itemType"] != "player" for item in family["itemData"])
