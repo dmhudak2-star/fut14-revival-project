@@ -172,3 +172,32 @@ a guess and has been withdrawn; that path is very likely the FUT user list.
 The next step is to disassemble around `GetTOTWSquads` (`0x8901224C`) and the
 challenge request event, and read what the response parser expects. Not to try
 another shape.
+
+### The TOTW request order, measured
+
+```text
+GET /ut/game/fifa14/clientdata/totw     served, accepted
+GET /ut/game/fifa14/clubUser            served
+GET /ut/game/fifa14/user/list           served -- and the screen stops here
+```
+
+So `user/list` *is* part of this flow, contrary to the note above that guessed
+it was the FUT user list and withdrew the document placed on it. It is
+requested immediately after `clubUser`, every time the screen is opened, and
+the screen goes no further.
+
+Three documents have now been served on it and all three were rejected:
+
+* a squad summary list (`{"squad":[...], "userInfo":[]}`);
+* the same enriched with the squad's `itemData` and formation;
+* a minimal `{"userInfo":[]}`.
+
+Adding `squadChallenge` to `clientdata/totw` -- the member name CardsDLL carries
+at `0x8902FFD8`, beside `squadId` -- changed nothing either, though it did not
+freeze.
+
+That exhausts what can be learned by varying the response. The names to
+disassemble against are `RequestChallengeData` (`0x890121E4`),
+`GetChallengeData` (`0x890121FC`), `GetTotalChallenges` (`0x89012190`) and
+`GetTOTWSquads` (`0x8901224C`); the parser behind them is what says which
+document `user/list` must return.
