@@ -54,9 +54,18 @@ start_server() {
 
 launch_title() {
     step "lancement du titre"
-    "$PY" tools/fifa14_early_local_server.py "$XBOX" \
+    local out
+    out=$("$PY" tools/fifa14_early_local_server.py "$XBOX" \
         --local-ip "$MAC" --timeout 900 --launch-title "$TITLE" \
-        --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -1
+        --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -2)
+    print "$out" | sed 's/^/   /'
+    # Without these the console never reaches this server at all, and the game
+    # says only "connectez-vous a Xbox Live et aux serveurs EA" -- which names
+    # neither the patch nor the step that failed.
+    case "$out" in
+        *"hostnames preserved"*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 reach_menu() {
@@ -95,7 +104,7 @@ case "${1:-}" in
 esac
 
 start_server
-launch_title
+launch_title || fail "les correctifs de lancement n'ont pas pris -- la console n'atteindra pas le serveur"
 reach_menu || fail "le menu principal n'a pas été atteint"
 apply_patch || {
     release_pad
