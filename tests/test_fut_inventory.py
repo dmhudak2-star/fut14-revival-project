@@ -446,14 +446,13 @@ def test_the_club_starts_in_the_bottom_division() -> None:
     assert standing["promoted"] is False
 
 
-def test_cups_are_listed_and_active() -> None:
+def test_the_cup_list_is_empty_until_its_shape_is_known() -> None:
+    # A generated list froze the title when Compétition Joueur Solo was opened.
+    # The reference serves an empty array and does not freeze, so the shape is
+    # wrong somewhere and the fields have to come from the binary first.
     import fut_inventory as inventory
 
-    cups = json.loads(inventory.tournaments_response())["tournament"]
-    assert cups
-    assert all(cup["active"] and cup["rounds"] > 0 for cup in cups)
-    active = json.loads(inventory.active_tournaments_response())["tournamentId"]
-    assert active == [cup["tournamentId"] for cup in cups]
+    assert json.loads(inventory.tournaments_response())["tournament"] == []
 
 
 def test_team_of_the_week_is_a_full_side() -> None:

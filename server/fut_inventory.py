@@ -599,6 +599,8 @@ def _price_for(rating: int, rareflag: int) -> int:
 class CardCatalogue:
     """Every card in the game, searchable."""
 
+    _issued = 0
+
     def __init__(self, path: Path = CARD_CATALOGUE) -> None:
         self.cards: list[dict] = []
         if path.exists():
@@ -682,8 +684,14 @@ class CardCatalogue:
             offset = 0
         for index, card in enumerate(page):
             price = _price_for(card.get("rating", 0), card.get("rareflag", 0))
+            # Unique per listing served, not derived from the page position.
+            # Deriving it meant buying the same slot twice produced the same
+            # item id, and the club refuses an id it already holds -- which is
+            # why one particular player could never be bought again while
+            # everyone else could.
+            CardCatalogue._issued += 1
             item = _player_item(
-                item_id=MARKET_ITEM_ID_BASE + offset + index,
+                item_id=MARKET_ITEM_ID_BASE + CardCatalogue._issued,
                 asset_id=card["assetId"],
                 rating=card.get("rating", 0),
                 rare=card.get("rareflag", 0),
@@ -1606,6 +1614,18 @@ def season_user_response(division: int = 10) -> bytes:
 
 
 def tournaments_response() -> bytes:
+    """Empty, on purpose.
+
+    A generated list of cups -- id, name, level, prize, rounds, currentRound,
+    entryFee, active, won -- froze the title outright when Compétition Joueur
+    Solo was opened. The reference serves an empty tournament array and does
+    not freeze, so the shape is wrong somewhere and a freeze is not worth
+    guessing through. The fields have to come from the binary first.
+    """
+    return json.dumps({"tournament": []}, separators=(",", ":")).encode()
+
+
+def _tournaments_unused() -> bytes:
     return json.dumps(
         {
             "tournament": [
