@@ -1852,16 +1852,17 @@ class IdentityHttpService:
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
                     ),
-                    # Plain and minimal. The squad document put here was a
-                    # guess -- /ut/game/fifa14/user/list is very likely the FUT
-                    # user list, not a Team of the Week index, and the two
-                    # fragments CardsDLL carries for this feature are "/totw"
-                    # and "/userHubData", both clientdata paths already served.
-                    # So the endpoint was never the problem; the content is,
-                    # and its shape is unknown.
-                    "/ut/game/fifa14/user/list": (
-                        lambda: b'{"userInfo":[]}'
-                    ),
+                    # The URL template table settles what this is. At
+                    # 0x89026ED0 the key SQUAD is followed by three templates
+                    # with no keys of their own -- ut/%s/squad, ut/%s/club and
+                    # ut/%s/user/list -- before the next key, CLUB_USER. So
+                    # user/list belongs to the squad family: it is the list of
+                    # the user's squads, not a list of users.
+                    #
+                    # It therefore gets exactly the document squad/list gets.
+                    # Three shapes were tried here by guesswork and all three
+                    # were rejected; this one comes from the table.
+                    "/ut/game/fifa14/user/list": CLUB_INVENTORY.squad_summaries,
                     "/ut/game/fifa14/clientdata/totw": (
                         lambda: totw_response(CARD_CATALOGUE)
                     ),
