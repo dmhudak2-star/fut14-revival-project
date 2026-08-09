@@ -72,8 +72,17 @@ reach_menu() {
 
 apply_patch() {
     step "patch helperFunctions"
-    "$PY" tools/fifa14_tu3_helperfunctions_runtime_patch.py "$XBOX" \
-        --timeout 540 --chunk-size 0x800000 2>&1 | tail -1
+    local out
+    out=$("$PY" tools/fifa14_tu3_helperfunctions_runtime_patch.py "$XBOX" \
+        --timeout 540 --chunk-size 0x800000 2>&1 | tail -1)
+    print "   $out"
+    # The patch can fail -- the APT is only in memory once the title is far
+    # enough along -- and printing READY anyway sends you into FUT with an
+    # unpatched launcher, which hangs on the loader with nothing to explain it.
+    case "$out" in
+        Verified:*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 release_pad() {
@@ -88,7 +97,10 @@ esac
 start_server
 launch_title
 reach_menu || fail "le menu principal n'a pas été atteint"
-apply_patch
+apply_patch || {
+    release_pad
+    fail "le patch n'a pas pris -- n'entre pas dans FUT, relance tools/fut.sh"
+}
 release_pad
 
 print "\n=========================================="
