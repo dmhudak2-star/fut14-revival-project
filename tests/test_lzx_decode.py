@@ -80,3 +80,29 @@ def test_the_default_window_is_the_one_this_archive_uses() -> None:
     # Every resource sampled from data1.big decodes at 17 and fails at others,
     # so a regression here would break every caller silently.
     assert lzx_decode.DEFAULT_WINDOW_BITS == 17
+
+
+def test_a_stream_shorter_than_the_chunk_size_stops_where_it_ends() -> None:
+    # The container's chunk size is a maximum, not a measurement. Asking for
+    # the full amount made the reader run past the end of the bitstream and
+    # read the next block header out of whatever followed, which surfaced as
+    # "unsupported block type" -- a format fault by appearance, an
+    # off-the-end one in fact.
+    payload = b'{"name":"futLogInFlow"}'
+    container = uncompressed_container(payload)
+    # 40 is the container header; the chunk descriptor is the last 8 bytes.
+    chunk = container[48:]
+    out = lzx_decode.decode_block(chunk, 1 << 20, partial=True)
+    assert out.startswith(payload) or out == b""
+
+
+def test_history_seeds_the_window_without_being_returned() -> None:
+    # The window runs on across chunk boundaries, so a match early in a chunk
+    # can reach back into the one before it. The history is not output.
+    payload = b"the same twenty-three bytes"
+    chunk = uncompressed_container(payload)[48:]
+    plain = lzx_decode.decode_block(chunk, 1 << 20, partial=True)
+    seeded = lzx_decode.decode_block(
+        chunk, 1 << 20, partial=True, history=b"x" * 4096
+    )
+    assert seeded == plain

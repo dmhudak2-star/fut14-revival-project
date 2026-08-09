@@ -209,15 +209,35 @@ DEFAULT_WINDOW_BITS = 17
 
 
 def decode_block(
-    data: bytes, expected: int, window_bits: int = DEFAULT_WINDOW_BITS
+    data: bytes,
+    expected: int,
+    window_bits: int = DEFAULT_WINDOW_BITS,
+    partial: bool = False,
+    history: bytes = b"",
 ) -> bytes:
-    """Decode one framed LZX block into ``expected`` bytes."""
+    """Decode a framed LZX bitstream into at most ``expected`` bytes.
+
+    With ``partial`` set, a stream that ends before ``expected`` returns what it
+    produced instead of raising. The container's chunk size is a maximum rather
+    than a measurement -- the card and player databases decode to less -- and
+    asking for the full amount made the reader run past the end and read the
+    next block header out of whatever followed. That surfaced as "unsupported
+    block type", which reads like a format fault and is really an
+    off-the-end one.
+
+    ``history`` seeds the window with what earlier chunks produced. The window
+    runs on across chunk boundaries in these archives, so a match early in a
+    chunk can reach back into the one before it; decoding each chunk from an
+    empty window makes those matches read before the start and the chunk stops
+    a fraction of the way in.
+    """
     reader = BitReader(data)
     slots = position_slots(window_bits)
     main_elements = MAIN_TREE_ELEMENTS + slots * 8
     main_lengths = [0] * main_elements
     length_lengths = [0] * LENGTH_TREE_ELEMENTS
-    output = bytearray()
+    output = bytearray(history)
+    produced_before = len(output)
     r0, r1, r2 = 1, 1, 1
 
     # A set bit here introduces the E8 call-translation size, which the
@@ -226,9 +246,20 @@ def decode_block(
         reader.read(16)
         reader.read(16)
 
-    while len(output) < expected:
+    available = len(data) * 8
+    # The limit counts new bytes only: the history seeds the window, it is not
+    # something this call is asked to produce again.
+    while len(output) - produced_before < expected:
+        if partial and reader.bit_count + 27 > available:
+            break
         block_type = reader.read(3)
         block_size = (reader.read(8) << 16) | (reader.read(8) << 8) | reader.read(8)
+        if partial and (
+            block_type not in (UNCOMPRESSED, VERBATIM, ALIGNED)
+            or not block_size
+            or block_size > expected - (len(output) - produced_before) + (1 << 20)
+        ):
+            break
 
         if block_type == UNCOMPRESSED:
             reader.align()
@@ -294,7 +325,7 @@ def decode_block(
                 output.append(output[start + step])
             produced += match_length
 
-    return bytes(output[:expected])
+    return bytes(output[produced_before : produced_before + expected])
 
 
 def decode_container(blob: bytes) -> bytes:
