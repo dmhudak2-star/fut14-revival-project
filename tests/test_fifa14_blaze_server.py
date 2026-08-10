@@ -652,6 +652,41 @@ class ProtocolTests(unittest.TestCase):
                 identity.stop()
 
 
+class MatchEndTests(unittest.TestCase):
+    def test_the_destroy_response_carries_its_three_members(self) -> None:
+        # FutDestroyMatchServerResponse has exactly myMatchStats,
+        # opponentMatchStats and matchData -- all three in CardsDLL's name
+        # table. This route answered {}, a document the parser can read and
+        # find nothing in. Nothing else goes out: a sibling build records its
+        # client disconnecting after parsing an oversized destroy response.
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "PUT",
+                    "/ut/game/fifa14/match/end",
+                    __import__("json").dumps({"matchData": "QUJD"}).encode(),
+                )
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                body = __import__("json").loads(response.read())
+                client.close()
+
+                self.assertEqual(
+                    set(body),
+                    {"myMatchStats", "opponentMatchStats", "matchData"},
+                )
+                self.assertEqual(body["matchData"], "QUJD")
+            finally:
+                identity.stop()
+
+
 class TournamentRouteTests(unittest.TestCase):
     """The cups.
 

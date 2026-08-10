@@ -132,3 +132,20 @@ a coincidence and the cause is something else entirely.
 
 `GetCardDuplicate` cannot be traced while the module is unmapped -- its code
 lives in that range. Any duplicate-flag work needs a live FUT session first.
+
+### A sibling build saw the same failure mode
+
+The PC revival's `settle_match_end` carries this, about its own
+`/match/end` response:
+
+> The BETA 2.17 live forfeit proved the match itself is healthy but the client
+> **disconnects immediately after parsing our oversized destroy response**.
+
+Different route, same shape of failure: a response the client parses
+successfully and then drops the connection over, because of its size. That is
+the mechanism this file's 244 KB club response was suspected of, and it is
+independent evidence that the mechanism is real on this title -- not that it
+is what happened here.
+
+Their remedy was to emit only the three members the parser recovers and keep
+everything else server-side. `/match/end` here now does the same.

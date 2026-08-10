@@ -2518,6 +2518,47 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # The end of a match. `FutDestroyMatchServerResponse` carries
+                # exactly three members -- myMatchStats, opponentMatchStats and
+                # matchData -- all three of which are in CardsDLL's own name
+                # table. This answered `{}`, which is a document the parser can
+                # read and find nothing in.
+                #
+                # Nothing else goes on the wire. A PC revival of the same game
+                # recovered the same three statically and records that its
+                # client disconnected immediately after parsing an oversized
+                # destroy response, so settlement stays server-side.
+                if (
+                    normalized_path == "/ut/game/fifa14/match/end"
+                    and self.command in ("PUT", "POST")
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    payload = json.dumps(
+                        {
+                            "myMatchStats": "",
+                            "opponentMatchStats": "",
+                            "matchData": str(document.get("matchData") or ""),
+                        },
+                        separators=(",", ":"),
+                    ).encode()
+                    owner.journal.event(
+                        "fut_match_end",
+                        peer=self.client_address[0],
+                        bytes=len(payload),
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Club creation. The screen sends the name and abbreviation it
                 # asked the player for; answering `{}` accepted them and threw
                 # them away, so the club had no name on the next load and every
