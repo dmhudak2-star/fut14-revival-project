@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Locate CardsDLL's `GetCardDuplicate` binding, read-only.
+"""Locate a named CardsDLL binding in the mapped module, read-only.
 
 The pack screen does not read a duplicate flag out of any server response. Two
 strings in `.rdata` say why:
@@ -20,7 +20,17 @@ A binding table entry is a name pointer next to a function pointer, so the
 words around each hit are printed with the ones that look like code in this
 module marked. Nothing is written and no hook is installed.
 
+The same question is open for the captain selection: `fcc_login1` asks
+`FUT_IcebreakerManager.SkipIceBreaker` before sending `createClub` instead of
+`iceBreaker`, and that binding sits beside `HasUserDoneIB` and
+`RetrieveUserActions`. `--icebreaker` points this at those three.
+
     python3 tools/fifa14_get_card_duplicate_locate.py 192.168.1.25
+    python3 tools/fifa14_get_card_duplicate_locate.py 192.168.1.25 --icebreaker
+    python3 tools/fifa14_get_card_duplicate_locate.py 192.168.1.25 --name BuildSquad
+
+CardsDLL has to be mapped, which means being inside FUT: it unloads when the
+session tears down.
 """
 
 from __future__ import annotations
@@ -34,10 +44,13 @@ from fifa14_plain_send_hook import Xbdm
 MODULE = "CardsDLLzf.xex.dll"
 DEFAULT_BASE = 0x89000000
 DEFAULT_SIZE = 0x002B0000
-NAMES = (
-    b"GetCardDuplicate\x00",
-    b"HAS_DUPLICATE\x00",
-)
+
+# The duplicate flag is the default because it is what this was written for.
+# The icebreaker names are the other open question: `SkipIceBreaker` is what
+# fcc_login1 asks before sending `createClub` instead of `iceBreaker`, and
+# `HasUserDoneIB` sits beside it in the same binding block.
+DEFAULT_NAMES = ("GetCardDuplicate", "HAS_DUPLICATE")
+ICEBREAKER_NAMES = ("SkipIceBreaker", "HasUserDoneIB", "RetrieveUserActions")
 
 
 def module_extent(client: Xbdm) -> tuple[int, int]:
@@ -99,7 +112,23 @@ def main() -> int:
     parser.add_argument("host")
     parser.add_argument("--chunk-size", type=lambda v: int(v, 0), default=0x8000)
     parser.add_argument("--window", type=int, default=4, help="words shown each side")
+    parser.add_argument(
+        "--name",
+        action="append",
+        dest="names",
+        help="binding or property to locate; repeatable",
+    )
+    parser.add_argument(
+        "--icebreaker",
+        action="store_true",
+        help=f"shorthand for {' '.join(ICEBREAKER_NAMES)}",
+    )
     args = parser.parse_args()
+
+    chosen = list(args.names or [])
+    if args.icebreaker:
+        chosen += [name for name in ICEBREAKER_NAMES if name not in chosen]
+    names = tuple((name + "\0").encode("ascii") for name in (chosen or DEFAULT_NAMES))
 
     client = Xbdm(args.host)
     try:
@@ -111,7 +140,7 @@ def main() -> int:
         client.close()
 
     limit = base + len(image)
-    for needle in NAMES:
+    for needle in names:
         label = needle.rstrip(b"\x00").decode("ascii")
         for address in occurrences(image, base, needle):
             print(f'\n"{label}" at 0x{address:08X}')
