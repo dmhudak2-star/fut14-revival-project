@@ -52,8 +52,40 @@ start_server() {
     print "   démarré, journal $journal"
 }
 
+# magicboot behaves differently depending on what is already running:
+#
+#   from the dashboard   FIFA starts
+#   with FIFA running    the console reboots to the dashboard instead
+#
+# So launching on top of a running title -- which is exactly what you reach for
+# when the FUT frontend has hung -- costs a reboot and lands nowhere. Worse,
+# the reboot drops XBDM mid-command, the launcher reports "XBDM closed the
+# connection", and that reads as a dead console when it is a healthy one twelve
+# seconds from the dashboard.
+running_title() {
+    "$PY" - "$XBOX" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, "tools")
+from fifa14_plain_send_hook import Xbdm
+try:
+    client = Xbdm(sys.argv[1])
+    print(client.multiline("xbeinfo running")[1])
+    client.close()
+except Exception:
+    print("")
+PY
+}
+
 launch_title() {
     step "lancement du titre"
+    case "$(running_title)" in
+        *FIFA*|*fifa*)
+            print -u2 "   FIFA tourne déjà."
+            print -u2 "   Un magicboot par-dessus rebootera vers le dashboard au lieu de"
+            print -u2 "   relancer le jeu. Quitte le titre, attends le dashboard, puis relance."
+            return 1
+            ;;
+    esac
     local out
     out=$("$PY" tools/fifa14_early_local_server.py "$XBOX" \
         --local-ip "$MAC" --timeout 900 --launch-title "$TITLE" \
@@ -76,7 +108,18 @@ reach_menu() {
     "$PY" tools/xbox360_virtual_input.py "$XBOX" restore >/dev/null 2>&1
     sleep 1
     "$PY" tools/xbox360_virtual_input.py "$XBOX" apply >/dev/null 2>&1
-    "$PY" tools/fifa14_screen_navigator.py "$XBOX" goto main_menu --timeout 540 2>&1 | tail -1
+    # `| tail -1` returns tail's status, which is always 0, so a navigator that
+    # timed out still read as success and the run carried on to patch a title
+    # that had never reached the menu. Same fault the READY check had: match on
+    # what the tool actually printed.
+    local out
+    out=$("$PY" tools/fifa14_screen_navigator.py "$XBOX" goto main_menu \
+        --timeout 540 2>&1 | tail -1)
+    print "   $out"
+    case "$out" in
+        Reached*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 apply_patch() {
@@ -101,11 +144,33 @@ release_pad() {
 case "${1:-}" in
     --server) start_server; exit 0 ;;
     --patch)  apply_patch; release_pad; exit 0 ;;
+    # Server plus a patched launch, and then it stops and gives you the pad.
+    # For when the screen navigator cannot see the framebuffer: XBDM screenshot
+    # capture times out on this console, reach_menu fails seconds in, and the
+    # helperFunctions scan then runs its 8 MB reads against a title still on
+    # the splash -- which froze the console hard enough to drop it off the
+    # network. Walk to the menu yourself, then run --patch.
+    --launch)
+        start_server
+        launch_title || fail "les correctifs de lancement n'ont pas pris"
+        release_pad
+        print "\n=========================================="
+        print " Titre lancé et patché. Manette à toi."
+        print " Va au MENU PRINCIPAL, puis: tools/fut.sh --patch"
+        print " N'entre pas dans Ultimate Team avant le Verified."
+        print "=========================================="
+        exit 0
+        ;;
 esac
 
 start_server
 launch_title || fail "les correctifs de lancement n'ont pas pris -- la console n'atteindra pas le serveur"
-reach_menu || fail "le menu principal n'a pas été atteint"
+reach_menu || {
+    release_pad
+    fail "le menu principal n'a pas été atteint -- amène le jeu au menu
+principal à la manette, puis lance: tools/fut.sh --patch
+(le titre est déjà lancé et patché, ne le relance pas)"
+}
 apply_patch || {
     release_pad
     fail "le patch n'a pas pris -- n'entre pas dans FUT, relance tools/fut.sh"

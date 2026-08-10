@@ -19,8 +19,25 @@ into the item shape the FUT endpoints expect.
 from __future__ import annotations
 
 import json
+import os
 import random
 import time
+
+# How many cards go out when the club is asked for with no count of its own.
+#
+# The target is 77 KB, the largest club response this console was measured
+# surviving -- eighteen times across three sessions. A card costs about 860
+# bytes in this build, not the 550 it cost when those measurements were taken,
+# so 90 hits that size where 140 came out at 120 KB.
+#
+# FIFA14_CLUB_LIMIT raises or lowers it; 0 restores the unbounded behaviour,
+# which is what served 244 KB immediately before a FUT teardown.
+try:
+    CLUB_UNFILTERED_LIMIT = int(os.environ.get("FIFA14_CLUB_LIMIT", "90"))
+except ValueError:
+    CLUB_UNFILTERED_LIMIT = 90
+if CLUB_UNFILTERED_LIMIT <= 0:
+    CLUB_UNFILTERED_LIMIT = 10**9
 from pathlib import Path
 
 
@@ -238,17 +255,79 @@ def _player_item(
     }
 
 
+class ClubIdentity:
+    """The club's name, as the player chose it.
+
+    `PUT /ut/game/fifa14/user/club` carries `{"clubName": ..., "clubAbbr": ...}`
+    and used to be answered `{}` and forgotten. The club-creation screen
+    therefore worked -- the name was accepted and shown -- and the next load
+    had no club again, because every other route still reported an empty name.
+    """
+
+    def __init__(self, name: str = "", abbr: str = "FUT") -> None:
+        self.name = name
+        self.abbr = abbr
+
+    def adopt(self, document: dict) -> bool:
+        if not isinstance(document, dict):
+            return False
+        name = str(document.get("clubName") or "").strip()
+        abbr = str(document.get("clubAbbr") or "").strip()
+        if not name and not abbr:
+            return False
+        if name:
+            self.name = name
+        if abbr:
+            self.abbr = abbr
+        return True
+
+    def state(self) -> dict:
+        return {"name": self.name, "abbr": self.abbr}
+
+    def restore(self, saved: dict | None) -> None:
+        if isinstance(saved, dict):
+            self.name = str(saved.get("name") or "")
+            self.abbr = str(saved.get("abbr") or "FUT")
+
+
+CLUB_IDENTITY = ClubIdentity()
+
+
+def first_run() -> bool:
+    """Whether to start with no club at all.
+
+    The club is seeded from every captain's squad in the icebreaker pack list
+    -- all four, 358 cards -- because `fcc_login2` treats an empty squad as
+    fatal. That seed is also why the first-time journey never appears: the
+    captain selection exists to give a new player his first squad, and a
+    player who already has one has nothing to choose.
+
+    The two cannot both be true, so this makes the seed optional rather than
+    guessing which side wins. With FIFA14_FIRST_RUN=1 the club starts empty
+    and the answer is whatever the console then does: refuse the login the way
+    the documented constraint says, or walk the icebreaker.
+
+    Off by default. An empty club is known to break the login for an existing
+    player, which is the state anyone not running this experiment is in.
+    """
+    return os.environ.get("FIFA14_FIRST_RUN", "").strip().lower() in {"1", "true", "yes"}
+
+
 class ClubInventory:
     """Every card the club owns, plus the squad that starts."""
 
-    def __init__(self, pack_list: Path = PACK_LIST) -> None:
+    def __init__(self, pack_list: Path = PACK_LIST, seeded: bool | None = None) -> None:
         document = json.loads(pack_list.read_text())
         packs = document["packList"]
         catalogue = _cards_by_asset()
+        if seeded is None:
+            seeded = not first_run()
 
         self.items: list[dict] = []
         self.squad: list[dict] = []
         next_id = FIRST_PLAYER_ITEM_ID
+        if not seeded:
+            packs = []
 
         for pack_index, pack in enumerate(packs):
             attributes = [pack[f"Attribute{n}"] for n in range(1, 7)]
@@ -275,7 +354,13 @@ class ClubInventory:
                     self.squad.append(item)
                 next_id += 1
 
-        self.squad = _arrange(self.squad)
+        self.squad = _arrange(self.squad) if self.squad else []
+        if not seeded:
+            # Nothing else either: kits, badges, stadiums and consumables are
+            # club contents too, and a club that has not been created does not
+            # own them. Serving them would leave the same contradiction one
+            # tab further along.
+            return
         self.items.extend(_presentation_items())
         # Consumables, kits, badges, stadiums, balls and staff. Without them
         # the Consommables, Elements club and Personnel tabs are empty and
@@ -290,8 +375,31 @@ class ClubInventory:
         Its parameter names are not the market's: `level`, `nation`, `league`,
         `team`, `position`, `count`. Ignoring them returned the whole club for
         every search, so looking for a Cameroonian centre back listed everyone.
+
+        Ordered by rating, best first, the way the market search already is.
+        Unsorted, the club and the squad's player picker listed cards in the
+        order the icebreaker packs happened to add them, which reads as random.
+        Sorting here rather than after the filter matters because the screen
+        pages: slicing an unsorted list puts arbitrary cards on page one.
+
+        `sorted` and not `.sort` -- with no query `items` is `self.items`
+        itself, and sorting in place would reorder the club everywhere else.
+
+        Players come first. Consumables carry a `rating` of their own -- a
+        playStyle sits at 99 -- so ranking the club on rating alone buried the
+        best player behind five of them. Within each group the order is still
+        rating first, best down.
         """
-        items = self.items
+
+        def order(item: dict) -> tuple:
+            return (
+                0 if item.get("itemType") == "player" else 1,
+                -item.get("rating", 0),
+                item.get("name", ""),
+            )
+
+        items = sorted(self.items, key=order)
+
         if query:
 
             def number(key: str) -> int | None:
@@ -350,6 +458,26 @@ class ClubInventory:
             items = items[start:] if start else items
             if count:
                 items = items[:count]
+        if not query:
+            # Asked with no parameters at all, this used to return the whole
+            # club in one document: 244 KB of JSON at 453 cards, growing with
+            # every pack.
+            #
+            # Only that case. A filtered request without a count -- the club
+            # screen asking for every player, say -- is left whole, because
+            # bounding it would change what a search means, and the response
+            # measured before the teardown was the bare one.
+            #
+            # The bound is the largest response the console was measured
+            # surviving -- 77 KB, eighteen times across three sessions -- not a
+            # guess. The one 244 KB response ever served was followed by the
+            # FUT session tearing itself down and CardsDLL being unloaded.
+            #
+            # That is a correlation on a single observation, so this bounds an
+            # unbounded response; it is not established as the fix for that
+            # teardown. And it truncates: a club larger than the limit is not
+            # shown whole to a screen that asked for all of it.
+            items = items[:CLUB_UNFILTERED_LIMIT]
         return json.dumps({"itemData": items}, separators=(",", ":")).encode()
 
     def squad_list_response(self, name: str) -> bytes:
@@ -376,12 +504,26 @@ class ClubInventory:
         if not hasattr(self, "_squad_store"):
             self._squad_store: dict[int, dict] = {
                 1: {
-                    "name": "Fondateur FUT",
+                    # Named only once a club exists. In first-run mode the
+                    # name is empty here too, or squad/list keeps asserting a
+                    # club the rest of the responses say has not been created.
+                    "name": "" if first_run() else "Fondateur FUT",
                     "formation": FORMATION,
                     "players": [item["id"] for item in self.squad],
                 }
             }
         return self._squad_store
+
+    def rename_active_squad(self, name: str) -> None:
+        """Give the side the club's name once the club has one.
+
+        The starting squad is named after the club, so a club created after the
+        squad existed left the squad list still announcing nothing.
+        """
+        squads = self._squads()
+        active = self.active_squad_id()
+        if active in squads and name:
+            squads[active]["name"] = name
 
     def squad_ids(self) -> list[int]:
         return sorted(self._squads())
@@ -923,7 +1065,10 @@ class Wallet:
                 "personaId": 0,
                 "clubName": club_name,
                 "clubAbbr": club_abbr,
-                "clubNameChangeAllowed": False,
+                # A player who has not named his club must be allowed to. This
+                # was flatly False, which tells a brand-new account the one
+                # thing it most needs to do is forbidden.
+                "clubNameChangeAllowed": not club_name,
                 "established": 2013,
                 "divisionOffline": 10,
                 "divisionOnline": 10,
@@ -1111,17 +1256,17 @@ class PackShop:
             )
             item["untradeable"] = False
             drawn.append(item)
-        self._mark_duplicates(drawn)
+        duplicate_pairs = self._mark_duplicates(drawn)
         self.pending.extend(drawn)
         return json.dumps(
             {
                 "numberItems": len(drawn),
                 "purchasedPackId": int(pack_id),
                 "itemList": drawn,
-                # Left empty: the per-card duplicateItemId above is what
-                # names the pair, and filling this with the new ids is what
-                # froze the title.
-                "duplicateItemIdList": [],
+                # Pairs, never bare new ids -- see _mark_duplicates. This was
+                # empty, and with it empty the pack screen showed a repeat as
+                # an ordinary card however clearly the card itself was marked.
+                "duplicateItemIdList": duplicate_pairs,
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
                 "coins": self.wallet.coins,
@@ -1129,29 +1274,53 @@ class PackShop:
             separators=(",", ":"),
         ).encode()
 
-    def _mark_duplicates(self, drawn: list[dict]) -> None:
-        """Tell each new card which owned card it duplicates.
+    @staticmethod
+    def _signature(item: dict):
+        """What makes two cards the same card.
 
-        CardsDLL carries `duplicateItemId` -- singular -- next to
-        `duplicateItemIdList`, and that is the shape that makes sense: a new
-        card names the one it repeats, so the compare screen knows what to put
-        beside it.
+        `resourceId`, exactly -- not `assetId`. A player's special versions all
+        share his asset id: a Team of the Season Ruffier and a Rare Gold
+        Ruffier are both asset 167628 and are not the same card. Keying on the
+        asset flags the special as a repeat of the ordinary one.
 
-        Filling the plural list with the *new* ids is what froze the title: the
-        screen was being told to compare each card against itself.
+        `assetId` with the rare flag is the fallback for a card that carries no
+        resource id, which is better than nothing but cannot tell two specials
+        of the same player apart.
+        """
+        resource = item.get("resourceId")
+        if resource:
+            return ("resource", resource)
+        return ("asset", item.get("assetId"), item.get("rareflag"))
+
+    def _mark_duplicates(self, drawn: list[dict]) -> list[dict]:
+        """Pair each new card with the owned card it repeats.
+
+        Two shapes go out, because the singular and the plural are read in
+        different places. `duplicateItemId` on the card itself names the one it
+        repeats; `duplicateItemIdList` carries the same pairing as records:
+
+            {"itemId": <new>, "duplicateItemId": <owned>}
+
+        The list is what the FIFA 14 pack screen actually reads -- reported
+        independently from a build where marking only the card did not show a
+        duplicate at all. What must never go back in that list is a bare list
+        of the *new* ids, which is what froze the title: it told the screen to
+        compare each card against itself.
         """
         owned: dict[tuple, int] = {}
         if self.inventory is not None:
             for item in self.inventory.items:
-                key = (item.get("assetId"), item.get("rareflag"))
-                owned.setdefault(key, item["id"])
+                owned.setdefault(self._signature(item), item["id"])
+        pairs: list[dict] = []
         for item in drawn:
-            key = (item.get("assetId"), item.get("rareflag"))
+            key = self._signature(item)
             existing = owned.get(key)
             if existing and existing != item["id"]:
                 item["duplicateItemId"] = existing
+                pairs.append({"itemId": item["id"], "duplicateItemId": existing})
             else:
                 owned.setdefault(key, item["id"])
+        return pairs
 
     def _duplicates(self, drawn: list[dict]) -> list[int]:
         """The ids among these the club already owns.
@@ -1238,6 +1407,9 @@ class CardActions:
         self.transfer: list[dict] = []
         # Cards actually listed, keyed by trade id.
         self.listings: dict[int, dict] = {}
+        # Item ids the client tried to move that this server has never held.
+        # Every one of these is a card the player saw and lost.
+        self.unmatched: list[int] = []
         self._next_trade_id = 2_000_000_000
 
     def _take_pending(self, item_id: int) -> dict | None:
@@ -1287,6 +1459,26 @@ class CardActions:
                 else:
                     item["itemState"] = "free"
                     self._keep(item)
+            if item is None:
+                # An id neither pending nor already held. This used to be
+                # acknowledged as a success anyway, which is how a card could
+                # be drawn, shown, sent to the club, confirmed -- and then
+                # exist nowhere. A TOTS Ruffier went that way.
+                #
+                # Reporting the failure is the honest answer and the only one
+                # that can be noticed. The card is still gone, but the client
+                # is no longer told otherwise.
+                self.unmatched.append(item_id)
+                results.append(
+                    {
+                        "id": item_id,
+                        "success": False,
+                        "reason": "item not found",
+                        "errorCode": 461,
+                        "pile": pile,
+                    }
+                )
+                continue
             results.append(
                 {
                     "id": item_id,
@@ -1581,103 +1773,452 @@ SEASON_DIVISIONS = [
     (1, "Division 1", 10, 5, 5000),
 ]
 
+# The cups. Every member name below is one CardsDLL carries: they were read
+# out of the module's own JSON name table, which is sorted and contiguous
+# between `trophiesOffline` and `kitsHome` in `.rdata`. `treeType`, `numTeams`,
+# `numRounds`, `matchlength`, `rounds`, `rewardMultiplier`, `awardSet`,
+# `awardType`, `halid`, `elgReq`, `eligibilityOperation`, `aigroup`,
+# `unlockreq`, `triesMax`, `triesPeriod`, `triesRemaining`, `nextReset`,
+# `starttime`, `timeUntilStart`, `timeUntilEnd`, `visStart`, `visEnd`,
+# `trophyResourceId` and `trophyUserCount` are all present, as is `knockout`
+# for treeType.
+#
+# `rounds` is an ARRAY of round records. The previous attempt here served it as
+# a count -- `"rounds": 5` -- alongside invented `name`/`level`/`entryFee`/
+# `active`/`won` members, and opening Competition Joueur Solo froze the title
+# outright. That freeze is why this list was emptied and left empty. A number
+# where the parser walks an array is the whole explanation, and none of the
+# invented members appear in the name table.
+
+TOURNAMENT_ROUNDS = {
+    # (round id, difficulty, reward multiplier, coins)
+    1: [(1, 1, 1, 150), (2, 1, 1, 200), (3, 2, 1, 300), (4, 2, 1, 500)],
+    2: [(1, 2, 1, 250), (2, 2, 1, 350), (3, 3, 1, 500), (4, 3, 2, 900)],
+    3: [(1, 3, 1, 400), (2, 3, 1, 600), (3, 4, 2, 900), (4, 4, 2, 1500)],
+}
+
+# The trophy ids are the game's own. `cards0.big` carries 70 of them under
+# data/ui/external/ion_fut/artassets/fcctournamenttrophies/, named
+# trophy_<id>_<tier> for ids 1100..1169, each in bronze, silver, gold and dark,
+# beside a notfound.big. Serving `trophyResourceId` 0 is what drew that
+# notfound placeholder: the cups listed correctly and had no art.
+#
+# The art is local. The client still fetches
+# /fut/items/images/trophies/xbl2/item.big -- the string
+# `items/images/trophies/xbl2/` is built into CardsDLL -- but that pack is not
+# where these come from.
+
+TROPHY_FIRST = 1100
+TROPHY_LAST = 1169
+TROPHY_TIER = "gold"
+
+
+def empty_big_archive() -> bytes:
+    """A structurally valid, empty EA BIGF container.
+
+    Everything under /fut/items/images/ that ends in `.big` is a BIG archive,
+    and the server answered the whole /fut/items/ prefix with
+    `{"itemData":[]}` -- sixteen bytes of JSON where a binary container was
+    asked for. The console asks for two of these on the cup screen: the pack
+    itself, and a degenerate `/trophies/xbl2/.big` with no basename when the
+    trophy definition carries none.
+
+    Magic, declared size, zero directory entries, header size -- big-endian,
+    the same contract this project's own BIG reader uses. Empty on purpose:
+    the EA trophy CDN is gone and no art is being invented here. It makes the
+    response parseable rather than wrong.
+    """
+    return b"BIGF" + (16).to_bytes(4, "big") + (0).to_bytes(4, "big") + (
+        16
+    ).to_bytes(4, "big")
+
+
+def trophy_item_response(resource_id: int, tier: str = TROPHY_TIER) -> bytes:
+    """The definition behind a cup's `trophyResourceId`.
+
+    The journal settles what this endpoint is for. With `trophyResourceId` 0
+    the console asked for `/fut/items/xbl2/0.json` once per cup; with 1100,
+    1101 and 1102 it asked for those three. So the field drives the request and
+    this document is the trophy's definition.
+
+    Answered with the blanket `{"itemData":[]}` the whole prefix gets, the
+    definition is empty -- and on entering a cup the console then asked for
+
+        /fut/items/images/trophies/xbl2/.big
+
+    with nothing between the prefix and the extension. It builds that path from
+    a member of this document, and an empty list left it empty.
+
+    Which member is not settled. `assetName`, `name` and `image` are the three
+    candidates the module's name table carries; all three go out holding the
+    same basename, and the next path the console asks for names the winner.
+    An unrecognised sibling is skipped, so offering three costs nothing.
+    """
+    resource_id = int(resource_id)
+    basename = f"trophy_{resource_id}_{tier}"
+    return json.dumps(
+        {
+            "itemData": [
+                {
+                    "id": resource_id,
+                    "assetId": resource_id,
+                    "resourceId": resource_id,
+                    "itemType": "trophy",
+                    "assetName": basename,
+                    "name": basename,
+                    "image": basename,
+                }
+            ]
+        },
+        separators=(",", ":"),
+    ).encode()
+
 TOURNAMENTS = [
-    (1, "Coupe des Fondateurs", "bronze", 1000, 5),
-    (2, "Coupe Nationale", "silver", 2500, 5),
-    (3, "Coupe des Champions", "gold", 5000, 5),
-    (4, "Coupe du Monde des Clubs", "gold", 7500, 6),
+    # (id, teams, match length in minutes, final award, trophy resource)
+    (1, 16, 6, 500, 1100),
+    (2, 16, 6, 1200, 1101),
+    (3, 16, 8, 2500, 1102),
+]
+
+# The AI opponents a cup is drawn from. Real EA club ids -- 1 Arsenal,
+# 2 Aston Villa, 5 Chelsea, 7 Everton, 9 Liverpool, 10 Manchester City,
+# 11 Manchester United, 13 Newcastle, 18 Tottenham, 21 West Ham -- and the
+# draw is one short of numTeams because the club itself takes the last slot.
+TOURNAMENT_TEAM_POOL = [
+    241, 243, 21, 69, 10, 11, 9, 22, 5, 73, 1, 13, 18, 2, 7, 8,
 ]
 
 
+def _season_matches(division: int, count: int) -> list[dict]:
+    """A division's fixture list.
+
+    The same shape as a cup's `rounds`: the schedule is an array of records,
+    not a count. `roundId` is zero-based here -- the wire `round` in
+    season/user is one-based and the client decrements it.
+    """
+    base = max(1, min(5, 1 + (10 - int(division)) // 2))
+    return [
+        {
+            "teamId": TOURNAMENT_TEAM_POOL[index % len(TOURNAMENT_TEAM_POOL)],
+            "difficulty": min(5, base + (1 if index >= 7 else 0)),
+            "rewardMult": 1,
+            "roundId": index,
+            "coins": 250 + (10 - int(division)) * 25 + index * 10,
+        }
+        for index in range(max(0, int(count)))
+    ]
+
+
+def _season_prize(level: str, threshold: int, coins: int = 0) -> dict:
+    awards = (
+        []
+        if int(coins) <= 0
+        else [
+            {
+                "type": "coin",
+                "value": int(coins),
+                "assetId": 0,
+                "count": 1,
+                "halId": 0,
+                "teamId": 0,
+            }
+        ]
+    )
+    return {
+        "prizeLevel": level,
+        "thresholdPoint": int(threshold),
+        "awardMappings": [{"awards": awards}],
+    }
+
+
+def _season_record(index: int, division: int, matches: int, promote: int, coins: int) -> dict:
+    title = 12 if int(division) == 10 else min(30, int(promote) + 3)
+    holding = 300 if int(division) == 10 else max(300, int(coins) // 5)
+    promotion = 1500 if int(division) == 10 else max(500, int(coins) - 400)
+    return {
+        "id": int(index),
+        "type": "OFFLINE",
+        "divisionId": int(division),
+        "numMatches": int(matches),
+        "matchLengthMin": 6,
+        "matches": _season_matches(division, matches),
+        "prizeSet": [
+            _season_prize("RELEGATION", 0, 0),
+            _season_prize("MAINTENANCE", 0, holding),
+            _season_prize("PROMOTION", int(promote), promotion),
+            _season_prize("CHAMPIONSHIP", title, int(coins)),
+        ],
+        "elgOperation": "AND",
+        "elgReq": [],
+        # -1, not 0. Zero is a real resource id as far as the client is
+        # concerned: with it the cup screen went and fetched
+        # /fut/items/xbl2/0.json once per entry. -1 is the "no trophy" value.
+        "trophyResourceId": -1,
+        "trophyUseCount": 0,
+        "visStartDays": 3650,
+        "visEndDays": 3650,
+        "startDateTime": 0,
+        "endDateTime": FOREVER,
+        "untilStartSeconds": 0,
+        "untilEndSeconds": 315360000,
+    }
+
+
+def season_wire_mode() -> str:
+    """`empty` unless FIFA14_SEASON_MODE asks for the native shape.
+
+    Three shapes have been served here and all three failed on the console:
+
+    * invented members (`division`, `matchesPlayed`, `coinsPerWin`, ...), none
+      of which is in CardsDLL's name table -- the screen read its constructor
+      defaults;
+    * those names corrected but the thresholds and rewards flat at the top
+      level, reusing the *cup's* time names -- "Les saisons ne sont pas
+      disponibles pour le moment";
+    * the full native shape below, with `matches` and `prizeSet` as arrays --
+      the FUT loader froze on entering the mode.
+
+    Empty is the only answer known not to break anything, and it is what the
+    PC revival carried here for the same reason. The native shape stays
+    reachable for a deliberate test rather than being the default that greets
+    anyone who opens the mode.
+    """
+    raw = os.environ.get("FIFA14_SEASON_MODE", "empty").strip().lower()
+    return "native" if raw in {"native", "full", "on"} else "empty"
+
+
 def seasons_response() -> bytes:
+    """The divisions.
+
+    A season carries its fixture list in `matches` and its rewards in
+    `prizeSet`, both arrays of records -- the same fault as a cup's `rounds`
+    served as a count, one level deeper. Every member of the native record was
+    checked against the module's name table, and the screen still froze, so
+    something below is still wrong and the freeze is not worth serving by
+    default. See `season_wire_mode`.
+    """
+    if season_wire_mode() == "empty":
+        return json.dumps({"seasons": []}, separators=(",", ":")).encode()
     return json.dumps(
         {
             "seasons": [
-                {
-                    "seasonId": division,
-                    "division": division,
-                    "name": name,
-                    "matchesPlayed": 0,
-                    "matchesToPlay": matches,
-                    "pointsToPromote": promote,
-                    "points": 0,
-                    "won": 0,
-                    "draw": 0,
-                    "lost": 0,
-                    "coinsPerWin": coins,
-                    "trophiesWon": 0,
-                }
-                for division, name, matches, promote, coins in SEASON_DIVISIONS
+                _season_record(index, division, matches, promote, coins)
+                for index, (division, _name, matches, promote, coins) in enumerate(
+                    SEASON_DIVISIONS, start=1
+                )
             ]
         },
         separators=(",", ":"),
     ).encode()
 
 
-def season_user_response(division: int = 10) -> bytes:
-    """Where the club currently stands. Starts in the bottom division."""
-    entry = next(
-        (row for row in SEASON_DIVISIONS if row[0] == division), SEASON_DIVISIONS[0]
+def season_user_response(division: int = 10, played: int = 0) -> bytes:
+    """Where the club currently stands, and nothing more.
+
+    The parser handles `seasonId`, `divisionId` and `round`. `seasonId` is
+    decremented by the client, so 1 selects the first record in the list above.
+    `round` is decremented too: wire 1 is the first scheduled match, and wire 0
+    would become the client's 0xFFFF invalid sentinel.
+
+    Everything else that used to go out here -- points, won, draw, the record,
+    the end result -- was guessed, and guessed members are what this document
+    is now deliberately without.
+    """
+    if season_wire_mode() == "empty":
+        # What this route carried before any of the guessed shapes: an empty
+        # object leaves the native response at its constructor defaults rather
+        # than naming a season the list no longer offers.
+        return b"{}"
+    index = next(
+        (
+            position
+            for position, row in enumerate(SEASON_DIVISIONS, start=1)
+            if row[0] == division
+        ),
+        1,
     )
-    _, name, matches, promote, coins = entry
     return json.dumps(
         {
-            "seasonId": division,
-            "division": division,
-            "name": name,
-            "matchesPlayed": 0,
-            "matchesToPlay": matches,
-            "pointsToPromote": promote,
-            "points": 0,
-            "won": 0,
-            "draw": 0,
-            "lost": 0,
-            "coinsPerWin": coins,
-            "trophiesWon": 0,
-            "relegated": False,
-            "promoted": False,
+            "seasonId": index,
+            "divisionId": int(division),
+            "round": max(0, int(played)) + 1,
         },
         separators=(",", ":"),
     ).encode()
+
+
+FOREVER = 2147483647
+
+
+def tournament_entry(identifier: int) -> dict:
+    """One cup, in the shape the native parser reads."""
+    teams, match_length, award, trophy = next(
+        (row[1:] for row in TOURNAMENTS if row[0] == identifier),
+        TOURNAMENTS[0][1:],
+    )
+    rounds = TOURNAMENT_ROUNDS[identifier]
+    return {
+        "id": identifier,
+        "type": "offline",
+        "treeType": "knockout",
+        "aigroup": 0,
+        "eligibilityOperation": "AND",
+        "elgReq": [],
+        "numTeams": teams,
+        "numRounds": len(rounds),
+        "matchlength": match_length,
+        "rounds": [
+            {
+                "id": round_id,
+                "difficulty": difficulty,
+                "rewardMultiplier": multiplier,
+                "coins": coins,
+            }
+            for round_id, difficulty, multiplier, coins in rounds
+        ],
+        "awardSet": {"awards": [{"awardType": 1, "value": award, "halid": 0}]},
+        "lock": "UNLOCKED",
+        "unlockreq": 0,
+        # No entry limit: triesMax 0 is what an always-playable offline cup
+        # carries, and a nonzero triesRemaining against triesMax 0 is what
+        # makes the screen show "0 essais restants" and refuse entry.
+        "triesMax": 0,
+        "triesPeriod": 0,
+        "triesRemaining": 0,
+        "nextReset": 0,
+        "starttime": 0,
+        "endtime": FOREVER,
+        "timeUntilStart": 0,
+        "timeUntilEnd": 315360000,
+        "visStart": 3650,
+        "visEnd": 3650,
+        "trophyResourceId": trophy,
+        "trophyUserCount": 0,
+    }
 
 
 def tournaments_response() -> bytes:
-    """Empty, on purpose.
-
-    A generated list of cups -- id, name, level, prize, rounds, currentRound,
-    entryFee, active, won -- froze the title outright when Compétition Joueur
-    Solo was opened. The reference serves an empty tournament array and does
-    not freeze, so the shape is wrong somewhere and a freeze is not worth
-    guessing through. The fields have to come from the binary first.
-    """
-    return json.dumps({"tournament": []}, separators=(",", ":")).encode()
-
-
-def _tournaments_unused() -> bytes:
     return json.dumps(
-        {
-            "tournament": [
-                {
-                    "tournamentId": identifier,
-                    "name": name,
-                    "level": level,
-                    "prize": prize,
-                    "rounds": rounds,
-                    "currentRound": 0,
-                    "entryFee": 0,
-                    "active": True,
-                    "won": 0,
-                }
-                for identifier, name, level, prize, rounds in TOURNAMENTS
-            ]
-        },
+        {"tournament": [tournament_entry(row[0]) for row in TOURNAMENTS]},
         separators=(",", ":"),
     ).encode()
 
 
+def tournament_teams_response(count: int = 15, group: int = 0) -> bytes:
+    """The draw. `teamId` is the only member this document carries.
+
+    The query is `/teams?groupId=%d&count=%d` in the module's own template, so
+    the group is part of the request even though every cup here declares
+    `aigroup` 0. Rotating the pool by it keeps two groups from drawing the same
+    side in the same order, without inventing a second pool.
+    """
+    count = max(0, min(int(count), len(TOURNAMENT_TEAM_POOL)))
+    size = len(TOURNAMENT_TEAM_POOL)
+    offset = (int(group) % size) if size else 0
+    rotated = TOURNAMENT_TEAM_POOL[offset:] + TOURNAMENT_TEAM_POOL[:offset]
+    return json.dumps({"teamId": rotated[:count]}, separators=(",", ":")).encode()
+
+
+class TournamentProgress:
+    """Where the club stands in each cup, kept across launches.
+
+    The client serialises its own progress and `.rdata` carries the format
+    string it builds the body from:
+
+        {"round":%d,"dataVersion":%d,"tournamentData":"
+
+    It sits among the cup constants -- `TOO_MANY_TOURNAMENTS`, `JOINED`,
+    `LOCKED_TROPHIES` -- which is what identifies it as the tournament one.
+    There is a near-identical string spelling the blob `data` instead, but it
+    is followed immediately by `%d/division/%d` and belongs to seasons; reading
+    that one as the cup's format was a misidentification. The shared tail is
+    `","progressDataVersion":%d,"progressData":"`.
+
+    `data` is still accepted on the way in, and the reply also spells the
+    progress blob `progressdata`, which is how the name table carries it beside
+    the camel-cased `progressDataVersion`. An unrecognised sibling at the top
+    level is skipped, as everywhere else in this protocol.
+    """
+
+    def __init__(self) -> None:
+        self.entries: dict[int, dict] = {}
+
+    def apply(self, identifier: int, document: dict) -> dict:
+        identifier = int(identifier)
+        if not isinstance(document, dict):
+            document = {}
+        current = self.entries.get(identifier, {})
+
+        def pick(*names, default=0):
+            for name in names:
+                if name in document:
+                    return document[name]
+            return current.get(names[0], default)
+
+        entry = {
+            "round": int(pick("round", default=1) or 1),
+            "dataVersion": int(pick("dataVersion", default=1) or 1),
+            "tournamentData": pick("tournamentData", "data", default="") or "",
+            "progressDataVersion": int(
+                pick("progressDataVersion", default=1) or 1
+            ),
+            "progressData": pick("progressData", "progressdata", default="") or "",
+        }
+        self.entries[identifier] = entry
+        return entry
+
+    def response(self, identifier: int) -> bytes:
+        """A cup with no saved progress answers with its id and nothing else.
+
+        That is what the client sends up first, and inventing a round or an
+        empty data blob for a cup that was never entered would put the screen
+        into a tournament that does not exist.
+        """
+        identifier = int(identifier)
+        entry = self.entries.get(identifier)
+        if entry is None:
+            return json.dumps(
+                {"tournamentId": identifier}, separators=(",", ":")
+            ).encode()
+        return json.dumps(
+            {
+                "tournamentId": identifier,
+                "round": entry["round"],
+                "dataVersion": entry["dataVersion"],
+                "tournamentData": entry["tournamentData"],
+                "progressDataVersion": entry["progressDataVersion"],
+                "progressData": entry["progressData"],
+                "progressdata": entry["progressData"],
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def delete(self, identifier: int) -> bool:
+        return self.entries.pop(int(identifier), None) is not None
+
+    def active_ids(self) -> list[int]:
+        return sorted(self.entries)
+
+    def state(self) -> dict:
+        return {str(key): value for key, value in self.entries.items()}
+
+    def restore(self, saved: dict | None) -> None:
+        for key, value in (saved or {}).items():
+            if isinstance(value, dict):
+                self.apply(int(key), value)
+
+
+TOURNAMENT_PROGRESS = TournamentProgress()
+
+
 def active_tournaments_response() -> bytes:
+    """Only the cups actually entered.
+
+    This used to name every cup in the catalogue, which told the screen the
+    club was mid-run in all of them while no progress existed for any.
+    """
     return json.dumps(
-        {"tournamentId": [row[0] for row in TOURNAMENTS]}, separators=(",", ":")
+        {"tournamentId": TOURNAMENT_PROGRESS.active_ids()}, separators=(",", ":")
     ).encode()
 
 
@@ -1987,6 +2528,8 @@ class ClubSave:
         actions.listings = {
             int(key): value for key, value in saved.get("listings", {}).items()
         }
+        TOURNAMENT_PROGRESS.restore(saved.get("tournaments"))
+        CLUB_IDENTITY.restore(saved.get("club"))
         return True
 
     def save(self, inventory: "ClubInventory", wallet: "Wallet",
@@ -2011,6 +2554,8 @@ class ClubSave:
             },
             "transfer": actions.transfer,
             "listings": {str(key): value for key, value in actions.listings.items()},
+            "tournaments": TOURNAMENT_PROGRESS.state(),
+            "club": CLUB_IDENTITY.state(),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(document, separators=(",", ":")))

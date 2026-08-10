@@ -652,6 +652,144 @@ class ProtocolTests(unittest.TestCase):
                 identity.stop()
 
 
+class TournamentRouteTests(unittest.TestCase):
+    """The cups.
+
+    Every member asserted here is one CardsDLL's own JSON name table carries.
+    The catalogue was served empty because an earlier guessed shape froze the
+    title on Competition Joueur Solo, so the two things that matter are that
+    `rounds` is an array of records and that no invented member goes out.
+    """
+
+    def setUp(self) -> None:
+        SERVER.TOURNAMENT_PROGRESS.entries.clear()
+
+    tearDown = setUp
+
+    def _identity(self, temp: str):
+        journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+        identity = SERVER.IdentityHttpService("127.0.0.1", 0, "127.0.0.1", journal)
+        identity.start()
+        return identity
+
+    def _get(self, port: int, path: str, method: str = "GET", body: bytes | None = None):
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        client.request(method, path, body)
+        response = client.getresponse()
+        payload = __import__("json").loads(response.read())
+        status = response.status
+        client.close()
+        return status, payload
+
+    def test_catalogue_carries_the_native_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                for path in (
+                    "/ut/game/fifa14/tournament",
+                    "/ut/game/fifa14/tournament/list",
+                ):
+                    status, body = self._get(port, path)
+                    self.assertEqual(status, 200, path)
+                    cups = body["tournament"]
+                    self.assertTrue(cups, path)
+                    for cup in cups:
+                        # The freeze: a count where the parser walks records.
+                        self.assertIsInstance(cup["rounds"], list)
+                        self.assertEqual(len(cup["rounds"]), cup["numRounds"])
+                        for entry in cup["rounds"]:
+                            self.assertEqual(
+                                set(entry),
+                                {"id", "difficulty", "rewardMultiplier", "coins"},
+                            )
+                        self.assertEqual(cup["treeType"], "knockout")
+                        self.assertEqual(cup["type"], "offline")
+                        self.assertEqual(cup["lock"], "UNLOCKED")
+                        self.assertEqual(
+                            set(cup["awardSet"]["awards"][0]),
+                            {"awardType", "value", "halid"},
+                        )
+                        # Members the previous attempt invented; none of these
+                        # appear in the module's name table.
+                        for absent in ("name", "level", "entryFee", "active", "won"):
+                            self.assertNotIn(absent, cup)
+            finally:
+                identity.stop()
+
+    def test_teams_draw_is_one_short_of_the_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                status, body = self._get(
+                    port, "/ut/game/fifa14/tournament/teams?count=15"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(set(body), {"teamId"})
+                self.assertEqual(len(body["teamId"]), 15)
+                self.assertTrue(all(isinstance(x, int) for x in body["teamId"]))
+            finally:
+                identity.stop()
+
+    def test_a_cup_never_entered_reports_only_its_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": []}))
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/1")
+                self.assertEqual((status, body), (200, {"tournamentId": 1}))
+            finally:
+                identity.stop()
+
+    def test_progress_is_kept_and_read_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                # The body the client builds itself, from the format string
+                # that sits among the cup constants in .rdata.
+                sent = __import__("json").dumps(
+                    {
+                        "round": 3,
+                        "dataVersion": 1,
+                        "tournamentData": "QUJD",
+                        "progressDataVersion": 1,
+                        "progressData": "REVG",
+                    }
+                ).encode()
+                status, _ = self._get(
+                    port, "/ut/game/fifa14/tournament/user/2", "PUT", sent
+                )
+                self.assertEqual(status, 200)
+
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/2")
+                self.assertEqual(status, 200)
+                self.assertEqual(body["tournamentId"], 2)
+                self.assertEqual(body["round"], 3)
+                self.assertEqual(body["tournamentData"], "QUJD")
+                self.assertEqual(body["progressData"], "REVG")
+                # The name table also carries the blob in lower case.
+                self.assertEqual(body["progressdata"], "REVG")
+                # `data` is the season spelling and does not go out here.
+                self.assertNotIn("data", body)
+
+                # Only the cup actually entered is named.
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": [2]}))
+
+                status, _ = self._get(
+                    port, "/ut/delete/game/fifa14/tournament/user/2", "POST", b"{}"
+                )
+                self.assertEqual(status, 200)
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": []}))
+            finally:
+                identity.stop()
+
+
 class TcpServerTests(unittest.TestCase):
     def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

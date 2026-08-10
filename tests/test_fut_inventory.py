@@ -424,35 +424,362 @@ def test_the_club_search_can_isolate_a_type() -> None:
     assert {item["itemType"] for item in kits} == {"kit"}
 
 
-def test_seasons_are_not_an_empty_list() -> None:
-    # These screens treat an empty list as an error, not as "nothing
-    # available" -- the same way fcc_login2 treats an empty squad.
+def test_seasons_are_empty_by_default() -> None:
+    # Three shapes have been served here and all three failed on the console,
+    # the last by freezing the FUT loader outright. Empty is the only answer
+    # known not to break anything, so it is what an unconfigured server sends.
     import fut_inventory as inventory
+
+    assert json.loads(inventory.seasons_response()) == {"seasons": []}
+    assert json.loads(inventory.season_user_response()) == {}
+
+
+def _native_seasons(monkeypatch):
+    import fut_inventory as inventory
+
+    monkeypatch.setenv("FIFA14_SEASON_MODE", "native")
+    return inventory
+
+
+def test_the_native_season_record_carries_its_schedule(monkeypatch) -> None:
+    inventory = _native_seasons(monkeypatch)
 
     seasons = json.loads(inventory.seasons_response())["seasons"]
     assert len(seasons) == 10
-    assert {season["division"] for season in seasons} == set(range(1, 11))
+    assert {season["divisionId"] for season in seasons} == set(range(1, 11))
     for season in seasons:
-        assert season["matchesToPlay"] > 0
-        assert season["coinsPerWin"] > 0
+        assert season["numMatches"] > 0
+        # The fixture list is an array of records, not a count -- the same
+        # fault as a cup's `rounds`, which froze the title.
+        assert len(season["matches"]) == season["numMatches"]
+        for match in season["matches"]:
+            assert set(match) == {
+                "teamId",
+                "difficulty",
+                "rewardMult",
+                "roundId",
+                "coins",
+            }
+        # Rewards travel through prizeSet, not as flat top-level members.
+        levels = [prize["prizeLevel"] for prize in season["prizeSet"]]
+        assert levels == ["RELEGATION", "MAINTENANCE", "PROMOTION", "CHAMPIONSHIP"]
+        for prize in season["prizeSet"]:
+            assert "thresholdPoint" in prize
+            assert isinstance(prize["awardMappings"][0]["awards"], list)
+        # 0 is a real resource id to the client: it went and fetched
+        # /fut/items/xbl2/0.json for every entry that carried it.
+        assert season["trophyResourceId"] == -1
 
 
-def test_the_club_starts_in_the_bottom_division() -> None:
+def test_the_season_document_carries_no_flat_reward_members(monkeypatch) -> None:
+    # The shape that produced "Les saisons ne sont pas disponibles pour le
+    # moment" kept thresholds and coins at the top level and reused the cup's
+    # time member names.
+    inventory = _native_seasons(monkeypatch)
+
+    misplaced = {
+        "seasonCoins",
+        "thresholdPoint",
+        "visStart",
+        "visEnd",
+        "starttime",
+        "endtime",
+        "timeUntilStart",
+        "timeUntilEnd",
+    }
+    for season in json.loads(inventory.seasons_response())["seasons"]:
+        assert misplaced.isdisjoint(season)
+
+
+def test_the_season_document_invents_no_member() -> None:
+    # Seven members of the earlier shape -- division, matchesPlayed,
+    # matchesToPlay, pointsToPromote, lost, coinsPerWin, trophiesWon -- appear
+    # nowhere in CardsDLL's JSON name table, so the parser could not read them
+    # and the screen stayed on its constructor defaults.
     import fut_inventory as inventory
+
+    invented = {
+        "division",
+        "matchesPlayed",
+        "matchesToPlay",
+        "pointsToPromote",
+        "lost",
+        "coinsPerWin",
+        "trophiesWon",
+        "relegated",
+        "promoted",
+    }
+    standing = json.loads(inventory.season_user_response())
+    assert invented.isdisjoint(standing)
+    for season in json.loads(inventory.seasons_response())["seasons"]:
+        assert invented.isdisjoint(season)
+
+
+def test_the_club_starts_in_the_bottom_division(monkeypatch) -> None:
+    inventory = _native_seasons(monkeypatch)
 
     standing = json.loads(inventory.season_user_response())
-    assert standing["division"] == 10
-    assert standing["matchesPlayed"] == 0
-    assert standing["promoted"] is False
+    # Only what the parser handles: seasonId, divisionId and round. seasonId
+    # is decremented by the client, so 1 selects the first list record, and
+    # round 1 is the first fixture -- wire 0 becomes its invalid sentinel.
+    assert set(standing) == {"seasonId", "divisionId", "round"}
+    assert standing["divisionId"] == 10
+    assert standing["seasonId"] == 1
+    assert standing["round"] == 1
+    assert json.loads(inventory.season_user_response(10, played=3))["round"] == 4
 
 
-def test_the_cup_list_is_empty_until_its_shape_is_known() -> None:
-    # A generated list froze the title when Compétition Joueur Solo was opened.
-    # The reference serves an empty array and does not freeze, so the shape is
-    # wrong somewhere and the fields have to come from the binary first.
+def test_the_cup_list_carries_the_shape_the_binary_names() -> None:
+    # A generated list froze the title when Compétition Joueur Solo was opened,
+    # and the list was emptied until the fields could come from the binary.
+    # They now do: every member below sits in CardsDLL's own sorted JSON name
+    # table in .rdata. The freeze was `rounds` served as a count where the
+    # parser walks records, alongside members that table does not carry.
     import fut_inventory as inventory
 
-    assert json.loads(inventory.tournaments_response())["tournament"] == []
+    cups = json.loads(inventory.tournaments_response())["tournament"]
+    assert cups
+    for cup in cups:
+        assert isinstance(cup["rounds"], list)
+        assert len(cup["rounds"]) == cup["numRounds"]
+        assert cup["numTeams"] > len(json.loads(inventory.tournament_teams_response())["teamId"])
+        for entry in cup["rounds"]:
+            assert set(entry) == {"id", "difficulty", "rewardMultiplier", "coins"}
+        assert cup["treeType"] == "knockout"
+        assert set(cup["awardSet"]["awards"][0]) == {"awardType", "value", "halid"}
+        for invented in ("name", "level", "entryFee", "active", "won"):
+            assert invented not in cup
+
+
+def test_the_club_lists_its_best_players_first() -> None:
+    # Unsorted, the club and the squad's player picker listed cards in the
+    # order the icebreaker packs added them.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    items = json.loads(club.club_response())["itemData"]
+
+    players = [i for i in items if i.get("itemType") == "player"]
+    ratings = [i.get("rating", 0) for i in players]
+    assert ratings == sorted(ratings, reverse=True)
+
+    # Players first: a playStyle carries a rating of 99 of its own, so ranking
+    # on rating alone buried the best player behind a handful of them.
+    kinds = [i.get("itemType") == "player" for i in items]
+    assert kinds == sorted(kinds, reverse=True)
+    assert items[0].get("itemType") == "player"
+
+
+def test_the_club_keeps_the_name_the_player_chose() -> None:
+    # PUT /user/club carries the name and abbreviation the creation screen
+    # asked for. It used to be answered {} and forgotten, so the club had no
+    # name on the next load.
+    import fut_inventory as inventory
+
+    identity = inventory.ClubIdentity()
+    assert identity.name == ""
+    assert identity.adopt({"clubName": "Olympique Safi", "clubAbbr": "OCS"})
+    assert (identity.name, identity.abbr) == ("Olympique Safi", "OCS")
+
+    # It survives a save/restore cycle.
+    restored = inventory.ClubIdentity()
+    restored.restore(identity.state())
+    assert (restored.name, restored.abbr) == ("Olympique Safi", "OCS")
+
+    # An empty body changes nothing rather than clearing the club.
+    assert identity.adopt({}) is False
+    assert identity.name == "Olympique Safi"
+
+
+def test_the_starting_squad_takes_the_club_name() -> None:
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    club.rename_active_squad("Olympique Safi")
+    summaries = json.loads(club.squad_summaries())["squad"]
+    active = club.active_squad_id()
+    assert any(
+        s["id"] == active and s["squadName"] == "Olympique Safi" for s in summaries
+    )
+
+
+def test_first_run_starts_with_no_club_at_all() -> None:
+    # The club is seeded from all four captains' squads because fcc_login2
+    # treats an empty squad as fatal. That seed is also why the captain
+    # selection never appears: it exists to give a new player his first squad.
+    # The two cannot both be true, so the seed is optional rather than assumed.
+    import fut_inventory as inventory
+
+    seeded = inventory.ClubInventory()
+    assert seeded.items and seeded.squad
+
+    fresh = inventory.ClubInventory(seeded=False)
+    assert fresh.items == []
+    assert fresh.squad == []
+    # Kits, badges and consumables are club contents too; a club that has not
+    # been created does not own them either.
+    assert json.loads(fresh.club_response())["itemData"] == []
+
+
+def test_first_run_is_off_unless_asked_for(monkeypatch) -> None:
+    # An empty club breaks the login for an existing player, which is the
+    # state of anyone not running the experiment.
+    import fut_inventory as inventory
+
+    monkeypatch.delenv("FIFA14_FIRST_RUN", raising=False)
+    assert inventory.first_run() is False
+    monkeypatch.setenv("FIFA14_FIRST_RUN", "1")
+    assert inventory.first_run() is True
+
+
+def test_the_unfiltered_club_is_bounded() -> None:
+    # Unbounded, this returned every card in one document: 244 KB at 453 cards
+    # and growing with every pack. An explicit count still wins.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    whole = json.loads(club.club_response())["itemData"]
+    assert len(whole) <= inventory.CLUB_UNFILTERED_LIMIT
+
+    asked = json.loads(club.club_response({"count": "300"}))["itemData"]
+    assert len(asked) == min(300, len(club.items))
+
+
+def test_the_club_pages_from_the_sorted_list() -> None:
+    # Paging an unsorted list puts arbitrary cards on page one, so the order
+    # has to be established before the slice.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    everyone = json.loads(club.club_response())["itemData"]
+    page = json.loads(club.club_response({"count": "5"}))["itemData"]
+    assert [item["id"] for item in page] == [item["id"] for item in everyone[:5]]
+
+
+def test_sorting_the_club_does_not_reorder_it_everywhere_else() -> None:
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    before = [item["id"] for item in club.items]
+    club.club_response()
+    assert [item["id"] for item in club.items] == before
+
+
+def test_a_special_is_not_a_duplicate_of_the_ordinary_card() -> None:
+    # A player's versions share his asset id: a Team of the Season Ruffier and
+    # a Rare Gold Ruffier are both asset 167628 and are not the same card.
+    import fut_inventory as inventory
+
+    shop = inventory.PackShop(
+        inventory.CardCatalogue(), inventory.Wallet(), inventory.ClubInventory()
+    )
+    ordinary = {"id": 1, "assetId": 167628, "resourceId": 100, "rareflag": 1}
+    special = {"id": 2, "assetId": 167628, "resourceId": 200, "rareflag": 1}
+    same = {"id": 3, "assetId": 167628, "resourceId": 100, "rareflag": 1}
+
+    assert shop._signature(ordinary) != shop._signature(special)
+    assert shop._signature(ordinary) == shop._signature(same)
+
+
+def test_a_repeat_is_paired_with_the_card_it_repeats() -> None:
+    # The pack screen reads the pairing out of duplicateItemIdList; marking
+    # only the card left a repeat looking like an ordinary pull. What must
+    # never go in that list is a bare list of the new ids -- that froze the
+    # title, by telling the screen to compare each card against itself.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    shop = inventory.PackShop(inventory.CardCatalogue(), inventory.Wallet(), club)
+    owned = club.items[0]
+    repeat = dict(owned, id=1950999999)
+
+    pairs = shop._mark_duplicates([repeat])
+    assert pairs == [{"itemId": 1950999999, "duplicateItemId": owned["id"]}]
+    assert repeat["duplicateItemId"] == owned["id"]
+    # The new id never names itself.
+    assert all(p["itemId"] != p["duplicateItemId"] for p in pairs)
+
+
+def test_a_card_the_server_never_held_is_not_reported_as_moved() -> None:
+    # This is how a TOTS Ruffier was drawn, shown, sent to the club, confirmed
+    # by the server, and then existed nowhere: an unknown id was acknowledged
+    # with success while nothing was kept.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    catalogue = inventory.CardCatalogue()
+    wallet = inventory.Wallet()
+    shop = inventory.PackShop(catalogue, wallet, club)
+    actions = inventory.CardActions(shop, wallet, club)
+
+    before = len(club.items)
+    reply = json.loads(
+        actions.move({"itemData": [{"id": 999999999, "pile": "club"}]})
+    )["itemData"][0]
+    assert len(club.items) == before
+    assert reply["success"] is False
+    assert reply["errorCode"] != 0
+    assert actions.unmatched == [999999999]
+
+
+def test_a_card_the_server_holds_still_moves() -> None:
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    catalogue = inventory.CardCatalogue()
+    wallet = inventory.Wallet()
+    wallet.coins = 10_000_000
+    shop = inventory.PackShop(catalogue, wallet, club)
+    actions = inventory.CardActions(shop, wallet, club)
+
+    drawn = json.loads(shop.open_pack(inventory.GOLD_PACK_ID))["itemList"]
+    before = len(club.items)
+    reply = json.loads(
+        actions.move(
+            {"itemData": [{"id": card["id"], "pile": "club"} for card in drawn]}
+        )
+    )["itemData"]
+    assert len(club.items) == before + len(drawn)
+    assert all(entry["success"] for entry in reply)
+    assert actions.unmatched == []
+
+
+def test_image_archives_are_parseable_containers_not_json() -> None:
+    # The /fut/items/ prefix answered everything with {"itemData":[]}, so the
+    # console got sixteen bytes of JSON where it asked for a BIG archive.
+    import fut_inventory as inventory
+
+    archive = inventory.empty_big_archive()
+    assert archive[:4] == b"BIGF"
+    assert int.from_bytes(archive[8:12], "big") == 0  # no directory entries
+    assert int.from_bytes(archive[12:16], "big") == len(archive)
+
+
+def test_every_cup_names_a_trophy_the_game_actually_ships() -> None:
+    # cards0.big carries trophy_<id>_<tier> for ids 1100..1169 beside a
+    # notfound.big. Serving 0 is what drew that placeholder.
+    import fut_inventory as inventory
+
+    for cup in json.loads(inventory.tournaments_response())["tournament"]:
+        assert inventory.TROPHY_FIRST <= cup["trophyResourceId"] <= inventory.TROPHY_LAST
+
+
+def test_a_cup_is_only_active_once_it_has_been_entered() -> None:
+    import fut_inventory as inventory
+
+    inventory.TOURNAMENT_PROGRESS.entries.clear()
+    try:
+        assert json.loads(inventory.active_tournaments_response())["tournamentId"] == []
+        inventory.TOURNAMENT_PROGRESS.apply(3, {"round": 2, "tournamentData": "QQ=="})
+        assert json.loads(inventory.active_tournaments_response())["tournamentId"] == [3]
+        saved = json.loads(inventory.TOURNAMENT_PROGRESS.response(3))
+        assert saved["round"] == 2
+        assert saved["tournamentData"] == "QQ=="
+        # The season spelling is still accepted on the way in.
+        inventory.TOURNAMENT_PROGRESS.apply(3, {"round": 3, "data": "Ug=="})
+        assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3))["tournamentData"] == "Ug=="
+    finally:
+        inventory.TOURNAMENT_PROGRESS.entries.clear()
 
 
 def test_team_of_the_week_is_a_full_side() -> None:
@@ -867,15 +1194,25 @@ def test_a_card_pulled_twice_is_reported_as_a_duplicate() -> None:
     for item in first["itemList"]:
         actions._keep(dict(item))
 
-    # The same draw again: every card names the one it repeats. The per-card
-    # duplicateItemId is what the compare screen reads; the plural list stays
-    # empty, because filling it with the new ids froze the title.
+    # The same draw again: every card names the one it repeats, twice over.
+    # The per-card duplicateItemId, and the plural list as pairs -- which is
+    # what the FIFA 14 pack screen actually reads. The list was empty here, and
+    # with it empty a repeat rendered as an ordinary card.
+    #
+    # What froze the title was a plural list of the *new* ids, telling the
+    # screen to compare each card against itself. A pair never does that, and
+    # the last assertion below is what keeps it that way.
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
-    assert second["duplicateItemIdList"] == []
     marked = [item for item in second["itemList"] if item.get("duplicateItemId")]
     assert len(marked) == second["numberItems"]
     owned = {item["id"] for item in inventory.items}
     assert all(item["duplicateItemId"] in owned for item in marked)
+
+    pairs = second["duplicateItemIdList"]
+    assert len(pairs) == second["numberItems"]
+    assert all(set(pair) == {"itemId", "duplicateItemId"} for pair in pairs)
+    assert all(pair["duplicateItemId"] in owned for pair in pairs)
+    assert all(pair["itemId"] != pair["duplicateItemId"] for pair in pairs)
 
 
 def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:

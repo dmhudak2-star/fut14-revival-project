@@ -1,5 +1,14 @@
 # CardsDLLzf.xex.dll stopped being mapped
 
+> **Superseded for the load case, 2026-08-10.** CardsDLL maps reliably again
+> through `tools/fut.sh`, and full FUT sessions run: club, packs, market,
+> cups. Everything below is about a period when it would not load at all, and
+> is kept for the measurements it records.
+>
+> A different failure was seen on 2026-08-10 and is recorded at the end of this
+> file: the module loads, FUT runs, and then the module is **unloaded
+> mid-session**.
+
 Since the console was restarted on 2026-08-07, `CardsDLLzf.xex.dll` has not
 loaded once. It last mapped at 00:01 that night. Without it there is no FUT
 login at all: no `/ut/auth`, no security question, no persona adoption, and
@@ -64,3 +73,62 @@ the module did map. The only surviving artefact of one is
 `runtime/overnight/cycle-20260807-000126.log`; its server journal is
 `runtime/live-easw-v46.jsonl`. Everything above was reasoned forward from the
 failing side.
+
+## 2026-08-10: unloaded mid-session
+
+A different failure, and the one that is live. The module loaded, a full FUT
+session ran -- club, cups, five packs opened and sent to the club -- and then
+the title stopped talking to the server. What "disconnected" means natively:
+
+```text
+modules  ->  powdllzf.xex.dll   still mapped
+             CardsDLLzf.xex.dll GONE
+0x89000000 .. 0x892B0000        unmapped, reads return Invalid memory
+```
+
+The title itself kept running and XBDM answered again after about two minutes.
+So this is not a crash: the FUT session tore itself down and took the card
+engine with it. The client's club model goes with it, which is why cards that
+the server still holds -- verified, 453 items served, the twelve latest among
+them in state `free` -- looked lost from inside the game.
+
+### The last thing served before it went
+
+```text
+13:58:18  GET /ut/game/fifa14/club   ->  244 486 bytes
+13:58:54  GET /ut/game/fifa14/club/stats/*
+          (nothing further)
+```
+
+Asked for the club with no filter, this server returns every card in one
+document. At 453 cards that is 244 KB of JSON on a 2005 console, and it grows
+with every pack opened. `club_response` pages only when the client sends a
+`count`; with no query it has no bound at all.
+
+This looked like the cause. Measuring it across every journal mostly killed it:
+
+```text
+v62  08:20-08:23   11 x 77 440 bytes   console kept going, 28-84 requests after
+v63  08:36         7 x 75 136 bytes    console kept going, 26-38 requests after
+v64  08:43         7 x 77 440 bytes    last one: 0 requests after
+now  13:58:18      1 x 244 486 bytes   0 requests after
+```
+
+So an unfiltered club response is not fatal in itself -- eighteen of them were
+served and survived. What is different here is the **size**: 244 KB against 77,
+because the club has grown to 453 cards. That is consistent with a threshold
+and it rests on a single observation at that size, which is not enough to call
+it the cause.
+
+Worth bounding anyway: a response that grows without limit as the club grows is
+a defect on its own terms. But bounding it should not be described as fixing
+this until a long session survives one.
+
+The distinguishing test: play to another teardown while watching the size. If
+it lands near 244 KB again there is a threshold; if it lands elsewhere, this is
+a coincidence and the cause is something else entirely.
+
+### What this blocks
+
+`GetCardDuplicate` cannot be traced while the module is unmapped -- its code
+lives in that range. Any duplicate-flag work needs a live FUT session first.

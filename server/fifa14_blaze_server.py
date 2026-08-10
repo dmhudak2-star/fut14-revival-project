@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import re
 import signal
 import socket
 import ssl
@@ -384,8 +385,8 @@ FUT_ROUTES: dict[str, bytes] = {
     # list.  An empty object leaves the native response at its constructor
     # defaults -- no division, no points, no record invented.
     "/ut/game/fifa14/season/user": b"{}",
-    "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
-    "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
+    # tournament/list, tournament and tournament/user/list are served live
+    # from the catalogue and the saved runs; see the mode table below.
     # A visible-but-invalid single entry keeps the store screen constructible
     # without offering anything purchasable.
     "/ut/game/fifa14/store": b'{"purchase":[],"timestamp":2147483647}',
@@ -464,9 +465,15 @@ from fut_inventory import (  # noqa: E402
     ClubInventory,
     PackShop,
     Wallet,
+    CLUB_IDENTITY,
+    TOURNAMENT_PROGRESS,
+    empty_big_archive,
+    first_run,
+    trophy_item_response,
     active_tournaments_response,
     season_user_response,
     seasons_response,
+    tournament_teams_response,
     club_stats_response,
     consumable_stats_response,
     consumables_response,
@@ -488,8 +495,24 @@ CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
 # gone, the coins reset.
 MANAGER_TASKS = ManagerTasks()
 CLUB_SAVE = ClubSave()
-CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
-CLUB_NAME = "Fondateur FUT"
+# A first run has no prior save by definition. Loading one puts back exactly
+# what the flag exists to remove -- the saved squad carries its name, so
+# `squad/list` went on announcing a club while every other route said there was
+# none. Deleting the file by hand between runs is not a fix: the server writes
+# a new one within seconds of the client touching anything.
+if not first_run():
+    CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+# A club that has been created has a name. Saying "Fondateur FUT" while the
+# club holds nothing tells the client a club already exists, which is exactly
+# the reason it never offers to create one -- emptying the cards was not
+# enough on its own. In first-run mode the name is empty: no club yet.
+if not first_run():
+    CLUB_IDENTITY.name = "Fondateur FUT"
+
+
+def club_name() -> str:
+    """Whatever the player named his club, or nothing until he has."""
+    return CLUB_IDENTITY.name
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
@@ -1698,7 +1721,7 @@ class IdentityHttpService:
                     # until it is observed.
                     self.reply(
                         200,
-                        WALLET.user_info(CLUB_NAME, "FUT") + b"\n",
+                        WALLET.user_info(club_name(), CLUB_IDENTITY.abbr) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -1735,7 +1758,7 @@ class IdentityHttpService:
                     "/ut/game/fifa14/squad/list": CLUB_INVENTORY.squad_summaries,
                     "/ut/game/fifa14/squad/active": (
                         lambda: CLUB_INVENTORY.squad_document(
-                            CLUB_INVENTORY.active_squad_id(), CLUB_NAME
+                            CLUB_INVENTORY.active_squad_id(), club_name()
                         )
                     ),
                     "/ut/game/fifa14/club": CLUB_INVENTORY.club_response,
@@ -1842,6 +1865,108 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # The draw for a cup. The module's template is
+                # `/teams?groupId=%d&count=%d`; count is how many opponents the
+                # tree needs, the club itself taking the remaining slot.
+                if (
+                    normalized_path == "/ut/game/fifa14/tournament/teams"
+                    and self.command == "GET"
+                ):
+                    query = urllib.parse.parse_qs(parsed.query)
+
+                    def number(key: str, fallback: int) -> int:
+                        try:
+                            return int(query.get(key, [str(fallback)])[0])
+                        except ValueError:
+                            return fallback
+
+                    count = number("count", 15)
+                    group = number("groupId", 0)
+                    payload = tournament_teams_response(count, group)
+                    owner.journal.event(
+                        "fut_tournament_teams",
+                        peer=self.client_address[0],
+                        count=count,
+                        group=group,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # A single cup's saved run. The client serialises this itself
+                # -- CardsDLL carries the format strings it builds the body
+                # from -- so it arrives with `round`, `dataVersion`, `data`,
+                # `progressDataVersion` and `progressData`, and is echoed back
+                # in the same shape on the next GET.
+                if (
+                    normalized_path.startswith("/ut/game/fifa14/tournament/user/")
+                    and normalized_path.rsplit("/", 1)[-1].isdigit()
+                ):
+                    tournament_id = int(normalized_path.rsplit("/", 1)[-1])
+                    if self.command in ("PUT", "POST"):
+                        try:
+                            document = json.loads(body or b"{}")
+                        except ValueError:
+                            document = {}
+                        entry = TOURNAMENT_PROGRESS.apply(tournament_id, document)
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                        owner.journal.event(
+                            "fut_tournament_saved",
+                            peer=self.client_address[0],
+                            tournament=tournament_id,
+                            round=entry["round"],
+                            body=request_body_preview(body),
+                        )
+                    payload = TOURNAMENT_PROGRESS.response(tournament_id)
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Quitting a cup. The template table carries
+                # `ut/delete/%s/tournament/user`, so the run is dropped rather
+                # than left half-played.
+                if (
+                    normalized_path.startswith(
+                        "/ut/delete/game/fifa14/tournament/user"
+                    )
+                    and self.command in ("POST", "PUT", "DELETE")
+                ):
+                    tail = normalized_path.rsplit("/", 1)[-1]
+                    removed = (
+                        TOURNAMENT_PROGRESS.delete(int(tail)) if tail.isdigit() else False
+                    )
+                    if removed:
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                    owner.journal.event(
+                        "fut_tournament_deleted",
+                        peer=self.client_address[0],
+                        tournament=tail,
+                        removed=removed,
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Seasons, cups and Team of the Week. Each of these screens
                 # treats an empty list as an error rather than as "nothing
                 # available" -- the same way fcc_login2 treats an empty squad --
@@ -1849,6 +1974,10 @@ class IdentityHttpService:
                 mode_responses = {
                     "/ut/game/fifa14/season/list": seasons_response,
                     "/ut/game/fifa14/season/user": season_user_response,
+                    # The template table carries `ut/%s/tournament`; the Xbox
+                    # client was journalled asking for `tournament/list`. Both
+                    # get the catalogue.
+                    "/ut/game/fifa14/tournament": tournaments_response,
                     "/ut/game/fifa14/tournament/list": tournaments_response,
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
@@ -1937,6 +2066,19 @@ class IdentityHttpService:
                         coins=WALLET.coins,
                         pack=pack_id,
                         items=len(PACK_SHOP.pending),
+                        # What was actually drawn. Without this a card that
+                        # went missing between the pack screen and the club
+                        # could not be identified afterwards, let alone
+                        # restored -- which is what happened to a TOTS Ruffier.
+                        drawn=[
+                            {
+                                "id": item.get("id"),
+                                "assetId": item.get("assetId"),
+                                "rating": item.get("rating"),
+                                "rarity": item.get("rarity"),
+                            }
+                            for item in PACK_SHOP.pending[-12:]
+                        ],
                     )
                     self.reply(
                         200,
@@ -2131,7 +2273,7 @@ class IdentityHttpService:
                     CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
                     self.reply(
                         200,
-                        CLUB_INVENTORY.squad_document(squad_id, CLUB_NAME) + b"\n",
+                        CLUB_INVENTORY.squad_document(squad_id, club_name()) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -2206,6 +2348,10 @@ class IdentityHttpService:
                         path=parsed.path,
                         club=len(CARD_ACTIONS.club),
                         pending=len(PACK_SHOP.pending),
+                        # Ids the client moved that this server never held.
+                        # Each one is a card the player saw and lost, and it
+                        # used to be answered with success.
+                        unmatched=CARD_ACTIONS.unmatched[-24:],
                     )
                     self.reply(
                         200,
@@ -2261,7 +2407,7 @@ class IdentityHttpService:
                     payload = (
                         WALLET.credits_response()
                         if normalized_path.endswith("/credits")
-                        else WALLET.user_info(CLUB_NAME, "FUT")
+                        else WALLET.user_info(club_name(), CLUB_IDENTITY.abbr)
                     )
                     self.reply(
                         200,
@@ -2356,6 +2502,90 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # Club creation. The screen sends the name and abbreviation it
+                # asked the player for; answering `{}` accepted them and threw
+                # them away, so the club had no name on the next load and every
+                # other route went on reporting an unnamed club.
+                if (
+                    normalized_path == "/ut/game/fifa14/user/club"
+                    and self.command in ("PUT", "POST")
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    adopted = CLUB_IDENTITY.adopt(document)
+                    if adopted:
+                        CLUB_INVENTORY.rename_active_squad(CLUB_IDENTITY.name)
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                    owner.journal.event(
+                        "fut_club_created",
+                        peer=self.client_address[0],
+                        club=CLUB_IDENTITY.name,
+                        abbr=CLUB_IDENTITY.abbr,
+                        adopted=adopted,
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # A cup's trophy definition, asked for by its
+                # `trophyResourceId`. The blanket empty answer below is what
+                # left the console building
+                # /fut/items/images/trophies/xbl2/.big with no basename.
+                trophy_item = re.fullmatch(
+                    r"/fut/items/xbl2/(\d+)\.json", normalized_path
+                )
+                if trophy_item and self.command == "GET":
+                    resource_id = int(trophy_item.group(1))
+                    payload = trophy_item_response(resource_id)
+                    owner.journal.event(
+                        "fut_trophy_item",
+                        peer=self.client_address[0],
+                        trophy=resource_id,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # BIG archives, not JSON. Answering these from the blanket
+                # itemData reply below handed the console sixteen bytes of
+                # JSON where it asked for a binary container.
+                if (
+                    normalized_path.startswith("/fut/items/images/")
+                    and normalized_path.lower().endswith(".big")
+                    and self.command == "GET"
+                ):
+                    payload = empty_big_archive()
+                    owner.journal.event(
+                        "fut_image_archive",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/octet-stream",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Item definitions the trophy and club tiles resolve against.
                 if normalized_path.startswith("/fut/items/") and self.command == "GET":
                     self.reply(
@@ -2411,10 +2641,18 @@ class IdentityHttpService:
                     "/ut/game/fifa14/eventfeed",
                     "/ut/game/fifa14/clubUser",
                 ) and self.command == "GET":
+                    fixture = FUT_ROUTES[normalized_path]
+                    if normalized_path == "/ut/game/fifa14/clubUser":
+                        # The persona here is the club's name, and the fixture
+                        # carries the old hardcoded one. Empty until the club
+                        # is created, then whatever the player named it.
+                        fixture = fixture.replace(
+                            b'"Fondateur FUT"',
+                            json.dumps(club_name()).encode(),
+                        )
                     self.reply(
                         200,
-                        with_balance(FUT_ROUTES[normalized_path], WALLET.coins)
-                        + b"\n",
+                        with_balance(fixture, WALLET.coins) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",

@@ -1,6 +1,27 @@
 # Current research status
 
-Last updated: 2026-08-06.
+Last updated: 2026-08-10.
+
+## 2026-08-10 the cups have a shape, and the season document had invented names
+
+`Compétition Joueur Solo` was the last FUT mode still served empty, after a
+generated catalogue froze the title and the list was emptied until its fields
+could come from the binary. They now do: CardsDLL's `.rdata` carries its own
+sorted JSON member-name table, and every member of the native tournament
+document sits in it. The freeze reduces to one line — `rounds` is an array of
+`{id, difficulty, rewardMultiplier, coins}` records and was served as a count.
+
+The same table was then turned on the season document, which had never been
+checked: seven of its members, plus a `relegated`/`promoted` boolean pair,
+appear nowhere in it. A parser cannot read a member it has no name for, so the
+season screen had been reading constructor defaults throughout. Both documents
+now use only names the module carries.
+
+Full reasoning, routes and the parts that remain choices rather than findings:
+`docs/TOURNAMENTS.md`.
+
+Not yet confirmed on the console — the mode has not been opened since the
+change.
 
 ## 2026-08-06 the client walks its own path once the configuration is served
 
