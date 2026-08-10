@@ -1069,7 +1069,18 @@ class Wallet:
                 # was flatly False, which tells a brand-new account the one
                 # thing it most needs to do is forbidden.
                 "clubNameChangeAllowed": not club_name,
-                "established": 2013,
+                # A club that does not exist was not established in 2013.
+                #
+                # `fcc_login1` sends `createClub` instead of `iceBreaker` when
+                # `SkipIceBreaker() || GetFUT1TeamName().IS_RETURN_USER`.
+                # SkipIceBreaker was disassembled and returns 0 always -- `li
+                # r3, 0` and a branch to the marshaller, two instructions -- so
+                # the second term is the one that was true. The object it reads
+                # is built at 0x890EECD0, which writes `CLUB_EST` from +0x5C of
+                # the user record and `IS_RETURN_USER` from the byte at +0x8D.
+                # Serving a founding year for a club with no name is the same
+                # contradiction the club name itself was, one field along.
+                "established": 2013 if club_name else 0,
                 "divisionOffline": 10,
                 "divisionOnline": 10,
                 "won": 0,
@@ -1141,6 +1152,31 @@ TIER_RATINGS = {
     "gold": (75, 99),
 }
 
+# The ordinary cards: what a player actually collects. Everything else in the
+# catalogue -- Team of the Week, Team of the Season, World Cup, Legend, MOTM,
+# iMOTM, Team of the Year, Record Breaker -- is a special, and specials are
+# not what a new account should be handed on its first day.
+ORDINARY_RARITIES = {
+    "non-rare bronze",
+    "rare bronze",
+    "non-rare silver",
+    "rare silver",
+    "non-rare gold",
+    "rare gold",
+}
+
+# The three packs a new club opens with, poorest first.
+STARTER_PACKS = (103, 203, 303)
+
+# A starter gold pack should not be a jackpot. Ratings above this are dropped
+# from the draw entirely rather than merely made unlikely, because "unlikely"
+# on twelve cards across three packs still hands out a 90 often enough.
+STARTER_RATING_CAP = 78
+
+
+def is_ordinary(card: dict) -> bool:
+    return (card.get("rarity") or "").strip().lower() in ORDINARY_RARITIES
+
 
 def store_catalogue(timestamp: int = 2147483647) -> bytes:
     """Every pack, priced, grouped and buyable."""
@@ -1211,6 +1247,61 @@ class PackShop:
                 for card in catalogue.cards
                 if low <= card.get("rating", 0) <= high
             ]
+
+    def grant_starter_packs(self, rng: random.Random | None = None) -> int:
+        """Draw the three packs a new club opens with, into the pending pile.
+
+        Bronze, silver, gold. Ordinary cards only -- no Team of the Week, no
+        Team of the Season, no Legend -- and nothing above
+        `STARTER_RATING_CAP`, so the gold pack is a start rather than a
+        jackpot. They cost nothing.
+
+        The pending pile is the route the client already reads through
+        purchased/items and sends to the club; the native `unopenedPacks` /
+        `starterPack` members exist in CardsDLL but the route that carries
+        them is not established here, and guessing one is how screens get
+        frozen.
+        """
+        rng = rng or random.Random()
+        drawn_total = 0
+        for pack_id in STARTER_PACKS:
+            spec = self.spec(pack_id)
+            if spec is None:
+                continue
+            pool = [
+                card
+                for card in (self._pools.get(spec["tier"]) or self.catalogue.cards)
+                if is_ordinary(card)
+                and card.get("rating", 0) <= STARTER_RATING_CAP
+            ]
+            if not pool:
+                continue
+            rares = [card for card in pool if card.get("rareflag")] or pool
+            commons = [card for card in pool if not card.get("rareflag")] or pool
+            drawn = []
+            for slot in range(int(spec["count"])):
+                source = rares if slot < int(spec["rares"]) else commons
+                card = rng.choice(source)
+                item = _player_item(
+                    item_id=PACK_ITEM_ID_BASE + 900_000 + drawn_total,
+                    asset_id=card["assetId"],
+                    rating=card.get("rating", 0),
+                    rare=card.get("rareflag", 0),
+                    play_style=0,
+                    team_id=card.get("clubId", 0),
+                    attributes=card.get("attributes", [0] * 6),
+                    position=card.get("position") or FALLBACK_POSITION,
+                    item_state="new",
+                    nation=card.get("nationId", 0),
+                    league=card.get("leagueId", 0),
+                    rarity=card.get("rarity", ""),
+                )
+                item["untradeable"] = False
+                drawn.append(item)
+                drawn_total += 1
+            self._mark_duplicates(drawn)
+            self.pending.extend(drawn)
+        return drawn_total
 
     def spec(self, pack_id: int) -> dict | None:
         return PACK_SPECS.get(int(pack_id))

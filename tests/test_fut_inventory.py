@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -601,6 +602,48 @@ def test_the_starting_squad_takes_the_club_name() -> None:
     assert any(
         s["id"] == active and s["squadName"] == "Olympique Safi" for s in summaries
     )
+
+
+def test_the_starter_packs_hold_no_specials() -> None:
+    # Three packs -- bronze, silver, gold -- and nothing a new account has no
+    # business being handed on its first day: no Team of the Week, no Team of
+    # the Season, no Legend, and nothing above the cap.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory(seeded=False)
+    shop = inventory.PackShop(inventory.CardCatalogue(), inventory.Wallet(), club)
+    coins_before = shop.wallet.coins
+
+    count = shop.grant_starter_packs(random.Random(11))
+    expected = sum(
+        inventory.PACK_SPECS[p]["count"] for p in inventory.STARTER_PACKS
+    )
+    assert count == expected
+    assert len(shop.pending) == expected
+    # They are free.
+    assert shop.wallet.coins == coins_before
+
+    for card in shop.pending:
+        assert inventory.is_ordinary(card), card.get("rarity")
+        assert card["rating"] <= inventory.STARTER_RATING_CAP
+
+
+def test_ordinary_excludes_every_special() -> None:
+    import fut_inventory as inventory
+
+    for special in (
+        "Team of the Week",
+        "Team of the Season",
+        "World Cup",
+        "Legend",
+        "MOTM",
+        "iMOTM",
+        "Team of the Year",
+        "Record Breaker",
+    ):
+        assert not inventory.is_ordinary({"rarity": special})
+    for ordinary in ("Non-Rare Bronze", "Rare Gold", "Non-Rare Silver"):
+        assert inventory.is_ordinary({"rarity": ordinary})
 
 
 def test_first_run_starts_with_no_club_at_all() -> None:

@@ -466,6 +466,7 @@ from fut_inventory import (  # noqa: E402
     PackShop,
     Wallet,
     CLUB_IDENTITY,
+    STARTER_PACKS,
     TOURNAMENT_PROGRESS,
     empty_big_archive,
     first_run,
@@ -502,6 +503,18 @@ CLUB_SAVE = ClubSave()
 # a new one within seconds of the client touching anything.
 if not first_run():
     CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+else:
+    # A new club opens with three packs: bronze, silver, gold. Ordinary cards
+    # only and nothing above 78, so the start is a start. The captain
+    # selection that would normally hand out the first squad is not reachable
+    # from this server -- fcc_login1 decides it on native state, see
+    # docs/ICEBREAKER_DECISION.md -- and an empty club with nothing to open is
+    # worse than no icebreaker.
+    _granted = PACK_SHOP.grant_starter_packs()
+    print(
+        f"first run: {_granted} cards from {len(STARTER_PACKS)} starter packs",
+        flush=True,
+    )
 # A club that has been created has a name. Saying "Fondateur FUT" while the
 # club holds nothing tells the client a club already exists, which is exactly
 # the reason it never offers to create one -- emptying the cards was not
