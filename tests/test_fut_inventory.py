@@ -700,6 +700,41 @@ def test_a_repeat_is_paired_with_the_card_it_repeats() -> None:
     assert all(p["itemId"] != p["duplicateItemId"] for p in pairs)
 
 
+def test_the_totw_challenge_says_how_strong_it_is() -> None:
+    # opponentRating was computed with `max(... for card in [])` -- over an
+    # empty list -- so every challenge advertised a rating of 0 against team 0.
+    import fut_inventory as inventory
+
+    totw = json.loads(inventory.totw_response(inventory.CardCatalogue()))
+    challenges = totw["squadChallenge"]
+    assert challenges
+    for entry in challenges:
+        assert set(entry) == {
+            "squadId",
+            "squadName",
+            "formation",
+            "opponentTeam",
+            "opponentRating",
+        }
+        assert entry["opponentRating"] > 0
+        assert entry["squadName"]
+
+
+def test_a_bought_card_is_paired_like_a_packed_one() -> None:
+    # The pairing existed only on the pack path; a card bought on the market
+    # went into the club unmarked however many copies were already there.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    shop = inventory.PackShop(inventory.CardCatalogue(), inventory.Wallet(), club)
+    owned = next(i for i in club.items if i.get("itemType") == "player")
+    bought = dict(owned, id=1980000001, itemState="new")
+
+    pairs = shop._mark_duplicates([bought])
+    assert pairs == [{"itemId": 1980000001, "duplicateItemId": owned["id"]}]
+    assert bought["duplicateItemId"] == owned["id"]
+
+
 def test_a_card_the_server_never_held_is_not_reported_as_moved() -> None:
     # This is how a TOTS Ruffier was drawn, shown, sent to the club, confirmed
     # by the server, and then existed nowhere: an unknown id was acknowledged

@@ -2165,6 +2165,22 @@ class IdentityHttpService:
                         item = dict(won)
                         item["itemState"] = "new"
                         item["untradeable"] = False
+                        # A card bought on the market can repeat one the club
+                        # already holds exactly as a packed one can, and it was
+                        # going in unmarked -- the pairing existed only on the
+                        # pack path. Marked before it is kept, or it would be
+                        # found to duplicate itself.
+                        pairs = PACK_SHOP._mark_duplicates([item])
+                        if pairs:
+                            try:
+                                document_out = json.loads(payload)
+                            except ValueError:
+                                document_out = None
+                            if isinstance(document_out, dict):
+                                document_out["duplicateItemIdList"] = pairs
+                                payload = json.dumps(
+                                    document_out, separators=(",", ":")
+                                ).encode()
                         PACK_SHOP.pending.append(item)
                         CARD_ACTIONS._keep(dict(item, itemState="free"))
                         CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
@@ -2859,7 +2875,18 @@ class IdentityHttpService:
                 if lowered_path == "/ut/game/fifa14/user/action":
                     # GetUserActionServerResponse is a collection. A new local
                     # identity has no completed onboarding actions yet.
-                    payload = b'{"userActionList":[]}\n'
+                    #
+                    # The collection is `actions`. `userActionList` appears
+                    # nowhere in CardsDLL's member-name table, while `actions`
+                    # sits directly beside `actionType` in it -- so the name
+                    # served here was one the parser could not read, and an
+                    # unreadable list is not the same as an empty one.
+                    #
+                    # This is the list `FUT_IcebreakerManager` consults through
+                    # `RetrieveUserActions` before `HasUserDoneIB` decides
+                    # whether the captain selection is owed. Both spellings go
+                    # out; an unrecognised sibling is skipped.
+                    payload = b'{"actions":[],"userActionList":[]}\n'
                     owner.journal.event(
                         "fut_user_actions_request",
                         peer=self.client_address[0],

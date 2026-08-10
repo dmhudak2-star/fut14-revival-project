@@ -1103,7 +1103,14 @@ class TcpServerTests(unittest.TestCase):
                 status, _, actions = request_json(
                     "GET", "/ut/game/fifa14/user/action"
                 )
-                self.assertEqual((status, actions), (200, {"userActionList": []}))
+                # The collection CardsDLL reads is `actions` -- `userActionList`
+                # is in no member-name table, so it was a list the parser could
+                # not see. Both spellings go out; the unrecognised one is
+                # skipped. This is the list FUT_IcebreakerManager consults
+                # before deciding whether the captain selection is owed.
+                self.assertEqual(status, 200)
+                self.assertEqual(actions["actions"], [])
+                self.assertEqual(actions["userActionList"], [])
 
                 status, _, updated = request_json(
                     "PUT", "/ut/game/fifa14/user/action/firstUse", b"{}"

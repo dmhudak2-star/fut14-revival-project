@@ -2284,22 +2284,46 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
     # The member names below are the ones the binary actually carries;
     # the arrangement around them is still inferred, which is why this is
     # kept small -- an invented shape froze the title twice tonight.
-    challenges = [
-        {
+    saved_squads = (
+        json.loads(TOTW_FILE.read_text()).get("squads", [])
+        if TOTW_FILE.exists()
+        else []
+    )
+
+    def challenge(index: int, squad: dict) -> dict:
+        """One side to play against, rated from the cards it actually holds.
+
+        `opponentRating` was computed as `max(... for card in [])` -- over an
+        empty list, so every challenge advertised a rating of 0 and an
+        opponent of team 0. A side you are invited to beat has to say how
+        strong it is.
+        """
+        cards = [
+            by_asset[asset]
+            for asset in (squad.get("assetIds") or [])
+            if asset in by_asset
+        ] or best
+        eleven = sorted(
+            cards, key=lambda card: -card.get("rating", 0)
+        )[:11]
+        rating = (
+            round(sum(card.get("rating", 0) for card in eleven) / len(eleven))
+            if eleven
+            else 0
+        )
+        # The club most of them play for, which is what an opponent team id
+        # means here. Zero is "no team" and drew nothing.
+        clubs = [card.get("clubId") for card in eleven if card.get("clubId")]
+        team = max(set(clubs), key=clubs.count) if clubs else 0
+        return {
             "squadId": index + 1,
             "squadName": squad.get("name", f"TOTW {index + 1}"),
             "formation": FORMATION,
-            "opponentTeam": 0,
-            "opponentRating": max(
-                (card.get("rating", 0) for card in []), default=0
-            ),
+            "opponentTeam": int(team),
+            "opponentRating": rating,
         }
-        for index, squad in enumerate(
-            json.loads(TOTW_FILE.read_text()).get("squads", [])
-            if TOTW_FILE.exists()
-            else []
-        )
-    ]
+
+    challenges = [challenge(i, s) for i, s in enumerate(saved_squads)]
     return json.dumps(
         {
             "itemData": items,
