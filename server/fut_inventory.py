@@ -2478,13 +2478,58 @@ class CardActions:
                     break
         return json.dumps(listing, separators=(",", ":")).encode()
 
+    def _unlisted_entry(self, item: dict) -> dict:
+        """A card sent to the transfer list but not put up for sale yet.
+
+        Sending a card to the transfer list takes it out of the club -- it has
+        to, or it shows in both places at once -- and until now the trade pile
+        answered with the listings alone, so the card was in neither. It went
+        the way the lost pack cards and the withdrawn contracts went: quietly,
+        with the screen showing nothing where it should have been. The same
+        symptom is reported against the PC revival, where unlisted pile-5 cards
+        were disappearing from the Transfer List.
+
+        Every member here already goes out on a real listing; only the values
+        differ. `tradeId` 0 and `expires` -1 are what say "not up for sale",
+        and the screen needs the entry to exist at all before it can offer to
+        list it.
+        """
+        return {
+            "tradeId": 0,
+            "id": 0,
+            "itemData": item,
+            "tradeState": "",
+            "startingBid": 0,
+            "buyNowPrice": 0,
+            "currentBid": 0,
+            "offers": 0,
+            "watched": False,
+            "bidState": "none",
+            "tradeOwner": True,
+            "expires": -1,
+            "sellerName": "",
+            "sellerEstablished": 0,
+            "sellerId": 0,
+            "confidenceValue": 0,
+        }
+
     def trade_pile(self, coins: int) -> bytes:
-        """Everything currently listed, plus the balance the header reads."""
+        """The transfer list: what is up for sale, and what is merely on it."""
+        listed = {
+            listing["itemData"].get("id")
+            for listing in self.listings.values()
+            if isinstance(listing.get("itemData"), dict)
+        }
+        entries = list(self.listings.values()) + [
+            self._unlisted_entry(item)
+            for item in self.transfer
+            if item.get("id") not in listed
+        ]
         return json.dumps(
             {
-                "auctionInfo": list(self.listings.values()),
+                "auctionInfo": entries,
                 "duplicateItemIdList": [],
-                "total": len(self.listings),
+                "total": len(entries),
                 "credits": coins,
                 "totalCredits": coins,
                 "coins": coins,

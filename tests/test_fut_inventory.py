@@ -342,8 +342,14 @@ def test_withdrawing_puts_the_card_back() -> None:
     listing = json.loads(actions.list_for_sale({"itemData": {"id": first}}))
 
     actions.withdraw(listing["tradeId"])
-    assert json.loads(actions.trade_pile(wallet.coins))["total"] == 0
     assert [item["id"] for item in actions.transfer] == [first]
+    # It is back on the transfer list, and the list says so. This asserted a
+    # total of 0 while the line above asserted the card was there -- which is
+    # the bug written down: withdrawing a listing made the card invisible.
+    pile = json.loads(actions.trade_pile(wallet.coins))
+    assert pile["total"] == 1
+    assert pile["auctionInfo"][0]["tradeId"] == 0
+    assert pile["auctionInfo"][0]["itemData"]["id"] == first
 
 
 def test_buying_a_listing_debits_the_wallet_and_hands_over_the_card() -> None:
@@ -2299,3 +2305,45 @@ def test_a_special_is_not_a_repeat_of_the_ordinary_card() -> None:
         {"id": 21, "itemType": "player", "assetId": 167628, "resourceId": 2, "rareflag": 3},
     ]
     assert inventory.club_duplicate_pairs(club) == []
+
+
+def test_a_card_on_the_transfer_list_but_not_listed_is_still_shown() -> None:
+    # Sending a card to the transfer list takes it out of the club -- it has to,
+    # or it shows in both places at once -- and the trade pile answered with the
+    # listings alone, so an unlisted card was in neither. It went the way the
+    # lost pack cards went: quietly. The same symptom is reported against the PC
+    # revival, where unlisted pile-5 cards vanished from the Transfer List.
+    import random
+
+    import fut_inventory as inventory
+
+    actions, shop, wallet = _actions()
+    opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(29)))
+    card_id = opened["itemList"][0]["id"]
+    actions.move({"itemData": [{"id": card_id, "pile": inventory.PILE_TRANSFER}]})
+
+    pile = json.loads(actions.trade_pile(wallet.coins))
+    assert pile["total"] == 1
+    entry = pile["auctionInfo"][0]
+    assert entry["itemData"]["id"] == card_id
+    # Not for sale, and saying so in the members a real listing already uses.
+    assert entry["tradeId"] == 0
+    assert entry["expires"] == -1
+    assert entry["buyNowPrice"] == 0
+    assert entry["tradeOwner"] is True
+
+    # Listed, it becomes one entry and not two.
+    listing = json.loads(
+        actions.list_for_sale(
+            {"itemData": {"id": card_id}, "startingBid": 300, "buyNowPrice": 900}
+        )
+    )
+    pile = json.loads(actions.trade_pile(wallet.coins))
+    assert pile["total"] == 1
+    assert pile["auctionInfo"][0]["tradeId"] == listing["tradeId"]
+
+    # Withdrawn, it is back on the list and still visible.
+    actions.withdraw(listing["tradeId"])
+    pile = json.loads(actions.trade_pile(wallet.coins))
+    assert pile["total"] == 1
+    assert pile["auctionInfo"][0]["tradeId"] == 0
