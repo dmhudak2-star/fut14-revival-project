@@ -1209,3 +1209,47 @@ class TcpServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteSpellingTests(unittest.TestCase):
+    """The client's spelling of a path and this server's have to agree."""
+
+    def test_the_client_spelling_of_the_watch_list_is_answered(self) -> None:
+        import fifa14_blaze_server as server
+
+        # The client asks for `watchList`; this server registered `watchlist`,
+        # and every time the watch list was opened it got a 404. Nothing
+        # reported it -- an empty watch list looks like an empty watch list.
+        self.assertEqual(
+            server.FUT_ROUTE_SPELLINGS["/ut/game/fifa14/watchlist"],
+            "/ut/game/fifa14/watchlist",
+        )
+        for spelling in (
+            "/ut/game/fifa14/watchList",
+            "/ut/game/fifa14/WATCHLIST",
+            "/ut/game/fifa14/tradepile",
+            "/ut/game/fifa14/clubuser",
+        ):
+            self.assertIn(
+                spelling.lower(), server.FUT_ROUTE_SPELLINGS,
+                f"{spelling} does not resolve to a registered route",
+            )
+
+    def test_every_route_the_server_names_can_be_reached_in_any_case(self) -> None:
+        # The map is built from two lists and the handlers are written by hand,
+        # so it drifts unless something checks. Every `/ut/game/fifa14/...`
+        # literal in the module has to be in it.
+        import re
+        from pathlib import Path
+
+        import fifa14_blaze_server as server
+
+        source = Path(server.__file__).read_text()
+        literals = set(re.findall(r'"(/ut/game/fifa14/[a-zA-Z0-9/_-]*)"', source))
+        # Prefixes used with startswith, not whole routes.
+        literals = {route for route in literals if not route.endswith("/")}
+        missing = sorted(
+            route for route in literals
+            if route.lower() not in server.FUT_ROUTE_SPELLINGS
+        )
+        self.assertEqual(missing, [], f"routes missing from the spelling map: {missing}")

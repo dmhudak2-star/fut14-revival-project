@@ -404,7 +404,69 @@ FUT_ROUTES: dict[str, bytes] = {
         b'"timestamp":2147483647}'
     ),
     "/ut/v2/game/fifa14/store/transaction": b'{"state":"NOTRANSACTION"}',
+    # Asked for once, on 11 August, and answered 404. What it carries is not
+    # known -- the name suggests several users at once, and this server has
+    # exactly one. An empty object is the answer every other unknown FUT route
+    # here gets, and it is a better one than a 404: nothing has ever been
+    # observed to need a member of it.
+    "/ut/game/fifa14/usermassinfo": b"{}",
 }
+
+# Routes answered by their own handler rather than from the table above, listed
+# here only so the spelling map below covers them too.
+HANDLED_ROUTES = (
+    "/ut/game/fifa14/auctionhouse",
+    "/ut/game/fifa14/club",
+    "/ut/game/fifa14/club/consumables",
+    "/ut/game/fifa14/clubUser",
+    "/ut/game/fifa14/item",
+    "/ut/game/fifa14/phishing",
+    "/ut/game/fifa14/phishing/question",
+    "/ut/game/fifa14/phishing/trusteddevice",
+    "/ut/game/fifa14/phishing/validate",
+    "/ut/game/fifa14/settings",
+    "/ut/game/fifa14/trade",
+    "/ut/game/fifa14/user/accountinfo",
+    "/ut/game/fifa14/user/action",
+    "/ut/game/fifa14/match/end",
+    "/ut/game/fifa14/match/reset",
+    "/ut/game/fifa14/purchased/items",
+    "/ut/game/fifa14/season/list",
+    "/ut/game/fifa14/season/user",
+    "/ut/game/fifa14/squad",
+    "/ut/game/fifa14/squad/active",
+    "/ut/game/fifa14/squad/list",
+    "/ut/game/fifa14/store/purchasegroup/all",
+    "/ut/game/fifa14/tournament",
+    "/ut/game/fifa14/tournament/list",
+    "/ut/game/fifa14/tournament/teams",
+    "/ut/game/fifa14/tournament/user/list",
+    "/ut/game/fifa14/trade/status",
+    "/ut/game/fifa14/tradePile",
+    "/ut/game/fifa14/transfermarket",
+    "/ut/game/fifa14/user/club",
+    "/ut/game/fifa14/user/list",
+    "/ut/game/fifa14/watchlist",
+)
+
+# Lower case to the spelling this server actually registered.
+#
+# The client camel-cases some of these paths and this server spells them
+# however they were first written down. They agreed on `tradePile`, `clubUser`
+# and `userHubData` by luck. They did not agree on `watchList`: the client asks
+# for it with a capital L, this server registered `watchlist`, and every time
+# the watch list was opened it got a 404. Nothing reported it -- a 404 on a FUT
+# route just leaves a screen empty, and an empty watch list looks like an empty
+# watch list.
+#
+# `tradePile` and `tradepile` are both registered and both reach the same
+# handler, so the collision costs nothing; every other route is distinct in
+# lower case, and the only variable segments are numeric ids.
+FUT_ROUTE_SPELLINGS: dict[str, str] = {}
+for _route in (*FUT_ROUTES, *HANDLED_ROUTES):
+    FUT_ROUTE_SPELLINGS.setdefault(_route.lower(), _route)
+del _route
+
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.json"
 
@@ -1679,6 +1741,21 @@ class IdentityHttpService:
                     normalized_path = "/ut/auth"
                 elif normalized_path.startswith("/game/fifa14/"):
                     normalized_path = "/ut" + normalized_path
+                # The client camel-cases some of these paths and this server
+                # spells them however they were first written down. They agreed
+                # on `tradePile`, `clubUser` and `userHubData` by luck; they did
+                # not agree on `watchList`, which this server registered as
+                # `watchlist` and therefore answered 404 every time the watch
+                # list was opened. Nothing reported it -- a 404 on a FUT route
+                # just leaves the screen empty.
+                #
+                # Matching case-insensitively kills the whole class rather than
+                # this one instance. It is safe here because every route below
+                # is distinct in lower case, and the only variable segments are
+                # numeric ids.
+                normalized_path = FUT_ROUTE_SPELLINGS.get(
+                    normalized_path.lower(), normalized_path
+                )
                 if normalized_path in EASW_AUTH_PATHS:
                     # The native success parser reads these headers and hands
                     # EASW-Session and EASW-Token to CardsDLL.  Supplying them
