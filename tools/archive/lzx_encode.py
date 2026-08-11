@@ -454,10 +454,24 @@ def encode_block(
     return writer.finish()
 
 
+# An LZX frame carries at most 32 KiB of output, whatever its 16-bit length
+# field could otherwise express. The guard below used to be 0xFFFF, which let a
+# 54 048-byte resource through as one frame declaring 54 048 bytes of output --
+# a container nothing can read. One was written into a patched Title Update 3
+# and left on the console ready to install; its record decodes to
+# "Unsupported LZX block type 0" because the decoder runs off the end of the
+# only frame and reads the following bytes as a block header. The game's own
+# decoder would have hit the same wall.
+FRAME_SIZE = 0x8000
+
+
 def encode_container(payload: bytes, window_bits: int = DEFAULT_WINDOW_BITS) -> bytes:
     """Wrap compressed data in the ``chunklzx`` container the archives use."""
-    if len(payload) > 0xFFFF:
-        raise ValueError("This encoder emits a single frame; payload is too large")
+    if len(payload) > FRAME_SIZE:
+        raise ValueError(
+            f"This encoder emits a single frame of at most {FRAME_SIZE} bytes; "
+            f"{len(payload)} needs multi-frame output, which it cannot write"
+        )
     stream = encode_block(payload, window_bits)
     if len(stream) > 0xFFFF:
         raise ValueError("Compressed frame does not fit its 16-bit length")
