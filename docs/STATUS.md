@@ -1,6 +1,113 @@
 # Current research status
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-11.
+
+## 2026-08-11 consumables apply from the console
+
+Four things had to be true at once. FUT has two consumable item types,
+`development` and `training`, and the family lives in `cardsubtypeid` -- this
+server invented one type a family and nothing native matched. The picker asks
+`/club/consumables/<category>` one category at a time and the route answered
+every one with the whole stock. `/clubUser` carried a per-family sample, and
+the families span two subtype blocks each, so a goalkeeper's block was never
+in it. And the counts, seventeen correct non-zero scalars, were read from
+`stat`/`entries` rows in context 6 rather than from the top level.
+
+What ended it was logging query **values** and full sub-paths in the journal
+instead of parameter names. The category routes appeared on the first menu
+opened afterwards. `docs/CONSUMABLES.md`.
+
+## 2026-08-11 the patch applies and reapplies itself
+
+`tools/fut.sh` runs start to finish with nothing typed in the middle: server,
+launch, patch, ready, about half a minute. The TU3 patch is watched rather
+than applied once -- **the title loads helperFunctions again**, and a patch
+that verified at launch reads back `original` a minute later. That, not
+machine load, is what waiting for the main menu was buying.
+`docs/AUTOMATIC_PATCH.md`.
+
+## 2026-08-11 the club the client holds had no consumables in it
+
+The apply route worked over HTTP and the picker in game said "Pas d'élément
+disponible". It never asked the server: it reads the club the client already
+holds, and the bare club response was ninety players and nothing else, because
+the cap sliced a list sorted players-first. The counts said 35 contracts and
+the cached list contained none.
+
+The cap is dealt across kinds now, and rose from 90 to 130 -- a mixed card
+costs about 330 bytes against a player's 860, so the same measured-safe 77 KB
+holds more of the club. `docs/CONSUMABLES.md`.
+
+Also from the console this session: subtype 232 is a stadium unlockable
+("DEBLOQUER / Capacite +8 moral"), not a position modifier as both this
+catalogue and the PC revival's claim, and the client refuses to keep one --
+it is out of the pack draw until the route behind "Utiliser element" is known.
+Subtype 212 renders as "Haut du corps", which confirms the healing order taken
+from the binary's own string list.
+
+## 2026-08-11 a rare slot was a special seven times out of ten
+
+`rareflag` is set on a Rare Gold and on every special alike, and the pack draw
+split the tier on it. In the gold tier that pool is 453 rare golds against
+1120 specials, so 15% of Gold Packs held a special and the commonest family
+was World Cup — the catalogue holds 517 of those against 347 Team of the Week.
+None of it was decided.
+
+Rare and special are now separate axes. The special is rolled once per pack
+against a stated chance (0.6% bronze to 35% for a Premium Gold Players Pack,
+measured within a point of target over 1500 packs each), its family comes from
+a weight table rather than from stock, a second is conditional and capped, and
+no pack hands out more than two cards rated 90 or better.
+
+Rating bands are stated per tier rather than inherited from the pool's shape.
+An ordinary slot draws from every ordinary card of the tier: "1 Rare" is a
+minimum, and restricting ordinary slots to non-rares shut the top bands out of
+the pack entirely — 84-86 measured 0.65% against a stated 6%.
+
+`docs/PACK_CONTENTS.md`. Takes effect on the next server restart.
+
+## 2026-08-11 consumables do something
+
+`POST /ut/game/fifa14/item/resource/<resourceId>` with `{"apply":[{"id":N}]}`.
+`apply` is in CardsDLL's member-name table beside `applyTo`, so the request
+member is the module's own. Contracts (by the target's quality, from the card
+database's three columns), player and squad fitness, healing with injury-type
+matching, and training on one attribute or all six.
+
+Subtypes 91–136 and 232 are refused rather than guessed: this server's
+catalogue calls them play styles, the PC revival's calls 91–110 position
+changes, and the binary carries both families. Each refusal is journalled with
+the subtype and the target, so one application from the console names the
+family instead of a coin flip deciding it.
+
+The save now carries a `changed` list. A seeded card altered by a consumable
+is neither acquired nor sold, so the effect used to be forgotten on relaunch
+while the consumable stayed spent.
+
+`docs/CONSUMABLES.md`. Verified over HTTP end to end; not yet applied from the
+console.
+
+## 2026-08-11 a pack was twelve players, and retail sells three
+
+Retail FIFA 14 sells twelve items and only three of them are players. Every
+pack here drew twelve, so no contract, kit, badge, ball, stadium, manager or
+staff card has ever come out of one — the consumables tab showed the club's
+seed and nothing else, for as long as this server has existed.
+
+`PACK_SPECS` now carries `players` per pack, and the nine other slots draw
+from the same two sources the club is seeded from. The draw weights the
+consumable *family* rather than the templates, because the catalogue holds 42
+training cards against 13 contracts and an even draw starves a club of the one
+thing it actually runs out of. The tier never relaxes: chemistry styles are
+gold-only, and relaxing it put a 99-rated style in a Silver Pack.
+
+Duplicates are now players only. A second contract is a second contract, not a
+repeat, and marking it offered to quick-sell a card the club should collect.
+
+`docs/PACK_CONTENTS.md`, including the byte ceiling on club responses that was
+built, measured against 374 real responses, and removed.
+
+Not yet confirmed on the console — no pack has been opened since the change.
 
 ## 2026-08-10 the cups have a shape, and the season document had invented names
 

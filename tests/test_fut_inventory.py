@@ -19,7 +19,9 @@ def test_the_catalogue_is_built_from_the_shipped_packs_not_invented() -> None:
     # 158023 is Messi and 167397 is Neymar in FIFA 14's own numbering. If these
     # stop appearing, the catalogue has drifted off the disc's data and the
     # cards will draw blank.
-    assets = {item["assetId"] for item in INVENTORY.items}
+    assets = {
+        item["assetId"] for item in INVENTORY.items if item["itemType"] == "player"
+    }
     assert 158023 in assets
     assert 167397 in assets
 
@@ -348,7 +350,9 @@ def test_buying_a_listing_debits_the_wallet_and_hands_over_the_card() -> None:
     from fut_inventory import CardCatalogue, Wallet
 
     catalogue = CardCatalogue()
-    wallet = Wallet()
+    # Era-accurate prices: the top of the market is a Team of the Year at
+    # seven million, so a test that buys the first listing needs the coins.
+    wallet = Wallet(coins=50_000_000)
     page = json.loads(catalogue.auctions({"start": "0", "num": "3"}, wallet.coins))
     listing = page["auctionInfo"][0]
 
@@ -367,7 +371,9 @@ def test_a_bid_below_buy_now_leaves_the_auction_running() -> None:
     from fut_inventory import CardCatalogue, Wallet
 
     catalogue = CardCatalogue()
-    wallet = Wallet()
+    # Era-accurate prices: the top of the market is a Team of the Year at
+    # seven million, so a test that buys the first listing needs the coins.
+    wallet = Wallet(coins=50_000_000)
     page = json.loads(catalogue.auctions({"start": "0", "num": "3"}, wallet.coins))
     listing = page["auctionInfo"][0]
 
@@ -404,16 +410,26 @@ def test_a_search_result_can_still_be_bid_on_afterwards() -> None:
 def test_the_club_holds_more_than_players() -> None:
     # The Consommables, Éléments club and Personnel tabs each filter on an item
     # type; serving players only leaves them empty and their filters inert.
+    from fut_inventory import consumable_family
+
     kinds = {item["itemType"] for item in INVENTORY.items}
-    for kind in ("contract", "fitness", "playStyle", "kit", "badge", "stadium",
+    # FUT's two consumable types, not one per family: `cardsubtypeid` carries
+    # the family and `itemType` only says develop or train.
+    for kind in ("development", "training", "kit", "badge", "stadium",
                  "ball", "staff", "manager"):
         assert kind in kinds, kind
+
+    families = {consumable_family(item) for item in INVENTORY.items}
+    for family in ("contract", "fitness", "playStyle"):
+        assert family in families, family
 
 
 def test_consumables_carry_an_amount() -> None:
     # A contract card that grants no matches is not a contract card.
     for item in INVENTORY.items:
-        if item.get("consumableType") in ("contract", "fitness"):
+        from fut_inventory import consumable_family
+
+        if consumable_family(item) in ("contract", "fitness"):
             assert item["amount"] > 0
 
 
@@ -623,9 +639,20 @@ def test_the_starter_packs_hold_no_specials() -> None:
     # They are free.
     assert shop.wallet.coins == coins_before
 
-    for card in shop.pending:
+    players = [c for c in shop.pending if c["itemType"] == "player"]
+    for card in players:
         assert inventory.is_ordinary(card), card.get("rarity")
         assert card["rating"] <= inventory.STARTER_RATING_CAP
+
+    # Three players a pack, not twelve -- the other nine slots are what a new
+    # club actually needs, and it opened with none of them until they were
+    # drawn here too.
+    assert len(players) == sum(
+        inventory.PACK_SPECS[p]["players"] for p in inventory.STARTER_PACKS
+    )
+    from fut_inventory import consumable_family
+
+    assert any(consumable_family(c) == "contract" for c in shop.pending)
 
 
 def test_ordinary_excludes_every_special() -> None:
@@ -853,9 +880,61 @@ def test_a_cup_is_only_active_once_it_has_been_entered() -> None:
         saved = json.loads(inventory.TOURNAMENT_PROGRESS.response(3))
         assert saved["round"] == 2
         assert saved["tournamentData"] == "QQ=="
+        # Exactly the five members the client itself writes, and no others.
+        # A duplicate `progressdata` beside `progressData` is the same known
+        # field twice, not a sibling the parser skips; resuming a saved cup
+        # froze the title on the first GET this route ever answered.
+        assert set(saved) == {
+            "round",
+            "dataVersion",
+            "tournamentData",
+            "progressDataVersion",
+            "progressData",
+        }
         # The season spelling is still accepted on the way in.
         inventory.TOURNAMENT_PROGRESS.apply(3, {"round": 3, "data": "Ug=="})
         assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3))["tournamentData"] == "Ug=="
+    finally:
+        inventory.TOURNAMENT_PROGRESS.entries.clear()
+
+
+def test_a_cup_entered_but_never_played_is_not_a_run_to_resume() -> None:
+    # The client saves its draw the moment the bracket is built: the full
+    # sixteen-team blob, round one, and a progress blob of four zero bytes.
+    # Handing that back froze the title twice -- the second time on a reply
+    # byte for byte identical to the client's own PUT, which is what rules the
+    # document itself out. Nothing is lost by calling it no run: no match has
+    # been played, and the draw is redrawn on the way in.
+    import fut_inventory as inventory
+
+    inventory.TOURNAMENT_PROGRESS.entries.clear()
+    try:
+        inventory.TOURNAMENT_PROGRESS.apply(
+            3,
+            {
+                "round": 1,
+                "dataVersion": 1,
+                "tournamentData": "AAAK7h+LCAAA",
+                "progressDataVersion": 1,
+                "progressData": "AAAAAA==",
+            },
+        )
+        assert inventory.TOURNAMENT_PROGRESS.active_ids() == []
+        assert json.loads(inventory.active_tournaments_response())["tournamentId"] == []
+        assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3)) == {
+            "tournamentId": 3
+        }
+
+        # A run with a real progress blob is a real run and comes back whole.
+        inventory.TOURNAMENT_PROGRESS.apply(3, {"progressData": "AAAAAgAB"})
+        assert inventory.TOURNAMENT_PROGRESS.active_ids() == [3]
+        assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3))["round"] == 1
+
+        # So is one that has reached a later round.
+        inventory.TOURNAMENT_PROGRESS.apply(
+            3, {"round": 2, "progressData": "AAAAAA=="}
+        )
+        assert inventory.TOURNAMENT_PROGRESS.active_ids() == [3]
     finally:
         inventory.TOURNAMENT_PROGRESS.entries.clear()
 
@@ -875,6 +954,16 @@ def test_team_of_the_week_is_a_full_side() -> None:
         card["resourceId"] & 0x00FF_FFFF == card["assetId"]
         for card in squad["itemData"]
     )
+
+
+def _players(opened: dict) -> list:
+    """The player cards of an opened pack.
+
+    A pack is three players and nine consumables/club items now, so
+    `itemList[0]` is no longer a player and the club's player list no longer
+    grows by the size of the pack.
+    """
+    return [item for item in opened["itemList"] if item["itemType"] == "player"]
 
 
 def test_a_card_sent_to_the_club_is_in_the_club() -> None:
@@ -898,7 +987,7 @@ def test_a_card_sent_to_the_club_is_in_the_club() -> None:
 
     before = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
     opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(21)))
-    kept = opened["itemList"][0]["id"]
+    kept = _players(opened)[0]["id"]
     actions.move({"itemData": [{"id": kept, "pile": 7}]})
 
     owned = json.loads(inventory.club_response({"type": "player"}))["itemData"]
@@ -954,7 +1043,7 @@ def test_listing_a_card_takes_it_out_of_the_club() -> None:
 
     inventory, shop, actions = _fresh()
     opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(41)))
-    card = opened["itemList"][0]["id"]
+    card = _players(opened)[0]["id"]
     actions.move({"itemData": [{"id": card, "pile": 7}]})
     owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
 
@@ -990,14 +1079,20 @@ def test_a_duplicate_is_kept_and_names_what_it_repeats() -> None:
     owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
 
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
-    assert all(item.get("duplicateItemId") for item in second["itemList"])
+    # Only players duplicate: a second contract card is a second contract.
+    assert all(item.get("duplicateItemId") for item in _players(second))
+    assert not any(
+        item.get("duplicateItemId")
+        for item in second["itemList"]
+        if item["itemType"] != "player"
+    )
     for item in second["itemList"]:
         actions._keep(dict(item))
 
     # The duplicate is kept: the card names what it repeats, so the screen can
     # offer the choice rather than the server making it.
     after = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
-    assert after == owned + second["numberItems"]
+    assert after == owned + len(_players(second))
 
 
 def test_a_club_holds_one_of_any_card() -> None:
@@ -1005,7 +1100,7 @@ def test_a_club_holds_one_of_any_card() -> None:
 
     inventory, shop, actions = _fresh()
     opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(42)))
-    card = opened["itemList"][0]["id"]
+    card = _players(opened)[0]["id"]
     actions.move({"itemData": [{"id": card, "pile": 7}]})
     owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
     # The same item id is the same card, not a second one.
@@ -1058,7 +1153,7 @@ def test_the_club_survives_a_restart() -> None:
         shop = PackShop(CardCatalogue(), wallet)
         actions = CardActions(shop, wallet, inventory)
         opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(61)))
-        kept = [item["id"] for item in opened["itemList"][:2]]
+        kept = [item["id"] for item in _players(opened)[:2]]
         actions.move({"itemData": [{"id": item, "pile": 7} for item in kept]})
         ClubSave(path).save(inventory, wallet, actions)
         owned = len(json.loads(inventory.club_response({"type": "player"}))["itemData"])
@@ -1090,7 +1185,9 @@ def test_a_bought_card_joins_the_club() -> None:
         Wallet,
     )
 
-    inventory, wallet = ClubInventory(), Wallet()
+    # Era-accurate prices: the top of the market is a Team of the Year at
+    # seven million, so a test that buys the first listing needs the coins.
+    inventory, wallet = ClubInventory(), Wallet(coins=50_000_000)
     catalogue = CardCatalogue()
     actions = CardActions(PackShop(catalogue, wallet), wallet, inventory)
 
@@ -1115,7 +1212,7 @@ def test_a_bought_card_can_be_put_in_the_squad() -> None:
         Wallet,
     )
 
-    inventory, wallet = ClubInventory(), Wallet()
+    inventory, wallet = ClubInventory(), Wallet(coins=50_000_000)
     catalogue = CardCatalogue()
     actions = CardActions(PackShop(catalogue, wallet), wallet, inventory)
 
@@ -1158,7 +1255,7 @@ def test_a_bought_card_waits_in_the_purchased_pile() -> None:
         Wallet,
     )
 
-    inventory, wallet = ClubInventory(), Wallet()
+    inventory, wallet = ClubInventory(), Wallet(coins=50_000_000)
     catalogue = CardCatalogue()
     shop = PackShop(catalogue, wallet)
     actions = CardActions(shop, wallet, inventory)
@@ -1282,15 +1379,120 @@ def test_a_card_pulled_twice_is_reported_as_a_duplicate() -> None:
     # the last assertion below is what keeps it that way.
     second = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(3)))
     marked = [item for item in second["itemList"] if item.get("duplicateItemId")]
-    assert len(marked) == second["numberItems"]
+    assert marked and len(marked) == len(_players(second))
     owned = {item["id"] for item in inventory.items}
     assert all(item["duplicateItemId"] in owned for item in marked)
 
     pairs = second["duplicateItemIdList"]
-    assert len(pairs) == second["numberItems"]
+    assert len(pairs) == len(_players(second))
     assert all(set(pair) == {"itemId", "duplicateItemId"} for pair in pairs)
     assert all(pair["duplicateItemId"] in owned for pair in pairs)
     assert all(pair["itemId"] != pair["duplicateItemId"] for pair in pairs)
+
+
+def test_a_pack_is_three_players_and_nine_other_things() -> None:
+    # Every pack drew twelve players, so no contract, kit, badge, ball,
+    # stadium, manager or staff card has ever come out of one. The club's
+    # consumables tab only ever showed what the club was seeded with.
+    import random
+
+    from fut_inventory import (
+        PACK_SPECS,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    shop = PackShop(CardCatalogue(), Wallet(coins=10_000_000), ClubInventory())
+    rng = random.Random(11)
+    for pack_id, spec in PACK_SPECS.items():
+        opened = json.loads(shop.open_pack(pack_id, rng))
+        items = opened["itemList"]
+        assert len(items) == spec["count"]
+        assert len({item["id"] for item in items}) == spec["count"]
+        assert len(_players(opened)) == spec["players"]
+
+
+def test_a_pack_never_hands_out_a_card_from_another_tier() -> None:
+    # Chemistry styles are rated 90 and above and so exist in gold only.
+    # Choosing that family in a Silver Pack and then relaxing the tier put a
+    # 99-rated style in a silver pack.
+    import random
+
+    from fut_inventory import (
+        TIER_RATINGS,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    shop = PackShop(CardCatalogue(), Wallet(coins=10_000_000), ClubInventory())
+    rng = random.Random(3)
+    for pack_id, tier in ((103, "bronze"), (203, "silver"), (303, "gold")):
+        low, high = TIER_RATINGS[tier]
+        for _ in range(40):
+            for item in json.loads(shop.open_pack(pack_id, rng))["itemList"]:
+                rating = item.get("rating", 0)
+                # Kits, badges, balls and stadiums are rated 0: no tier.
+                if rating:
+                    assert low <= rating <= high, (tier, item["itemType"], rating)
+
+
+def test_a_pack_hands_out_more_contracts_than_training() -> None:
+    # There are 42 training cards in the catalogue and 13 contracts, so an
+    # even draw across the templates gives a club three times more training
+    # than contract -- and a club that still runs out of contracts. The draw
+    # weights the family, not the number of variants it happens to have.
+    import collections
+    import random
+
+    from fut_inventory import (
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+        consumable_family,
+    )
+
+    shop = PackShop(CardCatalogue(), Wallet(coins=10_000_000), ClubInventory())
+    rng = random.Random(5)
+    seen, wire = collections.Counter(), collections.Counter()
+    for _ in range(120):
+        for item in json.loads(shop.open_pack(303, rng))["itemList"]:
+            wire[item["itemType"]] += 1
+            seen[consumable_family(item) or item["itemType"]] += 1
+    assert seen["contract"] > seen["training"]
+    assert seen["contract"] > seen["healing"]
+    # Consumables only. Kits, badges, balls and stadiums carry resource ids
+    # invented in fut_inventory -- no table in the game's databases names them
+    # -- and the invented ones drew blank card backs on the pack screen.
+    assert not any(seen[kind] for kind in ("kit", "badge", "ball", "stadium",
+                                           "manager", "staff"))
+    # On the wire they carry FUT's own two types, never the family name.
+    assert wire["development"] and wire["training"]
+    assert not any(wire[family] for family in ("contract", "fitness", "healing"))
+
+
+def test_a_second_contract_card_is_not_a_duplicate() -> None:
+    # Consumables stack. Marking one as a repeat offers to quick-sell a card
+    # the club is meant to accumulate.
+    import random
+
+    from fut_inventory import CardCatalogue, ClubInventory, PackShop, Wallet
+
+    inventory = ClubInventory()
+    shop = PackShop(CardCatalogue(), Wallet(coins=10_000_000), inventory)
+    rng = random.Random(17)
+    for _ in range(20):
+        opened = json.loads(shop.open_pack(303, rng))
+        marked = {
+            item["id"] for item in opened["itemList"] if item.get("duplicateItemId")
+        }
+        players = {item["id"] for item in _players(opened)}
+        assert marked <= players
+        assert {pair["itemId"] for pair in opened["duplicateItemIdList"]} <= players
 
 
 def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
@@ -1313,14 +1515,27 @@ def test_a_rare_and_a_base_card_are_not_duplicates_of_each_other() -> None:
 
 
 def test_consumables_use_the_member_names_the_binary_carries() -> None:
-    # The response is an object with named members -- consumablesContractPlayer
-    # and the rest, from CardsDLL's JSON table between 0x89030F9C and
-    # 0x89031148 -- not an entries array. Numbered keys meant nothing to the
-    # screen, which reported none available while the club held sixteen.
-    from fut_inventory import ClubInventory, consumable_stats_response
+    # The named members come from CardsDLL's JSON table between 0x89030F9C and
+    # 0x89031148. They are necessary and they were not sufficient: the Apply
+    # Consumable popup is backed by a sticker-book stats response and binds its
+    # buttons from `stat`/`entries` rows in context 6, so the club could hold
+    # 65 contracts, every scalar could be right, and the popup still reported
+    # none available. Both shapes go out, carrying the same counts.
+    from fut_inventory import (
+        CONSUMABLE_STAT_CONTEXT,
+        ClubInventory,
+        consumable_stats_response,
+    )
 
     document = json.loads(consumable_stats_response(ClubInventory()))
-    assert "entries" not in document
+
+    scalars = {k: v for k, v in document.items() if isinstance(v, int)}
+    assert document["stat"] == document["entries"]
+    assert len(document["entries"]) == len(scalars)
+    for entry in document["entries"]:
+        assert entry["contextId"] == CONSUMABLE_STAT_CONTEXT
+        assert entry["contextValue"] == 0
+        assert entry["typeValue"] == scalars[entry["type"]]
     for member in (
         "consumablesContractPlayer",
         "consumablesFitnessPlayer",
@@ -1333,7 +1548,7 @@ def test_consumables_use_the_member_names_the_binary_carries() -> None:
     # from the squad screen decides from these counts alone, so a goalkeeper
     # made it read consumablesTrainingGk -- zero -- and report none available.
     assert document["consumablesTrainingGk"] > 0
-    assert all(value > 0 for value in document.values())
+    assert all(value > 0 for value in scalars.values())
     # The aggregate members cover their family once each. Chemistry styles
     # have no aggregate of their own -- the binary carries one member for an
     # outfielder's and one for a keeper's, and nothing above them -- so the
@@ -1384,7 +1599,9 @@ def test_the_club_search_understands_the_consumable_family() -> None:
     # Past the club's whole stock of consumables, or both answers come back
     # capped at the page size and the comparison says nothing.
     family = json.loads(inventory.club_response({"type": "consumable", "count": "500"}))
-    one_kind = json.loads(inventory.club_response({"type": "contract", "count": "500"}))
+    one_kind = json.loads(
+        inventory.club_response({"type": "development", "count": "500"})
+    )
 
     assert len(family["itemData"]) > len(one_kind["itemData"]) > 0
     # Asking for the family must not sweep in players.
@@ -1397,21 +1614,641 @@ def test_consumables_come_from_the_game_database() -> None:
     # "Entrainement equipe", and applying one did nothing -- the title reads a
     # consumable's name and effect out of its own database by subtype, and
     # draws it by asset id, so neither is ours to pick.
-    from fut_inventory import CONSUMABLE_TYPES
+    from fut_inventory import CONSUMABLE_TYPES, _consumable_definitions
 
     consumables = [
         item for item in INVENTORY.items
-        if item.get("consumableType") in CONSUMABLE_TYPES
+        if item.get("itemType") in CONSUMABLE_TYPES
     ]
     assert consumables
 
     subtypes = {item["cardsubtypeid"] for item in consumables}
     # A single subtype is what "all of them are the same card" looks like.
     assert len(subtypes) > 40
-    assert all(item["assetId"] < 1000 for item in consumables)
-    # Each card names the member CardsDLL counts it under, and a keeper's
-    # training card is a different member from an outfielder's.
-    members = {item["consumableMember"] for item in consumables}
+    # `cardassetid`, not `assetId`: a consumable's art has its own member, and
+    # sending only `assetId` drew NOT FOUND on the pack screen.
+    assert all(item["cardassetid"] < 1000 for item in consumables)
+    assert not any("assetId" in item for item in consumables)
+
+    # The member CardsDLL counts a card under comes from the catalogue, keyed
+    # by the card's own database id -- which is the item's `resourceId`. It
+    # used to travel on the item itself under a name CardsDLL does not carry.
+    definitions = _consumable_definitions()
+    members = {
+        definitions[item["resourceId"]]["member"]
+        for item in consumables
+        if item["resourceId"] in definitions
+    }
     assert "consumablesTrainingGk" in members
     assert "consumablesTrainingPlayer" in members
     assert "consumablesContractManager" in members
+
+
+def _rack():
+    from fut_inventory import ClubInventory, ConsumableRack, _consumable_definitions
+
+    inventory = ClubInventory()
+    definitions = _consumable_definitions()
+    by_subtype: dict[int, list] = {}
+    for item in inventory.items:
+        row = definitions.get(item.get("resourceId"))
+        if row:
+            by_subtype.setdefault(row["cardsubtypeid"], []).append(item)
+    return inventory, ConsumableRack(inventory), by_subtype
+
+
+def test_a_contract_grants_matches_and_spends_the_card() -> None:
+    # The club could hold a contract and show it, and there was no route that
+    # did anything with one. Every consumable in FUT was decoration.
+    inventory, rack, by_subtype = _rack()
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+    player["contract"] = 10
+    from fut_inventory import consumable_family
+
+    held = len([i for i in inventory.items if consumable_family(i) == "contract"])
+
+    card = by_subtype[201][0]
+    result = rack.apply(card["resourceId"], [player["id"]])
+
+    assert player["contract"] > 10
+    assert result["consumedItemId"] == card["id"]
+    # Spent, not merely reported spent.
+    assert card not in inventory.items
+    assert (
+        len([i for i in inventory.items if consumable_family(i) == "contract"])
+        == held - 1
+    )
+
+
+def test_a_contract_grants_less_to_a_better_player() -> None:
+    # A contract grants a different number of matches to a gold, a silver and
+    # a bronze card; the card database carries all three figures.
+    from fut_inventory import _consumable_definitions
+
+    inventory, rack, by_subtype = _rack()
+    row = _consumable_definitions()[by_subtype[201][0]["resourceId"]]
+    assert row["bronze"] > row["gold"]
+
+    players = [i for i in inventory.items if i["itemType"] == "player"]
+    gold = next(p for p in players if p["rating"] >= 75)
+    gold["contract"] = 0
+    rack.apply(by_subtype[201][0]["resourceId"], [gold["id"]])
+    assert gold["contract"] == row["gold"]
+
+
+def test_a_squad_fitness_card_restores_the_whole_eleven() -> None:
+    inventory, rack, by_subtype = _rack()
+    for player in inventory.squad:
+        player["fitness"] = 50
+
+    result = rack.apply(by_subtype[220][0]["resourceId"], [])
+
+    assert all(player["fitness"] > 50 for player in inventory.squad)
+    assert len(result["itemData"]) == len(inventory.squad)
+
+
+def test_healing_refuses_the_wrong_injury_and_a_healthy_player() -> None:
+    from fut_inventory import ConsumableRefused
+
+    inventory, rack, by_subtype = _rack()
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+
+    # 211 is the head card; the binary's own list is head, upperbody, arm,
+    # back, knee, leg, foot from 211, and 218 heals anything.
+    try:
+        rack.apply(by_subtype[211][0]["resourceId"], [player["id"]])
+    except ConsumableRefused as refusal:
+        assert "not injured" in str(refusal)
+    else:
+        raise AssertionError("a healthy player was healed")
+
+    player["injuryGames"], player["injuryType"] = 3, "knee"
+    try:
+        rack.apply(by_subtype[211][0]["resourceId"], [player["id"]])
+    except ConsumableRefused as refusal:
+        assert "knee" in str(refusal)
+    else:
+        raise AssertionError("a head card treated a knee injury")
+
+    rack.apply(by_subtype[215][0]["resourceId"], [player["id"]])
+    assert player["injuryGames"] < 3
+
+
+def test_a_refused_card_is_not_spent() -> None:
+    from fut_inventory import ConsumableRefused
+
+    inventory, rack, by_subtype = _rack()
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+    card = by_subtype[211][0]
+    held = len(inventory.items)
+
+    try:
+        rack.apply(card["resourceId"], [player["id"]])
+    except ConsumableRefused:
+        pass
+    # Nothing is written and nothing is spent until the effect is decided.
+    assert card in inventory.items
+    assert len(inventory.items) == held
+
+
+def test_training_raises_one_attribute_or_all_six() -> None:
+    inventory, rack, by_subtype = _rack()
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+    for entry in player["attributeList"]:
+        entry["value"] = 50
+
+    rack.apply(by_subtype[61][0]["resourceId"], [player["id"]])
+    values = [entry["value"] for entry in player["attributeList"]]
+    assert values[0] > 50 and values[1:] == [50] * 5
+
+    rack.apply(by_subtype[67][0]["resourceId"], [player["id"]])
+    assert all(entry["value"] > 50 for entry in player["attributeList"])
+
+
+def test_the_contested_families_are_refused_and_recorded() -> None:
+    # 91-136 and 232. This server's catalogue calls 91-110 play styles, the PC
+    # revival's calls them position changes, and the binary carries both a
+    # FUT_CONSUMABLE_PLAYERSTYLE and a FUT_CONSUMABLE_POSITIONMOD. Writing
+    # either field on a coin flip changes the wrong thing on a real card.
+    from fut_inventory import ConsumableRefused
+
+    inventory, rack, by_subtype = _rack()
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+    for subtype in (91, 121, 232):
+        card = by_subtype[subtype][0]
+        try:
+            rack.apply(card["resourceId"], [player["id"]])
+        except ConsumableRefused:
+            pass
+        else:
+            raise AssertionError(f"subtype {subtype} was applied")
+        assert card in inventory.items
+    # Recorded, so one application from the console names the family.
+    assert [entry["cardsubtypeid"] for entry in rack.refused] == [91, 121, 232]
+
+
+def test_a_card_changed_by_a_consumable_survives_a_restart() -> None:
+    import tempfile
+    from pathlib import Path
+
+    from fut_inventory import (
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        ClubSave,
+        PackShop,
+        Wallet,
+    )
+
+    inventory, rack, by_subtype = _rack()
+    wallet = Wallet()
+    shop = PackShop(CardCatalogue(), wallet, inventory)
+    actions = CardActions(shop, wallet, inventory)
+    player = next(i for i in inventory.items if i["itemType"] == "player")
+    player["contract"] = 10
+    rack.apply(by_subtype[201][0]["resourceId"], [player["id"]])
+    expected = player["contract"]
+
+    with tempfile.TemporaryDirectory() as temp:
+        path = Path(temp) / "club.json"
+        ClubSave(path).save(inventory, wallet, actions)
+
+        # A card the club started with, changed since: neither acquired nor
+        # sold, so it used to be forgotten on the next launch.
+        restored, purse = ClubInventory(), Wallet()
+        again = CardActions(PackShop(CardCatalogue(), purse), purse, restored)
+        ClubSave(path).load(restored, purse, again)
+
+        reloaded = next(i for i in restored.items if i["id"] == player["id"])
+        assert reloaded["contract"] == expected
+        # The squad holds the same objects, so it must see the change too.
+        in_squad = [i for i in restored.squad if i["id"] == player["id"]]
+        assert not in_squad or in_squad[0] is reloaded
+
+
+def _pack_shop():
+    from fut_inventory import CardCatalogue, ClubInventory, PackShop, Wallet
+
+    return PackShop(CardCatalogue(), Wallet(coins=10**12), ClubInventory())
+
+
+def test_the_rating_bands_are_the_stated_ones() -> None:
+    # The old draw was uniform over the tier, which was close to these by
+    # coincidence -- the gold pool happens to hold 862/254/66/18/4. Close by
+    # coincidence moves the moment the catalogue is edited.
+    import collections
+    import random
+
+    from fut_inventory import RATING_BANDS, is_ordinary
+
+    shop, rng = _pack_shop(), random.Random(1)
+    seen, total = collections.Counter(), 0
+    for _ in range(1500):
+        for item in json.loads(shop.open_pack(303, rng))["itemList"]:
+            if item["itemType"] != "player" or not is_ordinary(item):
+                continue
+            total += 1
+            for span, _weight in RATING_BANDS["gold"]:
+                if span[0] <= item["rating"] <= span[1]:
+                    seen[span] += 1
+
+    for span, weight in RATING_BANDS["gold"]:
+        share = 100 * seen[span] / total
+        assert abs(share - weight) < max(1.5, weight * 0.35), (span, share, weight)
+
+
+def test_an_ordinary_slot_can_still_hold_a_rare_card() -> None:
+    # "1 Rare" is a minimum, not an exclusivity. Drawing ordinary slots from
+    # non-rares only shut the top bands out of the pack: a gold rated 84 or
+    # better is nearly always a Rare Gold, and 84-86 came out at 0.65%
+    # against a stated 6%.
+    import random
+
+    from fut_inventory import is_ordinary
+
+    shop, rng = _pack_shop(), random.Random(2)
+    rares = 0
+    players = 0
+    for _ in range(200):
+        for item in json.loads(shop.open_pack(303, rng))["itemList"]:
+            if item["itemType"] == "player" and is_ordinary(item):
+                players += 1
+                rares += bool(item["rareflag"])
+    assert 0 < rares < players
+
+
+def test_a_special_is_rolled_once_per_pack_against_its_stated_chance() -> None:
+    # `rareflag` is set on a Rare Gold and on every special alike, so the old
+    # rare slot drew a special seven times out of ten and 15% of Gold Packs
+    # held one. Nothing decided that; it was the shape of the catalogue.
+    import random
+
+    from fut_inventory import SPECIAL_CHANCE, is_ordinary
+
+    shop, rng = _pack_shop(), random.Random(3)
+    for pack_id in (103, 303, 304):
+        packs = 1500
+        held = 0
+        for _ in range(packs):
+            cards = json.loads(shop.open_pack(pack_id, rng))["itemList"]
+            if any(
+                card["itemType"] == "player" and not is_ordinary(card)
+                for card in cards
+            ):
+                held += 1
+        share = held / packs
+        target = SPECIAL_CHANCE[pack_id]
+        assert abs(share - target) < max(0.01, target * 0.35), (pack_id, share, target)
+
+
+def test_the_special_family_is_chosen_by_weight_not_by_stock() -> None:
+    # The catalogue holds 517 World Cup cards in the gold tier against 347
+    # Team of the Week, so drawing evenly made World Cup the commonest
+    # special in the game. Team of the Week is what a pack should mostly give.
+    import collections
+    import random
+
+    from fut_inventory import SPECIAL_FAMILY_WEIGHTS, is_ordinary
+
+    shop, rng = _pack_shop(), random.Random(5)
+    seen = collections.Counter()
+    for _ in range(4000):
+        for item in json.loads(shop.open_pack(304, rng))["itemList"]:
+            if item["itemType"] == "player" and not is_ordinary(item):
+                seen[(item["rarity"] or "").lower()] += 1
+
+    assert seen["team of the week"] > seen["world cup"]
+    assert seen["team of the week"] > sum(
+        count for name, count in seen.items() if name != "team of the week"
+    )
+    # Legends are weighted to zero until one has been seen to render.
+    assert SPECIAL_FAMILY_WEIGHTS["legend"] == 0.0
+    assert seen["legend"] == 0
+
+
+def test_no_pack_holds_more_than_two_elite_cards() -> None:
+    import random
+
+    from fut_inventory import ELITE_RATING, MAX_ELITE_PER_PACK
+
+    shop, rng = _pack_shop(), random.Random(7)
+    for pack_id in (303, 305, 307):
+        for _ in range(500):
+            cards = json.loads(shop.open_pack(pack_id, rng))["itemList"]
+            elite = [
+                card
+                for card in cards
+                if card["itemType"] == "player" and card["rating"] >= ELITE_RATING
+            ]
+            assert len(elite) <= MAX_ELITE_PER_PACK
+
+
+def test_withdrawing_a_listed_consumable_puts_it_back_too() -> None:
+    # The guard asked whether the card carried `assetId`, which stopped being
+    # true the moment a consumable started carrying `cardassetid` instead. A
+    # withdrawn contract was dropped on the floor, silently.
+    import random
+
+    from fut_inventory import (
+        GOLD_PACK_ID,
+        CardActions,
+        CardCatalogue,
+        ClubInventory,
+        PackShop,
+        Wallet,
+    )
+
+    for kind in ("player", "consumable"):
+        inventory, wallet = ClubInventory(), Wallet(coins=10**7)
+        shop = PackShop(CardCatalogue(), wallet, inventory)
+        actions = CardActions(shop, wallet, inventory)
+        opened = json.loads(shop.open_pack(GOLD_PACK_ID, random.Random(17)))
+        card = next(
+            item
+            for item in opened["itemList"]
+            if (item["itemType"] == "player") == (kind == "player")
+        )
+        actions.move({"itemData": [{"id": card["id"], "pile": 5}]})
+        listing = json.loads(actions.list_for_sale({"itemData": {"id": card["id"]}}))
+        actions.withdraw(listing["tradeId"])
+        assert [item["id"] for item in actions.transfer] == [card["id"]], kind
+
+
+def test_an_unlockable_is_never_drawn() -> None:
+    # The console named subtype 232: "DEBLOQUER / Capacite +8 moral" and
+    # "Grosse affluence morale 6". Stadium unlockables, and the client refuses
+    # to keep one -- it raises a dialog telling the player to use it from the
+    # action menu instead. Nothing here serves that route, so a drawn one is
+    # dead weight plus a dialog on every pack.
+    import collections
+    import random
+
+    from fut_inventory import UNDRAWN_CONSUMABLE_TYPES
+
+    from fut_inventory import consumable_family
+
+    shop, rng = _pack_shop(), random.Random(3)
+    seen = collections.Counter()
+    for _ in range(300):
+        for item in json.loads(shop.open_pack(304, rng))["itemList"]:
+            seen[consumable_family(item) or item["itemType"]] += 1
+
+    assert "position" in UNDRAWN_CONSUMABLE_TYPES
+    for kind in UNDRAWN_CONSUMABLE_TYPES:
+        assert seen[kind] == 0
+    # The families that are drawn still are.
+    assert seen["contract"] and seen["fitness"] and seen["healing"]
+
+
+def test_the_bare_club_holds_one_of_every_kind_it_owns() -> None:
+    # Slicing the sorted list took the first N cards, and the sort puts
+    # players first, so the bare response was ninety players and nothing else
+    # -- every consumable, kit, badge and staff card cut off.
+    #
+    # That is what "Pas d'élément disponible" was on the apply-consumable
+    # picker: it reads the club the client already holds, the club it held had
+    # no consumable in it, and it never asked the server for more. The counts
+    # said 35 contracts and the list said none.
+    import collections
+
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    bare = json.loads(club.club_response())["itemData"]
+    assert len(bare) <= inventory.CLUB_UNFILTERED_LIMIT
+    assert len(bare) < len(club.items)
+
+    owned = {item.get("itemType") for item in club.items}
+    served = collections.Counter(item.get("itemType") for item in bare)
+    assert set(served) == owned
+    assert served["player"] > 1
+
+    # And it stays under what the console was measured surviving.
+    assert len(club.club_response()) < 77 * 1024
+
+
+def test_the_bare_club_keeps_the_order_it_was_sorted_into() -> None:
+    # The client reads the list in order and the screen pages it, so the cap
+    # must not shuffle what survived it.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    bare = json.loads(club.club_response())["itemData"]
+    kept = {item["id"] for item in bare}
+    whole = json.loads(club.club_response({"count": str(len(club.items))}))["itemData"]
+    expected = [item["id"] for item in whole if item["id"] in kept]
+    assert [item["id"] for item in bare] == expected
+
+
+def test_club_user_carries_the_cards_the_picker_binds_against() -> None:
+    # `/clubUser` answered with the persona and 122 bytes, so the Apply
+    # Consumable picker had nothing to bind and never asked the server for
+    # more -- "Pas d'élément disponible" with 35 contracts in the club.
+    import collections
+
+    from fut_inventory import (
+        CONSUMABLE_TYPES,
+        ClubInventory,
+        club_user_response,
+    )
+
+    club = ClubInventory()
+    payload = club_user_response(club, "Fondateur FUT")
+    document = json.loads(payload)
+
+    assert document["user"] == [
+        {"persona": "Fondateur FUT", "personaId": 0, "public": False}
+    ]
+    items = document["itemData"]
+    kinds = collections.Counter(item["itemType"] for item in items)
+
+    # Players too: the route is the client's face-card cache bootstrap, and
+    # the PC revival appends consumables to the normal first player page.
+    assert kinds["player"] > 0
+    # On the wire, FUT's own two consumable types and never a family name.
+    assert set(kinds) - {"player"} == CONSUMABLE_TYPES
+
+    assert document["total"] == document["count"] == len(items)
+
+    # And it stays under what the console was measured surviving.
+    assert len(payload) < 77 * 1024
+
+
+def test_each_consumable_category_answers_with_that_category() -> None:
+    # The picker names a category in the path and asks one at a time:
+    # /club/consumables/contracts, then /fitness, then /development. The route
+    # was matched with `startswith` and answered every one of them with the
+    # club's whole stock -- it asked for contracts and got 242 cards of every
+    # family mixed together, which is not a list of contracts however many
+    # contracts are in it.
+    from fut_inventory import (
+        CONSUMABLE_TYPES,
+        ClubInventory,
+        consumable_family,
+        consumables_response,
+    )
+
+    club = ClubInventory()
+    whole = json.loads(consumables_response(club))["itemData"]
+    assert whole
+
+    for path, family in (
+        ("contracts", "contract"),
+        ("contract", "contract"),
+        ("fitness", "fitness"),
+        ("healing", "healing"),
+        ("playstyle", "playStyle"),
+    ):
+        document = json.loads(consumables_response(club, path))
+        items = document["itemData"]
+        assert items, path
+        assert len(items) < len(whole), path
+        assert {consumable_family(item) for item in items} == {family}, path
+        assert document["total"] == document["count"] == len(items)
+
+    # `development` and `training` are the wire item types, not families, and
+    # mean every card carrying that type.
+    for wire in CONSUMABLE_TYPES:
+        items = json.loads(consumables_response(club, wire))["itemData"]
+        assert items
+        assert {item["itemType"] for item in items} == {wire}
+
+
+def test_a_category_this_club_has_nothing_for_answers_empty() -> None:
+    # The console asks for managerLeagueModifier, and this club holds none --
+    # manager cards are left out of the catalogue. An unknown category used to
+    # fall through to "everything", so a tab headed one thing listed another.
+    from fut_inventory import ClubInventory, consumables_response
+
+    club = ClubInventory()
+    for category in ("managerLeagueModifier", "managerContract", "nonsense"):
+        document = json.loads(consumables_response(club, category))
+        assert document["itemData"] == [], category
+        assert document["total"] == 0
+
+    # The bare path still means everything.
+    assert json.loads(consumables_response(club))["total"] > 0
+
+
+def test_club_user_covers_every_subtype_the_club_owns() -> None:
+    # Twelve cards a family sounds fair until you notice the families span two
+    # subtype blocks each: `training` covers 51-57 and 61-67, `playStyle`
+    # covers 91-110 and 121-136, and the first twelve of either are all from
+    # the low block. Applying to a goalkeeper reads the keeper's block, and
+    # the keeper's block was not in the twelve -- "Pas d'élément disponible"
+    # over a club holding 21 of them.
+    from fut_inventory import (
+        CONSUMABLE_TYPES,
+        ClubInventory,
+        club_user_response,
+    )
+
+    club = ClubInventory()
+    owned = {
+        item["cardsubtypeid"]
+        for item in club.items
+        if item.get("itemType") in CONSUMABLE_TYPES
+    }
+    sent = {
+        item["cardsubtypeid"]
+        for item in json.loads(club_user_response(club, "Fondateur FUT"))["itemData"]
+        if item["itemType"] in CONSUMABLE_TYPES
+    }
+    assert owned
+    assert sent == owned
+
+
+def test_a_finished_match_pays_a_completion_and_a_skill_award() -> None:
+    # `/match/end` answered three empty members and threw the result away: no
+    # coins for the match, no progress in the cup, nothing on the award
+    # screen. A club could win a Gold Cup final and finish exactly as poor as
+    # it started.
+    from fut_inventory import match_reward
+
+    won = match_reward(
+        {
+            "goals": 3, "shotsOnTarget": 7, "successfulTackles": 12,
+            "corners": 5, "passingPercentage": 84, "possessionPercentage": 61,
+            "fouls": 4, "yellowCards": 1, "offsides": 2,
+        },
+        {"goals": 0},
+    )
+    assert won["completionAward"] > 0
+    assert won["skillAward"] > 0
+    assert won["totalCoins"] == won["completionAward"] + won["skillAward"]
+    # A clean sheet is worth keeping.
+    assert won["bonuses"]["cleanSheet"] > 0
+    assert won["penalties"]["cards"] < 0
+
+    # Conceding pays less than not conceding, all else equal.
+    leaky = match_reward({"goals": 3}, {"goals": 4})
+    tidy = match_reward({"goals": 3}, {"goals": 0})
+    assert tidy["totalCoins"] > leaky["totalCoins"]
+
+    # A match nobody finished pays nothing at all.
+    walked = match_reward({"goals": 3}, {"goals": 0}, minutes=20, completed=False)
+    assert walked["totalCoins"] == 0
+
+
+def test_the_reward_is_capped_however_lopsided_the_match() -> None:
+    # Nine goals is worth more than one, and not nine times more.
+    from fut_inventory import MATCH_BONUS_CAPS, match_reward
+
+    thrashing = match_reward({"goals": 30, "shotsOnTarget": 40}, {"goals": 0})
+    assert thrashing["bonuses"]["goals"] == MATCH_BONUS_CAPS["goals"][1]
+    assert thrashing["bonuses"]["shotsOnTarget"] == MATCH_BONUS_CAPS["shotsOnTarget"][1]
+
+
+def test_the_result_is_read_from_the_score_when_it_is_not_stated() -> None:
+    from fut_inventory import match_result
+
+    assert match_result({"endReason": "WIN"}) == "WIN"
+    assert match_result({"endReason": "FORFEIT"}) == "QUIT"
+    assert match_result(
+        {"myMatchStats": {"goals": 2}, "opponentMatchStats": {"goals": 1}}
+    ) == "WIN"
+    assert match_result(
+        {"myMatchStats": {"goals": 1}, "opponentMatchStats": {"goals": 1}}
+    ) == "DRAW"
+    # Nothing recognisable settles as no contest: it pays nothing and moves no
+    # cup, which is the safe reading of a message this server cannot parse.
+    assert match_result({}) == "NO_CONTEST"
+
+
+def test_a_cup_advances_on_a_win_and_starts_again_on_a_loss() -> None:
+    from fut_inventory import TOURNAMENTS, TournamentProgress
+
+    cup = 3
+    final_award = next(a for i, _t, _l, a, _r in TOURNAMENTS if i == cup)
+
+    progress = TournamentProgress()
+    progress.apply(cup, {"round": 1})
+
+    first = progress.advance(cup, "WIN")
+    assert first["round"] == 2
+    assert first["roundCoins"] > 0
+    assert first["prize"] == 0
+
+    # A draw has not settled the round, so it is played again.
+    held = progress.advance(cup, "DRAW")
+    assert held["round"] == 2
+
+    # Four rounds: the prize is the fourth win, not the third.
+    progress.advance(cup, "WIN")
+    progress.advance(cup, "WIN")
+    won = progress.advance(cup, "WIN")
+    assert won["previousRound"] == 4
+    assert won["prize"] == final_award
+    # Winning it does not retire it: this is offline, and a cup you can only
+    # win once stops existing the moment you are good enough to win it.
+    assert won["round"] == 1
+
+    progress.apply(cup, {"round": 3})
+    lost = progress.advance(cup, "LOSS")
+    assert lost["round"] == 1
+    assert lost["roundCoins"] == 0
+
+    # A result nobody recognises moves nothing.
+    progress.apply(cup, {"round": 2})
+    assert progress.advance(cup, "NO_CONTEST")["settled"] is False
+    assert progress.entries[cup]["round"] == 2

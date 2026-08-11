@@ -459,6 +459,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
     GOLD_PACK_ID,
     CardActions,
+    ConsumableRack,
+    ConsumableRefused,
     ClubSave,
     ManagerTasks,
     CardCatalogue,
@@ -477,7 +479,10 @@ from fut_inventory import (  # noqa: E402
     tournament_teams_response,
     club_stats_response,
     consumable_stats_response,
+    club_user_response,
     consumables_response,
+    match_result,
+    match_reward,
     hub_response,
     store_catalogue,
     totw_index_with_squad,
@@ -490,6 +495,12 @@ CARD_CATALOGUE = CardCatalogue()
 WALLET = Wallet()
 PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET, CLUB_INVENTORY)
 CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
+# Applying a contract, a fitness card or a training card. Until this existed
+# the club could hold consumables and show them, and nothing could be done
+# with one.
+CONSUMABLE_RACK = ConsumableRack(CLUB_INVENTORY)
+# The cup a match is being played in, remembered from the last progress save.
+ACTIVE_TOURNAMENT: int | None = None
 
 # Entering FUT needs a relaunch, so without this every session started from the
 # icebreaker packs again: the club counter back to 92, the pack you opened
@@ -502,7 +513,17 @@ CLUB_SAVE = ClubSave()
 # none. Deleting the file by hand between runs is not a fix: the server writes
 # a new one within seconds of the client touching anything.
 if not first_run():
-    CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+    _loaded = CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+    # Said out loud at startup. A cup run that was in the save one evening and
+    # gone the next launch left nothing to look at afterwards -- the only way
+    # to tell what had been restored was to re-read the file by hand and hope
+    # it had not been rewritten since.
+    print(
+        f"club save: loaded={_loaded} coins={WALLET.coins} "
+        f"cups={TOURNAMENT_PROGRESS.state()!r:.120} "
+        f"resumable={TOURNAMENT_PROGRESS.active_ids()}",
+        flush=True,
+    )
 else:
     # A new club opens with three packs: bronze, silver, gold. Ordinary cards
     # only and nothing above 78, so the start is a start. The captain
@@ -1587,6 +1608,12 @@ class IdentityHttpService:
                     peer=self.client_address[0],
                     method=self.command,
                     path=parsed.path,
+                    # The values, not only the names. Logging the names alone
+                    # left every question about what a screen actually asked
+                    # for -- which `type`, which `level` -- answerable only by
+                    # guessing, and the consumable picker was three guesses
+                    # deep before anyone noticed the journal could not say.
+                    query=parsed.query,
                     query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
                     bytes=len(body),
                     headers={name: value for name, value in self.headers.items()},
@@ -1928,6 +1955,12 @@ class IdentityHttpService:
                         except ValueError:
                             document = {}
                         entry = TOURNAMENT_PROGRESS.apply(tournament_id, document)
+                        # Which cup a match belongs to is not in the match
+                        # payload. The client says so by saving progress into
+                        # this cup as it enters it, and that is the only place
+                        # it says so at all.
+                        global ACTIVE_TOURNAMENT
+                        ACTIVE_TOURNAMENT = tournament_id
                         CLUB_SAVE.save(
                             CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
                         )
@@ -1939,6 +1972,19 @@ class IdentityHttpService:
                             body=request_body_preview(body),
                         )
                     payload = TOURNAMENT_PROGRESS.response(tournament_id)
+                    # Journalled on the way out as well. Resuming a cup froze
+                    # the title on the first GET this route ever received, and
+                    # nothing recorded what was answered -- the reply had to be
+                    # reconstructed from the code rather than read.
+                    owner.journal.event(
+                        "fut_tournament_progress",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        tournament=tournament_id,
+                        entered=tournament_id in TOURNAMENT_PROGRESS.entries,
+                        bytes=len(payload),
+                        payload=payload.decode("utf-8", "replace")[:400],
+                    )
                     self.reply(
                         200,
                         payload + b"\n",
@@ -2358,6 +2404,75 @@ class IdentityHttpService:
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
+                # Applying a consumable. The path names the card's resource,
+                # the body names what to apply it to:
+                #
+                #     POST /ut/game/fifa14/item/resource/5001001
+                #     {"apply":[{"id":1600000001}]}
+                #
+                # `apply` is in CardsDLL's member-name table, next to
+                # `applyTo`, so both spellings are accepted. Retail answers
+                # this one by status, so success is an empty document.
+                consumable_apply = re.fullmatch(
+                    r"/ut/game/fifa14/item/resource/(\d+)", normalized_path
+                )
+                if consumable_apply and self.command in ("POST", "PUT"):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    rows = document.get("apply", document.get("applyTo", []))
+                    if isinstance(rows, dict):
+                        rows = [rows]
+                    targets: list[int] = []
+                    for row in rows if isinstance(rows, list) else []:
+                        raw = row.get("id", row.get("itemId")) if isinstance(row, dict) else row
+                        try:
+                            targets.append(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+                    resource_id = int(consumable_apply.group(1))
+                    try:
+                        result = CONSUMABLE_RACK.apply(resource_id, targets)
+                    except ConsumableRefused as refusal:
+                        owner.journal.event(
+                            "fut_consumable_refused",
+                            peer=self.client_address[0],
+                            path=parsed.path,
+                            resourceId=resource_id,
+                            targets=targets,
+                            reason=str(refusal),
+                            # The play style and position blocks land here.
+                            # One of these from the console names the family.
+                            unresolved=CONSUMABLE_RACK.refused[-4:],
+                        )
+                        self.reply(
+                            400,
+                            json.dumps(
+                                {"code": "400", "reason": str(refusal)}
+                            ).encode() + b"\n",
+                            {"Content-Type": "application/json; charset=utf-8"},
+                        )
+                        return
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+                    owner.journal.event(
+                        "fut_consumable_applied",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        resourceId=resource_id,
+                        targets=targets,
+                        effect=result["effect"],
+                        consumedItemId=result["consumedItemId"],
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Send to club, list for transfer: each entry has to be
                 # acknowledged. Answering with a club search acknowledges
                 # nothing and the button looks dead.
@@ -2522,9 +2637,24 @@ class IdentityHttpService:
                 if normalized_path.startswith(
                     "/ut/game/fifa14/club/consumables"
                 ) and self.command == "GET":
+                    # The picker names a category in the path and asks one at a
+                    # time: /contracts, /fitness, /development. Answering every
+                    # one of them with the whole club's consumables handed it
+                    # 242 cards of every family when it asked for contracts.
+                    category = normalized_path[
+                        len("/ut/game/fifa14/club/consumables"):
+                    ].strip("/")
+                    payload = consumables_response(CLUB_INVENTORY, category)
+                    owner.journal.event(
+                        "fut_club_consumables_request",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        category=category,
+                        bytes=len(payload),
+                    )
                     self.reply(
                         200,
-                        consumables_response(CLUB_INVENTORY) + b"\n",
+                        payload + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -2549,6 +2679,38 @@ class IdentityHttpService:
                         document = json.loads(body or b"{}")
                     except ValueError:
                         document = {}
+                    # Settle it. This used to answer three empty members and
+                    # throw the result away: no coins for the match, no
+                    # progress in the cup, nothing on the award screen. A club
+                    # could win a Gold Cup final and finish exactly as poor as
+                    # it started.
+                    result = match_result(document)
+                    reward = match_reward(
+                        document.get("myMatchStats"),
+                        document.get("opponentMatchStats"),
+                        minutes=int(document.get("minutesPlayed") or 90),
+                        completed=result in ("WIN", "DRAW", "LOSS"),
+                    )
+                    cup = {}
+                    if ACTIVE_TOURNAMENT is not None:
+                        cup = TOURNAMENT_PROGRESS.advance(ACTIVE_TOURNAMENT, result)
+                    earned = (
+                        reward["totalCoins"]
+                        + int(cup.get("roundCoins") or 0)
+                        + int(cup.get("prize") or 0)
+                    )
+                    if earned:
+                        WALLET.credit(earned)
+                    CLUB_SAVE.save(
+                        CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                    )
+                    # The response stays the three members it has always been.
+                    # The award scalars the PC revival adds here are not sent
+                    # until a real match end from this console has been read:
+                    # that revival records its own client disconnecting on an
+                    # oversized destroy response, and a frontend that hangs
+                    # after a won final is worse than an award screen showing
+                    # zeroes over coins that are really in the wallet.
                     payload = json.dumps(
                         {
                             "myMatchStats": "",
@@ -2560,6 +2722,15 @@ class IdentityHttpService:
                     owner.journal.event(
                         "fut_match_end",
                         peer=self.client_address[0],
+                        result=result,
+                        completionAward=reward["completionAward"],
+                        skillAward=reward["skillAward"],
+                        roundCoins=cup.get("roundCoins", 0),
+                        prize=cup.get("prize", 0),
+                        credited=earned,
+                        coins=WALLET.coins,
+                        tournament=cup.get("tournamentId"),
+                        round=cup.get("round"),
                         bytes=len(payload),
                         body=request_body_preview(body),
                     )
@@ -2706,20 +2877,34 @@ class IdentityHttpService:
                         },
                     )
                     return
+                if normalized_path == "/ut/game/fifa14/clubUser" and (
+                    self.command == "GET"
+                ):
+                    # The persona is the club's name -- empty until the club is
+                    # created -- and the cards are what the Apply Consumable
+                    # picker binds against. Answering with the persona alone is
+                    # why it offered nothing.
+                    payload = club_user_response(CLUB_INVENTORY, club_name())
+                    owner.journal.event(
+                        "fut_club_user_request",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        with_balance(payload, WALLET.coins) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in (
                     "/ut/game/fifa14/hub",
                     "/ut/game/fifa14/eventfeed",
-                    "/ut/game/fifa14/clubUser",
                 ) and self.command == "GET":
                     fixture = FUT_ROUTES[normalized_path]
-                    if normalized_path == "/ut/game/fifa14/clubUser":
-                        # The persona here is the club's name, and the fixture
-                        # carries the old hardcoded one. Empty until the club
-                        # is created, then whatever the player named it.
-                        fixture = fixture.replace(
-                            b'"Fondateur FUT"',
-                            json.dumps(club_name()).encode(),
-                        )
                     self.reply(
                         200,
                         with_balance(fixture, WALLET.coins) + b"\n",
@@ -3073,6 +3258,12 @@ class IdentityHttpService:
                     method=self.command,
                     path=parsed.path,
                     normalized_path=normalized_path,
+                    # The values, not only the names. Logging the names alone
+                    # left every question about what a screen actually asked
+                    # for -- which `type`, which `level` -- answerable only by
+                    # guessing, and the consumable picker was three guesses
+                    # deep before anyone noticed the journal could not say.
+                    query=parsed.query,
                     query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
                     body=request_body_preview(body),
                 )

@@ -802,12 +802,16 @@ class TournamentRouteTests(unittest.TestCase):
 
                 status, body = self._get(port, "/ut/game/fifa14/tournament/user/2")
                 self.assertEqual(status, 200)
-                self.assertEqual(body["tournamentId"], 2)
                 self.assertEqual(body["round"], 3)
                 self.assertEqual(body["tournamentData"], "QUJD")
                 self.assertEqual(body["progressData"], "REVG")
-                # The name table also carries the blob in lower case.
-                self.assertEqual(body["progressdata"], "REVG")
+                # Handed back exactly as it was written, and nothing besides.
+                # `tournamentId` is already in the path, and the lower-case
+                # `progressdata` is the same known field a second time rather
+                # than a sibling the parser skips -- resuming a saved cup
+                # froze the title on the first GET this route ever answered.
+                self.assertNotIn("tournamentId", body)
+                self.assertNotIn("progressdata", body)
                 # `data` is the season spelling and does not go out here.
                 self.assertNotIn("data", body)
 
