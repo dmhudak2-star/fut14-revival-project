@@ -2252,3 +2252,50 @@ def test_a_cup_advances_on_a_win_and_starts_again_on_a_loss() -> None:
     progress.apply(cup, {"round": 2})
     assert progress.advance(cup, "NO_CONTEST")["settled"] is False
     assert progress.entries[cup]["round"] == 2
+
+
+def test_the_club_marks_the_repeats_it_is_holding() -> None:
+    # A pack marks its own repeats before you accept them and that was the end
+    # of it: once the card was in the club nothing said so any more, and the
+    # club screen -- which is where anyone actually goes looking for repeats to
+    # sell -- showed a club full of ordinary cards.
+    import fut_inventory as inventory
+
+    club = [
+        {"id": 10, "itemType": "player", "resourceId": 500, "rating": 84},
+        {"id": 11, "itemType": "player", "resourceId": 501, "rating": 83},
+        {"id": 12, "itemType": "player", "resourceId": 500, "rating": 84},
+        {"id": 13, "itemType": "player", "resourceId": 500, "rating": 84},
+        # Two contracts are two contracts, not a repeat of one.
+        {"id": 14, "itemType": "development", "resourceId": 900},
+        {"id": 15, "itemType": "development", "resourceId": 900},
+    ]
+    pairs = inventory.club_duplicate_pairs(club)
+    assert pairs == [
+        {"itemId": 12, "duplicateItemId": 10},
+        {"itemId": 13, "duplicateItemId": 10},
+    ]
+    # The oldest copy is the original, and it says so on the card too.
+    assert "duplicateItemId" not in club[0]
+    assert club[2]["duplicateItemId"] == 10
+    assert club[3]["duplicateItemId"] == 10
+
+    # Sell the original and the survivors stop pointing at a card that is gone;
+    # the next oldest becomes the one kept.
+    del club[0]
+    assert inventory.club_duplicate_pairs(club) == [
+        {"itemId": 13, "duplicateItemId": 12}
+    ]
+    assert "duplicateItemId" not in club[1]
+
+
+def test_a_special_is_not_a_repeat_of_the_ordinary_card() -> None:
+    # Every version of a player shares his asset id. Keying on the asset made
+    # a Team of the Season card a repeat of the Rare Gold one.
+    import fut_inventory as inventory
+
+    club = [
+        {"id": 20, "itemType": "player", "assetId": 167628, "resourceId": 1, "rareflag": 1},
+        {"id": 21, "itemType": "player", "assetId": 167628, "resourceId": 2, "rareflag": 3},
+    ]
+    assert inventory.club_duplicate_pairs(club) == []

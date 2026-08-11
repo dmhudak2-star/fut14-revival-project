@@ -35,12 +35,18 @@ import time
 # bytes, so the same 77 KB holds 130 mixed cards where it held 90. Measured,
 # not scaled: 90 came out at 48.4 KB and 130 at 70.5 KB.
 #
+# 126 rather than 130 since the response began carrying the club's duplicate
+# pairs: 130 cards plus 46 pairs measured 76.2 KB against a ceiling of 77, and
+# the pairs grow with the club exactly as the cards do. 126 puts it back at
+# 73.7 KB, the headroom the 130 was chosen with. Four cards off a view that is
+# already truncated, and which the screen filters rather than scrolls.
+#
 # FIFA14_CLUB_LIMIT raises or lowers it; 0 restores the unbounded behaviour,
 # which is what served 244 KB immediately before a FUT teardown.
 try:
-    CLUB_UNFILTERED_LIMIT = int(os.environ.get("FIFA14_CLUB_LIMIT", "130"))
+    CLUB_UNFILTERED_LIMIT = int(os.environ.get("FIFA14_CLUB_LIMIT", "126"))
 except ValueError:
-    CLUB_UNFILTERED_LIMIT = 130
+    CLUB_UNFILTERED_LIMIT = 126
 if CLUB_UNFILTERED_LIMIT <= 0:
     CLUB_UNFILTERED_LIMIT = 10**9
 from pathlib import Path
@@ -318,6 +324,62 @@ def first_run() -> bool:
     return os.environ.get("FIFA14_FIRST_RUN", "").strip().lower() in {"1", "true", "yes"}
 
 
+def card_signature(item: dict):
+    """What makes two cards the same card.
+
+    `resourceId`, exactly -- not `assetId`. A player's special versions all
+    share his asset id: a Team of the Season Ruffier and a Rare Gold Ruffier
+    are both asset 167628 and are not the same card. Keying on the asset flags
+    the special as a repeat of the ordinary one.
+
+    `assetId` with the rare flag is the fallback for a card that carries no
+    resource id, which is better than nothing but cannot tell two specials of
+    the same player apart.
+    """
+    resource = item.get("resourceId")
+    if resource:
+        return ("resource", resource)
+    return ("asset", item.get("assetId"), item.get("rareflag"))
+
+
+def club_duplicate_pairs(items: list[dict]) -> list[dict]:
+    """Which of these players repeat one the club already had.
+
+    A pack marks its own repeats before you accept them, and that marking was
+    the end of it: once the card was in the club nothing said so any more. The
+    club screen is where a player actually goes looking for repeats to sell,
+    and it showed a club full of ordinary cards.
+
+    The card kept as the original is the one with the smallest id, which is the
+    one owned longest -- acquired cards are numbered upwards as they arrive.
+    Anything else would move the marker from one copy to the other as the club
+    is re-sorted, and offer to sell a different card each time the screen is
+    opened.
+
+    Marks are rewritten rather than added to, so a card whose twin has since
+    been sold stops claiming to repeat a card that is not there.
+
+    Only players. A second contract card is not a repeat of the first, it is a
+    second contract -- consumables are meant to accumulate.
+    """
+    players = sorted(
+        (item for item in items if item.get("itemType") == "player"),
+        key=lambda item: item.get("id") or 0,
+    )
+    first: dict[tuple, int] = {}
+    pairs: list[dict] = []
+    for item in players:
+        key = card_signature(item)
+        original = first.get(key)
+        if original is None:
+            first[key] = item["id"]
+            item.pop("duplicateItemId", None)
+            continue
+        item["duplicateItemId"] = original
+        pairs.append({"itemId": item["id"], "duplicateItemId": original})
+    return pairs
+
+
 def _bounded_club(items: list[dict]) -> list[dict]:
     """The bare club, capped, without wiping out a whole kind of card.
 
@@ -529,7 +591,20 @@ class ClubInventory:
             # teardown. And it truncates: a club larger than the limit is not
             # shown whole to a screen that asked for all of it.
             items = _bounded_club(items)
-        return json.dumps({"itemData": items}, separators=(",", ":")).encode()
+        # Worked out over the whole club, reported for what is on this page:
+        # the card a repeat points at is often not in the same search result,
+        # and picking the original from the page alone would name a different
+        # card on every filter.
+        served = {item.get("id") for item in items}
+        pairs = [
+            pair
+            for pair in club_duplicate_pairs(self.items)
+            if pair["itemId"] in served
+        ]
+        return json.dumps(
+            {"itemData": items, "duplicateItemIdList": pairs},
+            separators=(",", ":"),
+        ).encode()
 
     def squad_list_response(self, name: str) -> bytes:
         rating = round(sum(item["rating"] for item in self.squad[:11]) / 11)
@@ -1775,23 +1850,8 @@ class PackShop:
             separators=(",", ":"),
         ).encode()
 
-    @staticmethod
-    def _signature(item: dict):
-        """What makes two cards the same card.
-
-        `resourceId`, exactly -- not `assetId`. A player's special versions all
-        share his asset id: a Team of the Season Ruffier and a Rare Gold
-        Ruffier are both asset 167628 and are not the same card. Keying on the
-        asset flags the special as a repeat of the ordinary one.
-
-        `assetId` with the rare flag is the fallback for a card that carries no
-        resource id, which is better than nothing but cannot tell two specials
-        of the same player apart.
-        """
-        resource = item.get("resourceId")
-        if resource:
-            return ("resource", resource)
-        return ("asset", item.get("assetId"), item.get("rareflag"))
+    # The club screen needs the same answer, so it lives at module level now.
+    _signature = staticmethod(card_signature)
 
     def _mark_duplicates(self, drawn: list[dict]) -> list[dict]:
         """Pair each new card with the owned card it repeats.
