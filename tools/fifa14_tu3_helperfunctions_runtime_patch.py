@@ -319,6 +319,17 @@ def main() -> int:
         help="size of that first pass; 0 disables it",
     )
     parser.add_argument(
+        "--hint-only",
+        action="store_true",
+        help=(
+            "never fall back to the full heap sweep. The sweep reads the heap "
+            "in 8 MB chunks, and running it against a title still on the "
+            "splash once froze this console hard enough to drop it off the "
+            "network. The hinted window is small enough to poll from the "
+            "moment the title starts."
+        ),
+    )
+    parser.add_argument(
         "--hint-file",
         type=Path,
         default=DEFAULT_HINT_FILE,
@@ -386,7 +397,7 @@ def main() -> int:
                             flush=True,
                         )
                         break
-            if not hits:
+            if not hits and not args.hint_only:
                 hits = scan_once(client, args.chunk_size)
             for address in hits:
                 state = classify(client, address)
