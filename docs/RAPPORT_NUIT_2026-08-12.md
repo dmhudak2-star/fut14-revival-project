@@ -14,7 +14,7 @@ commande est maintenant interdite dans le pilote, avec la raison écrite à côt
 **Et pendant que tu y es, une fois pour toutes** : Paramètres → Système →
 Stockage → disque dur → définir par défaut. Voir « le mur » plus bas.
 
-Neuf commits poussés sur `fut-cups-club-creation`. 364 tests passent.
+Treize commits poussés sur `fut-cups-club-creation`. 367 tests passent.
 
 ## Le plus important : le rapport de match tuait la connexion Blaze
 
@@ -163,6 +163,58 @@ Ce n'est pas cosmétique : le défi calcule `opponentRating` sur les onze
 premiers, donc le remplissage décidait de la force de l'équipe que tu affrontes.
 Rempli depuis la bande de notes de la vraie équipe, au plus proche de sa
 moyenne : 85 à 64, note d'adversaire 80. Une Équipe de la semaine, et un match.
+
+## Trois autres défauts trouvés en relisant ce que le client demande
+
+### L'archive BIG vide se déclarait longue de 268 Mo
+
+Une vraie BIGF de ce jeu — lue dans le paquet helperFunctions du Title Update —
+porte sa taille totale en **petit-boutien** et son nombre d'entrées et sa taille
+d'en-tête en **grand-boutien** :
+
+    BIGF   54032 (petit-boutien)   3 entrées (grand)   en-tête 56 (grand)
+
+Les quatre champs partaient en grand-boutien ici. L'archive de seize octets que
+ce serveur rend pour chaque `/fut/items/images/*.big` annonçait donc
+`0x10000000` — 268 mégaoctets.
+
+Les deux écrans qui gèlent après avoir tout reçu demandent cette archive en
+entrant : la reprise d'une coupe, et les saisons. C'est une corrélation, pas une
+démonstration, et je ne la présente pas comme le correctif. Le champ était faux
+de toute façon, et il l'était sur une requête que fait tout écran de coupe.
+
+### Les identifiants de trophée négatifs n'étaient pas servis
+
+L'écran des saisons demande `/fut/items/xbl2/-1.json`, une fois par division. La
+route ne reconnaissait que des chiffres, donc les dix tombaient dans le
+`{"itemData":[]}` générique que ce gestionnaire existe précisément pour
+remplacer — et une définition vide est exactement ce qui fait construire à la
+console
+
+    /fut/items/images/trophies/xbl2/.big
+
+sans rien entre le préfixe et l'extension. Il y en a dix-huit dans les journaux.
+
+**Les saisons valent la peine d'être réessayées** avec `FIFA14_SEASON_MODE=native`
+maintenant que ces deux-là sont corrigés : la troisième tentative gelait
+précisément après que ces deux documents aient été servis.
+
+### Un consommable appliqué par son identifiant de carte ne faisait rien
+
+Le client adresse un consommable de deux façons. `item/resource/<id>` nomme la
+définition, `item/<id>` nomme une carte précise du club. Seule la première était
+traitée. Donc ceci, le 11 août à 03:00 :
+
+    POST /ut/game/fifa14/item/1950000106
+    {"apply":[{"id":1700000004}]}
+
+a reçu un 404 et est parti dans le journal des routes non traitées, que
+personne ne lisait. De ton côté, la carte n'a simplement rien fait.
+
+Exercé de bout en bout contre un serveur qui tourne : l'identifiant de carte se
+résout en sa définition, la pile applique, et un style de gardien sur un joueur
+de champ revient en 400 « a goalkeeper style needs a goalkeeper » au lieu d'un
+silence.
 
 ## Le mur : la boîte de dialogue système
 
