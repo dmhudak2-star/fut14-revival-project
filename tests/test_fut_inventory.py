@@ -2585,3 +2585,33 @@ def test_the_added_packs_hold_what_they_advertise() -> None:
     _, families, per_pack = contents(310)
     assert per_pack >= 2.0
     assert families["team of the season"] > families["team of the year"]
+
+
+def test_the_store_groups_are_written_out_not_left_as_tiers() -> None:
+    # `displayGroup.value` is drawn as the group heading, verbatim: the store
+    # showed "bronze", "silver" and "gold" in lower case because that is what
+    # it was handed. It is not a localisation key -- the pack's own
+    # FUT_STORE_PACK_<id>_DESC is one, and that resolves against the client's
+    # locale, which is why retail pack names read correctly and the headings
+    # did not.
+    import collections
+
+    import fut_inventory as inventory
+
+    catalogue = json.loads(inventory.store_catalogue())
+    groups = collections.OrderedDict()
+    for entry in catalogue["purchase"]:
+        display = entry["displayGroup"]
+        groups.setdefault((display["priority"], display["value"]), []).append(entry["id"])
+
+    headings = [name for _, name in sorted(groups)]
+    assert headings == [
+        "Packs Bronze", "Packs Argent", "Packs Or", "Consommables", "Packs Spéciaux",
+    ]
+    # The added packs get headings of their own rather than being filed under a
+    # tier they only nominally belong to.
+    assert groups[(3, "Consommables")] == [108, 109]
+    assert groups[(4, "Packs Spéciaux")] == [309, 310]
+    # The tier still names the artwork.
+    for entry in catalogue["purchase"]:
+        assert entry["displayGroupAssetId"] in (1, 2, 3)

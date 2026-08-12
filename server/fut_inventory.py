@@ -1382,31 +1382,31 @@ class Wallet:
 PACK_SPECS: dict[int, dict] = {
     103: {"name": "Bronze Pack", "tier": "bronze", "coins": 400, "points": 0,
           "count": 12, "rares": 1, "players": 3, "premium": False,
-          "group": "Bronze Packs"},
+          "group": "Packs Bronze"},
     104: {"name": "Premium Bronze Pack", "tier": "bronze", "coins": 750,
           "points": 0, "count": 12, "rares": 3, "players": 3, "premium": True,
-          "group": "Bronze Packs"},
+          "group": "Packs Bronze"},
     203: {"name": "Silver Pack", "tier": "silver", "coins": 2500, "points": 50,
           "count": 12, "rares": 1, "players": 3, "premium": False,
-          "group": "Silver Packs"},
+          "group": "Packs Argent"},
     204: {"name": "Premium Silver Pack", "tier": "silver", "coins": 3750,
           "points": 75, "count": 12, "rares": 3, "players": 3, "premium": True,
-          "group": "Silver Packs"},
+          "group": "Packs Argent"},
     303: {"name": "Gold Pack", "tier": "gold", "coins": 5000, "points": 100,
           "count": 12, "rares": 1, "players": 3, "premium": False,
-          "group": "Gold Packs"},
+          "group": "Packs Or"},
     304: {"name": "Premium Gold Pack", "tier": "gold", "coins": 7500,
           "points": 150, "count": 12, "rares": 3, "players": 3, "premium": True,
-          "group": "Gold Packs"},
+          "group": "Packs Or"},
     305: {"name": "Jumbo Gold Pack", "tier": "gold", "coins": 10000,
           "points": 0, "count": 24, "rares": 7, "players": 8, "premium": True,
-          "group": "Gold Packs"},
+          "group": "Packs Or"},
     306: {"name": "Gold Players Pack", "tier": "gold", "coins": 15000,
           "points": 0, "count": 12, "rares": 1, "players": 12,
-          "premium": False, "group": "Gold Packs"},
+          "premium": False, "group": "Packs Or"},
     307: {"name": "Premium Gold Players Pack", "tier": "gold", "coins": 25000,
           "points": 0, "count": 12, "rares": 3, "players": 12, "premium": True,
-          "group": "Gold Packs"},
+          "group": "Packs Or"},
 
     # Packs this server adds. Retail FIFA 14 had no consumables-only pack and
     # nothing above 25 000, so these are not reconstructions of anything --
@@ -1419,23 +1419,32 @@ PACK_SPECS: dict[int, dict] = {
     # Team of the Year instead.
     108: {"name": "Consumables Pack", "tier": "silver", "coins": 2000,
           "points": 0, "count": 12, "rares": 2, "players": 0, "premium": False,
-          "group": "Consumables"},
+          "group": "Consommables"},
     109: {"name": "Premium Consumables Pack", "tier": "gold", "coins": 6000,
           "points": 0, "count": 24, "rares": 8, "players": 0, "premium": True,
-          "group": "Consumables"},
+          "group": "Consommables"},
     308: {"name": "Rare Gold Pack", "tier": "gold", "coins": 100000,
           "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
-          "group": "Gold Packs"},
+          "group": "Packs Or"},
     309: {"name": "Team of the Week Pack", "tier": "gold", "coins": 50000,
           "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
           "guaranteed": 1, "families": {"team of the week": 1.0},
-          "group": "Special Packs"},
+          "group": "Packs Spéciaux"},
     310: {"name": "Team of the Season Pack", "tier": "gold", "coins": 250000,
           "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
           "guaranteed": 2,
           "families": {"team of the season": 70.0, "team of the year": 12.0,
                        "record breaker": 6.0, "team of the week": 12.0},
-          "group": "Special Packs"},
+          "group": "Packs Spéciaux"},
+}
+
+# The order the store lists its groups in, cheapest first.
+GROUP_ORDER = {
+    "Packs Bronze": 0,
+    "Packs Argent": 1,
+    "Packs Or": 2,
+    "Consommables": 3,
+    "Packs Spéciaux": 4,
 }
 
 GOLD_PACK_ID = 304
@@ -1565,6 +1574,16 @@ def store_catalogue(timestamp: int = 2147483647) -> bytes:
         # reference ships assetId 3 for the gold pack. Deriving it from the
         # pack id resolved to nothing and the bronze tiles drew NOT FOUND.
         tier_asset = {"bronze": 1, "silver": 2, "gold": 3}[spec["tier"]]
+        # `value` is drawn as the group's heading, verbatim -- the store showed
+        # "bronze", "silver" and "gold" in lower case because that is what it
+        # was handed. It is not a localisation key: the packs' own
+        # `FUT_STORE_PACK_<id>_DESC` is one, and that resolves against the
+        # client's locale, which is why retail pack names read correctly and
+        # the group headings did not.
+        #
+        # So the heading is written out, and the packs added here get headings
+        # of their own instead of being filed under a tier they only nominally
+        # belong to. `displayGroupAssetId` still names the tier's artwork.
         purchases.append(
             {
                 "id": pack_id,
@@ -1572,7 +1591,10 @@ def store_catalogue(timestamp: int = 2147483647) -> bytes:
                 "actionType": "CREATEPACK",
                 "packType": "CARDPACK",
                 "description": f"FUT_STORE_PACK_{pack_id}_DESC",
-                "displayGroup": {"priority": index, "value": spec["tier"]},
+                "displayGroup": {
+                    "priority": GROUP_ORDER.get(spec["group"], 99),
+                    "value": spec["group"],
+                },
                 "displayGroupAssetId": tier_asset,
                 "displayGroupUseDefaultImage": True,
                 "useDefaultImage": True,
