@@ -80,3 +80,58 @@ Le cycle « modifier, relancer, conduire jusqu'à l'écran, regarder » prend
 maintenant environ six minutes et ne demande personne. C'est ce qui a permis
 d'éliminer quatre hypothèses avant huit heures du matin ; chacune aurait coûté
 un aller-retour avec un humain, et le résultat aurait été le même.
+
+
+## Le désassemblage, 12 août après-midi
+
+Pas trouvé. Mais le terrain est déblayé, et les négatifs sont exploitables.
+
+`tools/ppc_disasm.py` et le scanner de références marchent : `FirstTimeInit`,
+dont le nom est à `0x89017240`, est référencé **exactement une fois**, à
+`0x891074BC`. C'est le constructeur qui enregistre les opérations du service
+FUT, et on y lit le motif en clair :
+
+```
+0x891074CC  addi  r9, r9, 0x7240     ; le nom  FirstTimeInit   (0x89017240)
+0x891074DC  stw   r9, 0x14(r31)
+0x891074FC  addi  r9, r21, 0x5d18    ; l'entrée LoginToFUT     (0x89105D18)
+```
+
+Des noms en `0x89017xxx` appariés à des entrées en `0x89105xxx`. C'est la table
+des opérations du service FUT — celle que `tools/fifa14_fut_api_trace.py`
+connaît déjà.
+
+**Les noms TOTW ne sont pas dedans.** Ils vivent ailleurs, en `0x89012xxx` :
+
+```
+0x89012148  GetGameHubTOTWData
+0x890121E4  RequestChallengeData
+```
+
+Deux régions de noms distinctes, donc deux tables distinctes. Avec
+`external/ion_fut/components/Tile/MetroPanel_TOTWChallenge.swf`, la lecture qui
+tient est que l'écran TOTW appelle des **liaisons natives depuis le Flash, par
+leur nom** — et non des opérations du service FUT. Ce qui explique pourquoi
+aucune des opérations tracées ne se déclenche quand on ouvre la tuile.
+
+Ce qui a été balayé sans rien trouver, en `lis`/`addi` **et** en table de
+pointeurs, de `0x89020000` à `0x89190000` — soit à peu près tout CardsDLL :
+
+* `0x89012148` `GetGameHubTOTWData`
+* `0x890121E4` `RequestChallengeData`
+* `0x8902D7DC` `/totw`, et aussi `/userHubData` et `/tutorialpopups`, qui sont
+  pourtant des routes que le client demande à chaque connexion
+
+Ce dernier point est le plus parlant : **même les fragments d'URL que le client
+utilise réellement ne sont référencés nulle part par une adresse immédiate.**
+Ils ne sont donc pas chargés comme des constantes. Ils sont soit comparés comme
+chaînes à l'exécution, soit atteints par un décalage calculé dans une table
+indexée par une énumération — et dans les deux cas un scanner de références ne
+les verra jamais.
+
+## La mesure qui vaut le prochain tour
+
+Servir `{}` à `clientdata/totw` et rouvrir l'écran. Si le message ne change pas
+d'un caractère, le document n'est pas consulté du tout, et toute recherche du
+côté du JSON est à abandonner. C'est une relance et six minutes, et ça
+réoriente tout le reste.
