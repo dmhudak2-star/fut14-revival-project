@@ -546,9 +546,20 @@ def test_the_club_starts_in_the_bottom_division(monkeypatch) -> None:
     # is decremented by the client, so 1 selects the first list record, and
     # round 1 is the first fixture -- wire 0 becomes its invalid sentinel.
     assert set(standing) == {"seasonId", "divisionId", "round"}
-    assert standing["divisionId"] == 10
     assert standing["seasonId"] == 1
+    # The division's *position* in the list, from zero -- not its number.
+    # Sending 10 froze the mode for as long as it existed: bisected on
+    # 13 August, `{"seasonId": 1}` held the screen and adding `divisionId: 10`
+    # hung it, while 0 held and offered to start the season. The record served
+    # beside it carries `divisionId` 10 itself, so it was not failing to name a
+    # division the list holds -- 10 is one past the last index of a list of
+    # ten. Ids ascend 1..10 while division numbers descend 10..1, which is what
+    # kept the confusion alive.
+    assert standing["divisionId"] == 0
     assert standing["round"] == 1
+    # A club in division 5 is the sixth record, so the fifth position.
+    higher = json.loads(inventory.season_user_response(5))
+    assert (higher["seasonId"], higher["divisionId"]) == (6, 5)
     assert json.loads(inventory.season_user_response(10, played=3))["round"] == 4
 
 

@@ -3586,7 +3586,23 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
     return json.dumps(
         {
             "seasonId": index,
-            "divisionId": int(division),
+            # The division's **position** in the list served above, counted
+            # from zero -- not its number. Sending the number is what froze the
+            # mode for as long as it has existed.
+            #
+            # Bisected down `season/user`'s three members on 13 August:
+            # `{}` opened the screen and held, `{"seasonId": 1}` held,
+            # `{"seasonId": 1, "divisionId": 10}` opened and then hung, and all
+            # three together hung. So it is this member, and it is not failing
+            # to name a division the list holds -- the record served beside it
+            # carried `divisionId` 10 itself. What 10 also is, on a list of
+            # ten, is one past the last index. Sent as 0 the screen holds and
+            # offers to start the season.
+            #
+            # The two run in opposite directions, which is what made the
+            # confusion easy to keep: record ids ascend 1..10 while the
+            # division numbers descend 10..1.
+            "divisionId": index - 1,
             "round": max(0, int(played)) + 1,
         },
         separators=(",", ":"),
