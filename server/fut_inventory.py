@@ -432,18 +432,28 @@ def pile_duplicate_pairs(pending: list[dict], owned: list[dict]) -> list[dict]:
     the club always beats one still in the pile, and inside the pile the
     smaller id wins, because ids are issued upwards as cards arrive.
     """
+    # A bought card is put in the pile *and* in the club -- the pile alone lost
+    # it, so both hold the same card under the same id. Pairing across the two
+    # lists therefore has to ignore a card meeting itself, or the screen is
+    # told to compare a card against itself. That is the one shape
+    # DUPLICATES.md says must never go out: it froze the title outright when a
+    # pack sent a bare list of its own new ids.
+    #
+    # Pelé, bought on 12 August, came back paired 1800000049 -> 1800000049.
+    waiting = {item.get("id") for item in pending}
     first: dict[tuple, int] = {}
     for item in sorted(owned, key=lambda row: row.get("id") or 0):
-        if item.get("itemType") == "player":
-            first.setdefault(card_signature(item), item["id"])
+        if item.get("itemType") != "player" or item.get("id") in waiting:
+            continue
+        first.setdefault(card_signature(item), item["id"])
     pairs: list[dict] = []
     for item in sorted(pending, key=lambda row: row.get("id") or 0):
         if item.get("itemType") != "player":
             continue
         key = card_signature(item)
         original = first.get(key)
-        if original is None:
-            first[key] = item["id"]
+        if original is None or original == item.get("id"):
+            first.setdefault(key, item["id"])
             item.pop("duplicateItemId", None)
             continue
         item["duplicateItemId"] = original

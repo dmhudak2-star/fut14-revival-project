@@ -2763,3 +2763,26 @@ def test_the_purchased_pile_says_which_of_its_cards_repeat_the_club() -> None:
     # And on the card itself, which is what the pile document carries.
     held = next(item for item in pile["itemData"] if item["id"] == player["id"])
     assert held["duplicateItemId"] == 1
+
+
+def test_a_card_is_never_reported_as_a_duplicate_of_itself() -> None:
+    # A bought card goes into the purchased pile *and* into the club -- the
+    # pile alone lost it -- so both lists hold the same card under the same id.
+    # Pairing across them without noticing sent {itemId: N, duplicateItemId: N}
+    # and told the screen to compare a card against itself. That is the one
+    # shape DUPLICATES.md says must never go out: it froze the title when a
+    # pack sent a bare list of its own new ids. Pelé came back paired
+    # 1800000049 -> 1800000049.
+    import fut_inventory as inventory
+
+    card = {"id": 1800000049, "itemType": "player", "assetId": 190043,
+            "rarity": "Legend", "rating": 95}
+    assert inventory.pile_duplicate_pairs([card], [card]) == []
+    assert "duplicateItemId" not in card
+
+    # A genuine repeat still pairs, against the copy the club had first.
+    owned = dict(card, id=17)
+    fresh = dict(card, id=1800000050)
+    assert inventory.pile_duplicate_pairs([fresh], [owned, fresh]) == [
+        {"itemId": 1800000050, "duplicateItemId": 17}
+    ]
