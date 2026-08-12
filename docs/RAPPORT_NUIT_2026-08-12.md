@@ -14,7 +14,7 @@ commande est maintenant interdite dans le pilote, avec la raison écrite à côt
 **Et pendant que tu y es, une fois pour toutes** : Paramètres → Système →
 Stockage → disque dur → définir par défaut. Voir « le mur » plus bas.
 
-Treize commits poussés sur `fut-cups-club-creation`. 367 tests passent.
+Seize commits poussés sur `fut-cups-club-creation`. 369 tests passent.
 
 ## Le plus important : le rapport de match tuait la connexion Blaze
 
@@ -281,6 +281,40 @@ avait disparu à 00:38:27, réécrite avec une table de tournois vide par le
 
 `SAVE_FILE` lit `FIFA14_CLUB_SAVE` et `tests/conftest.py` le détourne avant tout
 import. Vérifié : le vrai fichier ne bouge plus d'un octet.
+
+## Deux filets pour que ça ne recommence pas
+
+**Un test qui parcourt toutes les routes.** La liste de surveillance a répondu
+404 pendant toute son existence sans que rien ne le remarque, parce qu'un 404
+sur une route FUT laisse juste un écran vide. Un test parcourt maintenant toute
+la surface — chaque route de la table et chaque gestionnaire écrit à la main,
+dans l'orthographe enregistrée et en minuscules. Les routes qui demandent un
+identifiant ou un corps sont nommées plutôt qu'ignorées en silence : une liste
+d'exceptions que personne ne lit, c'est comme ça que la dernière est passée.
+
+Il en a trouvé une au premier passage : `/ut/game/fifa14/transfermarket` exigeait
+une chaîne de requête pour être servi. Le club a son propre gestionnaire sans
+requête, le marché n'en avait aucun, donc une demande nue tombait en 404. Une
+recherche sans filtre est une recherche : la première page de tout, ce que
+l'écran montre avant que tu tapes quoi que ce soit.
+
+**Et un rejeu.** `tools/replay_journal.py` renvoie au serveur tout ce que la
+console a jamais demandé.
+
+    6 668 requêtes rejouées depuis 136 journaux
+       200: 5887      302: 151      400: 4      404: 625      409: 1
+
+Les seuls refus sont le serveur qui fait son travail : le flux de tutoriels
+qu'il décline exprès, un consommable que le club rejoué ne possède pas, un pack
+acheté avec des coins qu'un club neuf n'a pas. Ils sont nommés dans l'outil, pas
+filtrés en douce.
+
+Ce qu'il ne sait pas faire, c'est juger une *réponse* : un 200 qui porte le
+mauvais document ressemble exactement à un 200 qui porte le bon. Il répond à une
+seule question — est-ce que quelque chose que la console demandait a cessé
+d'être servi — et il y répond en quelques secondes. La sauvegarde est détournée
+vers un fichier temporaire d'abord : un rejeu poste des ventes rapides et des
+achats de packs, et sans ça il dépenserait tes coins.
 
 ## Ce qui reste ouvert
 
