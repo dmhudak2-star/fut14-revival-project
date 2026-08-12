@@ -2505,3 +2505,24 @@ def test_the_team_of_the_week_bench_matches_the_team() -> None:
     # And the challenge it advertises is a side you could actually face.
     for challenge in squad["squadChallenge"]:
         assert 60 <= challenge["opponentRating"] <= 90
+
+
+def test_the_empty_big_archive_declares_its_size_the_way_a_real_one_does() -> None:
+    # A real BIGF from this game -- read out of the Title Update's own
+    # helperFunctions package -- carries its total size little-endian and the
+    # entry count and header size big-endian:
+    #
+    #     BIGF   54032 (little)   3 entries (big)   header 56 (big)
+    #
+    # All four fields went out big-endian here, so a sixteen-byte archive
+    # declared itself 0x10000000 bytes long: 268 megabytes.
+    import struct
+
+    import fut_inventory as inventory
+
+    archive = inventory.empty_big_archive()
+    assert len(archive) == 16
+    assert archive[:4] == b"BIGF"
+    assert struct.unpack_from("<I", archive, 4)[0] == len(archive)
+    assert struct.unpack_from(">I", archive, 8)[0] == 0     # no entries
+    assert struct.unpack_from(">I", archive, 12)[0] == 16   # header is all of it

@@ -2973,14 +2973,29 @@ def empty_big_archive() -> bytes:
     itself, and a degenerate `/trophies/xbl2/.big` with no basename when the
     trophy definition carries none.
 
-    Magic, declared size, zero directory entries, header size -- big-endian,
-    the same contract this project's own BIG reader uses. Empty on purpose:
-    the EA trophy CDN is gone and no art is being invented here. It makes the
-    response parseable rather than wrong.
+    Magic, declared size, zero directory entries, header size. Empty on
+    purpose: the EA trophy CDN is gone and no art is being invented here. It
+    makes the response parseable rather than wrong.
+
+    **The size is little-endian and the other two are big-endian.** That is not
+    a choice; it is what a real BIGF from this game carries. Read out of the
+    Title Update's own helperFunctions package:
+
+        BIGF   54032 (little-endian)   3 entries (big)   header 56 (big)
+
+    All four fields went out big-endian here, so a sixteen-byte archive
+    declared its own size as 0x10000000 -- 268 megabytes. What a client does
+    with that is its own business, and both screens that freeze after being
+    served everything -- resuming a cup, and entering seasons -- ask for this
+    archive on the way in. That is a correlation and not a demonstration; the
+    field is wrong either way.
     """
-    return b"BIGF" + (16).to_bytes(4, "big") + (0).to_bytes(4, "big") + (
-        16
-    ).to_bytes(4, "big")
+    return (
+        b"BIGF"
+        + (16).to_bytes(4, "little")
+        + (0).to_bytes(4, "big")
+        + (16).to_bytes(4, "big")
+    )
 
 
 def trophy_item_response(resource_id: int, tier: str = TROPHY_TIER) -> bytes:
