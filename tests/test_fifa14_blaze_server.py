@@ -1371,3 +1371,63 @@ class ConsumableByItemIdTests(unittest.TestCase):
             rack.resource_of(player["id"])
         with self.assertRaises(inventory.ConsumableRefused):
             rack.resource_of(-999)
+
+
+class EveryRouteAnswersTests(unittest.TestCase):
+    """A GET on every registered FUT route comes back 200 and parseable.
+
+    The watch list was a 404 for as long as it has existed, because the client
+    spells it `watchList` and this server registered `watchlist`. Nothing
+    noticed, because a 404 on a FUT route just leaves a screen empty. This
+    walks the whole surface so the next one is noticed by a test rather than by
+    a player wondering why a screen is blank.
+
+    Routes taking an id, and the two that are not JSON, are named below rather
+    than skipped silently -- a skip list nobody reads is how the last one got
+    through.
+    """
+
+    # Prefixes, not whole routes: they need an id or a body to mean anything.
+    NEEDS_MORE = (
+        "/ut/game/fifa14/trade",
+        "/ut/game/fifa14/user/action",
+        "/ut/game/fifa14/phishing",
+        "/ut/game/fifa14/item",
+        "/ut/game/fifa14/auctionhouse",
+        "/ut/game/fifa14/squad",
+        "/ut/game/fifa14/tournament/user",
+        "/ut/game/fifa14/store",
+    )
+
+    def test_every_registered_route_answers_a_get(self) -> None:
+        import http.client
+        import json as jsonlib
+
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService("127.0.0.1", 0, "127.0.0.1", journal)
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                routes = sorted(
+                    set(SERVER.FUT_ROUTES) | set(SERVER.HANDLED_ROUTES)
+                )
+                checked = 0
+                for route in routes:
+                    if route in self.NEEDS_MORE:
+                        continue
+                    for spelling in (route, route.lower()):
+                        client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                        client.request("GET", spelling)
+                        response = client.getresponse()
+                        payload = response.read()
+                        status = response.status
+                        client.close()
+                        self.assertEqual(status, 200, f"{spelling} answered {status}")
+                        if payload.strip():
+                            jsonlib.loads(payload)
+                    checked += 1
+                # If this ever drops to nothing the loop has stopped testing.
+                self.assertGreater(checked, 30)
+            finally:
+                identity.stop()

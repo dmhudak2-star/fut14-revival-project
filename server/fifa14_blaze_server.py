@@ -2672,7 +2672,15 @@ class IdentityHttpService:
                 if normalized_path in (
                     "/ut/game/fifa14/transfermarket",
                     "/ut/game/fifa14/club",
-                ) and self.command == "GET" and parsed.query:
+                ) and self.command == "GET" and (
+                    parsed.query or normalized_path.endswith("/transfermarket")
+                ):
+                    # The market used to need a query to be answered at all,
+                    # and a bare request fell through to a 404 -- the club has
+                    # its own no-query handler, the market had none. A search
+                    # with no filters is a search: it is the first page of
+                    # everything, which is what the screen shows before you
+                    # type anything.
                     query = {
                         key: values[0]
                         for key, values in urllib.parse.parse_qs(parsed.query).items()
