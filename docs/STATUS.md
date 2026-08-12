@@ -222,6 +222,14 @@ no HTTP route or Blaze frame corresponding to it reaches the local server.
 Note the id space: the operation-name table at `0x890A6980` covers ids 0..81, so
 `0xDF` belongs to a different enumeration and still needs a name.
 
+**Superseded on 12 August.** `0xDF` was followed to the end and it is no longer
+the boundary: it reaches a live handler. The submit chain is
+`0x83593B28` -> `*(0x83D922B8)` -> `+0x34` -> `0x8278F228`, whose generic path
+returns silently when the handler index at `+0x10` is -1 or the handler is null.
+Read on the console with FUT open, that index is **1**. The request is
+dispatched, which is what one would expect now that FUT logs in and the club
+renders. See `docs/OPERATION_DF.md`.
+
 Two practical notes from the same session. The TU3 `helperFunctions` APT moves
 with the heap: after signing in a different profile it left its usual
 `0xBDD7xxxx` neighbourhood and no ordering heuristic found it quickly, while
