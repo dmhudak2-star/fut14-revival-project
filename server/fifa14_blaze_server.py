@@ -71,6 +71,7 @@ OSDK_ONLINE_PASS = 2268
 GAME_REPORTING = 28
 
 GAME_REPORTING_SUBMIT_OFFLINE = 2
+USER_SESSIONS_RESUME = 35
 GAME_REPORTING_RESULT_NOTIFICATION = 114
 REDIRECTOR_GET_SERVER_INSTANCE = 1
 UTIL_FETCH_CONFIG = 1
@@ -1212,6 +1213,24 @@ class Fifa14Protocol:
             ]
         )
 
+        notifications = self.session_notifications(state)
+        self.logger.event(
+            "authentication2_login",
+            connection=state.connection_id,
+            external_id=state.xuid,
+        )
+        return [response_frame(request, login), *notifications]
+
+    def session_notifications(self, state: ClientState) -> list[bytes]:
+        """The three notifications that tell a connection whose it is.
+
+        Sent after a login, and after a session is resumed by key on a
+        second connection -- the EAS FC module opens one of its own and
+        asks to be attached to the session the title already has. Without
+        these it is acknowledged and then never told who it is, which is
+        what "EAS FC non connecté" means from its side.
+        """
+        now = int(time.time())
         user_identification = [
             Field("AID", INTEGER, state.xuid),
             Field("ALOC", INTEGER, 1718765138),
@@ -1219,7 +1238,6 @@ class Fifa14Protocol:
             Field("ID", INTEGER, state.xuid),
             Field("NAME", STRING, state.gamertag),
         ]
-
         # FIFA 14 maps notification 8 to UserAuthenticated, but its payload is
         # the executable's 0x88-byte UserSessionLoginInfo, not the smaller
         # SUBS/BUID shape found in another legacy Blaze schema.  The native
@@ -1295,17 +1313,7 @@ class Fifa14Protocol:
                 ]
             ),
         )
-        self.logger.event(
-            "authentication2_login",
-            connection=state.connection_id,
-            external_id=state.xuid,
-        )
-        return [
-            response_frame(request, login),
-            user_authenticated,
-            user_added,
-            extended_data,
-        ]
+        return [user_authenticated, user_added, extended_data]
 
     def account(self, request: bytes, state: ClientState) -> bytes:
         payload = encode_fields(
@@ -1602,6 +1610,47 @@ class Fifa14Protocol:
             return [self.osdk_settings(request)]
         if route == (OSDK_SETTINGS, OSDK_SETTINGS_FETCH_GROUPS):
             return [self.osdk_setting_groups(request)]
+        if route == (USER_SESSIONS, USER_SESSIONS_RESUME):
+            # A second connection asking to be attached to the session the
+            # title already has. The EAS FC module opens one of its own once
+            # its endpoints point somewhere reachable, and this is the first
+            # thing it says:
+            #
+            #     component 0x7802 command 35   SKEY "offline-901feefe6a599"
+            #
+            # which is the key handed out by the login on the first connection.
+            # It was answered with a fieldless success and nothing else, so the
+            # module was acknowledged and then never told who it was -- and
+            # that is what "EAS FC non connecté" means from its side.
+            #
+            # The three notifications a login sends are what say whose the
+            # connection is, so they are sent here too, against the identity
+            # the key names.
+            key = find_field(decoded["fields"], "SKEY")
+            presented = str(key.value) if key is not None else ""
+            stored_id, stored_name = self.account_store.load_identity()
+            expected = f"offline-{stored_id:x}" if stored_id else ""
+            if not presented or presented != expected:
+                self.logger.event(
+                    "session_resume_refused",
+                    connection=state.connection_id,
+                    presented=presented,
+                    expected=expected,
+                )
+                return [response_frame(request)]
+            state.xuid = stored_id
+            state.gamertag = stored_name or state.gamertag
+            state.authenticated = True
+            self.logger.event(
+                "session_resumed",
+                connection=state.connection_id,
+                key=presented,
+                gamertag=state.gamertag,
+            )
+            return [
+                response_frame(request),
+                *self.session_notifications(state),
+            ]
         if route == (GAME_REPORTING, GAME_REPORTING_SUBMIT_OFFLINE):
             # The offline game report, submitted when a match ends. Answering
             # the RPC is not the end of it: retail follows with an asynchronous

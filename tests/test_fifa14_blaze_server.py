@@ -1474,3 +1474,62 @@ class JournalReplayTests(unittest.TestCase):
         if not substantial:
             self.skipTest("no recorded session with requests in it")
         self.assertEqual(replay.replay(substantial[-1:], quiet=True), 0)
+
+
+class SessionResumeTests(unittest.TestCase):
+    def test_a_second_connection_is_told_whose_it_is(self) -> None:
+        # The EAS FC module opens a Blaze connection of its own once its
+        # endpoints point somewhere reachable, and the first thing it says is
+        #
+        #     component 0x7802 command 35   SKEY "offline-901feefe6a599"
+        #
+        # which is the key the login handed out on the first connection. It was
+        # answered with a fieldless success and nothing else, so the module was
+        # acknowledged and then never told who it was.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        protocol = SERVER.Fifa14Protocol(
+            "192.0.2.35", 10041, journal, account_store=store
+        )
+        xuid = 0x901FEEFE6A599
+        store.save_identity(xuid, "Imskobogota6z")
+
+        state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
+        replies = protocol.handle(
+            request(0x7802, 35, [Field("SKEY", STRING, f"offline-{xuid:x}")]),
+            state,
+        )
+        self.assertEqual(len(replies), 4)
+        self.assertEqual(decode_frame(replies[0])["message_type"], 1)
+        self.assertTrue(state.authenticated)
+        self.assertEqual(state.xuid, xuid)
+
+        sent = [decode_frame(frame) for frame in replies[1:]]
+        self.assertEqual([frame["command"] for frame in sent], [8, 2, 1])
+        for frame in sent:
+            self.assertEqual(frame["component"], 0x7802)
+            self.assertEqual(frame["message_type"], 2)
+        authenticated = {f.label: f.value for f in sent[0]["fields"]}
+        self.assertEqual(authenticated["DSNM"], "Imskobogota6z")
+        self.assertEqual(authenticated["BUID"], xuid)
+
+    def test_a_key_that_names_nobody_is_refused_quietly(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        protocol = SERVER.Fifa14Protocol(
+            "192.0.2.35", 10041, journal, account_store=store
+        )
+        store.save_identity(1234, "Someone")
+        state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
+        replies = protocol.handle(
+            request(0x7802, 35, [Field("SKEY", STRING, "offline-deadbeef")]),
+            state,
+        )
+        # Answered, but nobody is claimed on the strength of a key that names
+        # a session this server never handed out.
+        self.assertEqual(len(replies), 1)
+        self.assertFalse(state.authenticated)
