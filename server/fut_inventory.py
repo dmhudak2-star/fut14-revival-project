@@ -3476,6 +3476,14 @@ def season_wire_mode() -> str:
         return "prizes"
     if raw == "matches":
         return "matches"
+    if raw in {"nouser", "listonly"}:
+        return "nouser"
+    if raw in {"user-id", "userid"}:
+        return "user-id"
+    if raw in {"user-division", "userdivision"}:
+        return "user-division"
+    if raw in {"user-round", "userround"}:
+        return "user-round"
     return "empty"
 
 
@@ -3492,6 +3500,10 @@ def seasons_response() -> bytes:
     mode = season_wire_mode()
     if mode == "empty":
         return json.dumps({"seasons": []}, separators=(",", ":")).encode()
+    if mode.startswith("user-") or mode == "nouser":
+        # Every rung above `nouser` serves the same minimal list; what varies
+        # is how much of `season/user` goes out beside it.
+        mode = "minimal"
 
     records = [
         _season_record(index, division, matches, promote, coins)
@@ -3527,10 +3539,27 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
     the end result -- was guessed, and guessed members are what this document
     is now deliberately without.
     """
-    if season_wire_mode() == "empty":
+    mode = season_wire_mode()
+    if mode.startswith("user-"):
+        # The halving `nouser` earned: the same minimal list opened the mode
+        # when this document was `{}` and froze it when it carried all three
+        # members. So the fault is here, in `seasonId`, `divisionId` or
+        # `round`, and they go back one at a time.
+        document = {"seasonId": 1}
+        if mode in {"user-division", "user-round"}:
+            document["divisionId"] = int(division)
+        if mode == "user-round":
+            document["round"] = 1
+        return json.dumps(document, separators=(",", ":")).encode()
+    if mode in {"empty", "nouser"}:
         # What this route carried before any of the guessed shapes: an empty
         # object leaves the native response at its constructor defaults rather
         # than naming a season the list no longer offers.
+        #
+        # `nouser` serves the minimal list beside this empty answer, which is
+        # the halving `minimal` earned: that rung froze with both arrays empty
+        # and a single division, so neither array is the fault and the question
+        # becomes which of the two documents carries it.
         return b"{}"
     index = next(
         (
