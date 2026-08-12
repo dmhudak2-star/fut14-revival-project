@@ -1317,3 +1317,26 @@ class GameReportingTests(unittest.TestCase):
         answer = decode_frame(replies[0])
         self.assertEqual(answer["message_type"], 1)
         self.assertEqual(answer["error"], 0)
+
+
+class TrophyItemTests(unittest.TestCase):
+    def test_a_negative_trophy_id_is_answered_like_any_other(self) -> None:
+        # The seasons screen asks for /fut/items/xbl2/-1.json, once per
+        # division. A digits-only pattern let all ten fall through to the
+        # blanket `{"itemData":[]}` that this route exists to replace, and the
+        # console then built /fut/items/images/trophies/xbl2/.big with no
+        # basename -- eighteen of those are in the journals.
+        import json
+        import re
+
+        pattern = r"/fut/items/xbl2/(-?\d+)\.json"
+        self.assertIsNotNone(re.fullmatch(pattern, "/fut/items/xbl2/-1.json"))
+        self.assertIsNotNone(re.fullmatch(pattern, "/fut/items/xbl2/1102.json"))
+
+        document = json.loads(SERVER.trophy_item_response(-1))
+        entry = document["itemData"][0]
+        self.assertEqual(entry["resourceId"], -1)
+        # The basename is what the console builds the archive path from, so
+        # the only thing that matters is that there is one.
+        self.assertTrue(entry["assetName"])
+        self.assertEqual(entry["assetName"], entry["image"])

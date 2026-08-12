@@ -2872,8 +2872,14 @@ class IdentityHttpService:
                 # `trophyResourceId`. The blanket empty answer below is what
                 # left the console building
                 # /fut/items/images/trophies/xbl2/.big with no basename.
+                # `-?` because the seasons screen asks for `-1.json`, once per
+                # division, and a digits-only pattern let all ten of them fall
+                # through to the blanket `{"itemData":[]}` this handler exists
+                # to replace. The console then builds
+                # /fut/items/images/trophies/xbl2/.big with no basename, which
+                # is in the journals eighteen times.
                 trophy_item = re.fullmatch(
-                    r"/fut/items/xbl2/(\d+)\.json", normalized_path
+                    r"/fut/items/xbl2/(-?\d+)\.json", normalized_path
                 )
                 if trophy_item and self.command == "GET":
                     resource_id = int(trophy_item.group(1))
