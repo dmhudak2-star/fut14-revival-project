@@ -4161,16 +4161,35 @@ def club_user_response(inventory: "ClubInventory", name: str) -> bytes:
     return payload
 
 
-def totw_index() -> bytes:
+def totw_index(catalogue: "CardCatalogue | None" = None) -> bytes:
     """The list of Team of the Week squads available to view.
 
     The screen asks for the TOTW itself and then for this list, and a 404 here
     is what it reports as "aucune Équipe de la semaine disponible" -- the squad
     had already been served successfully.
+
+    Every entry used to advertise `rating` 0. A squad with no rating is not a
+    squad the screen can offer, and "aucune disponible" is what it says about a
+    list it will not take. The rating is the real one now, worked out from the
+    eleven the squad names.
     """
     squads = []
     if TOTW_FILE.exists():
         squads = json.loads(TOTW_FILE.read_text()).get("squads", [])
+    by_asset = (
+        {card["assetId"]: card for card in catalogue.cards} if catalogue else {}
+    )
+
+    def rating(squad: dict) -> int:
+        eleven = [
+            by_asset[asset]
+            for asset in list(squad.get("assetIds") or [])[:11]
+            if asset in by_asset
+        ]
+        if not eleven:
+            return 0
+        return round(sum(card.get("rating", 0) for card in eleven) / len(eleven))
+
     return json.dumps(
         {
             "squad": [
@@ -4178,7 +4197,7 @@ def totw_index() -> bytes:
                     "id": index + 1,
                     "squadName": squad.get("name", f"TOTW {index + 1}"),
                     "formation": FORMATION,
-                    "rating": 0,
+                    "rating": rating(squad),
                     "chemistry": 100,
                 }
                 for index, squad in enumerate(squads)
@@ -4314,10 +4333,12 @@ def totw_index_with_squad(catalogue: "CardCatalogue") -> bytes:
     summary, the cards and an empty user list all go out together; an
     unrecognised sibling at the top level is skipped.
     """
-    index = json.loads(totw_index())
+    index = json.loads(totw_index(catalogue))
     squad = json.loads(totw_response(catalogue))
     index["itemData"] = squad["itemData"]
     index["formation"] = squad["formation"]
+    index["squadName"] = squad["squadName"]
+    index["squadChallenge"] = squad["squadChallenge"]
     return json.dumps(index, separators=(",", ":")).encode()
 
 

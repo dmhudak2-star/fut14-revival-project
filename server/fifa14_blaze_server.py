@@ -2130,8 +2130,24 @@ class IdentityHttpService:
                     # Three shapes were tried here by guesswork and all three
                     # were rejected; this one comes from the table.
                     "/ut/game/fifa14/user/list": CLUB_INVENTORY.squad_summaries,
+                    # The screen fetches this and answers "Il n'y a aucune
+                    # Équipe de la semaine disponible". It asks for nothing
+                    # else -- no challenge route has ever appeared in any
+                    # journal -- so what it is missing is in this document.
+                    #
+                    # A time window was tried first, on the reading that a
+                    # Team of the Week is this week's team: the six members a
+                    # cup carries, all of them in the name table. The message
+                    # did not change, so that was not it.
+                    #
+                    # What goes out now is the *list* of Teams of the Week as
+                    # well as the squad. "Aucune disponible" reads much more
+                    # like an empty list than like a squad it cannot parse,
+                    # and this document was written for exactly that a while
+                    # ago -- `totw_index_with_squad` -- and then never wired
+                    # to a route.
                     "/ut/game/fifa14/clientdata/totw": (
-                        lambda: totw_response(CARD_CATALOGUE)
+                        lambda: totw_index_with_squad(CARD_CATALOGUE)
                     ),
                 }
                 if normalized_path in mode_responses and self.command == "GET":
