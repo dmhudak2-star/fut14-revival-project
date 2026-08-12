@@ -1340,3 +1340,34 @@ class TrophyItemTests(unittest.TestCase):
         # the only thing that matters is that there is one.
         self.assertTrue(entry["assetName"])
         self.assertEqual(entry["assetName"], entry["image"])
+
+
+class ConsumableByItemIdTests(unittest.TestCase):
+    def test_a_consumable_can_be_applied_by_its_own_item_id(self) -> None:
+        # The client addresses a consumable two ways: `item/resource/<id>`
+        # names the definition, `item/<id>` names one particular card in the
+        # club. Only the first was handled, so this real request on 11 August
+        #
+        #     POST /ut/game/fifa14/item/1950000106
+        #     {"apply":[{"id":1700000004}]}
+        #
+        # was answered 404 and went into the unhandled journal, where nobody
+        # looked. From the player's side the card simply did nothing.
+        import fut_inventory as inventory
+
+        club = inventory.ClubInventory()
+        rack = inventory.ConsumableRack(club)
+        consumable = next(
+            item for item in club.items
+            if item.get("itemType") in inventory.CONSUMABLE_TYPES
+            and item.get("resourceId")
+        )
+        self.assertEqual(
+            rack.resource_of(consumable["id"]), consumable["resourceId"]
+        )
+
+        player = next(i for i in club.items if i.get("itemType") == "player")
+        with self.assertRaises(inventory.ConsumableRefused):
+            rack.resource_of(player["id"])
+        with self.assertRaises(inventory.ConsumableRefused):
+            rack.resource_of(-999)

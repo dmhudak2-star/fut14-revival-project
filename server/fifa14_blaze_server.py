@@ -2491,10 +2491,30 @@ class IdentityHttpService:
                 # `apply` is in CardsDLL's member-name table, next to
                 # `applyTo`, so both spellings are accepted. Retail answers
                 # this one by status, so success is an empty document.
+                #
+                # The client addresses the card two ways, and only the first
+                # was handled. `item/<itemId>` names one particular card in the
+                # club rather than the definition, and a real application on
+                # 11 August --
+                #
+                #     POST /ut/game/fifa14/item/1950000106
+                #     {"apply":[{"id":1700000004}]}
+                #
+                # -- was answered 404 and went into the unhandled journal,
+                # where nobody looked. From the player's side the card simply
+                # did nothing.
                 consumable_apply = re.fullmatch(
                     r"/ut/game/fifa14/item/resource/(\d+)", normalized_path
                 )
-                if consumable_apply and self.command in ("POST", "PUT"):
+                consumable_by_item = None
+                if consumable_apply is None:
+                    consumable_by_item = re.fullmatch(
+                        r"/ut/game/fifa14/item/(\d+)", normalized_path
+                    )
+                if (
+                    (consumable_apply or consumable_by_item)
+                    and self.command in ("POST", "PUT")
+                ):
                     try:
                         document = json.loads(body or b"{}")
                     except ValueError:
@@ -2509,8 +2529,14 @@ class IdentityHttpService:
                             targets.append(int(raw))
                         except (TypeError, ValueError):
                             continue
-                    resource_id = int(consumable_apply.group(1))
+                    resource_id = (
+                        int(consumable_apply.group(1)) if consumable_apply else 0
+                    )
                     try:
+                        if consumable_by_item is not None:
+                            resource_id = CONSUMABLE_RACK.resource_of(
+                                int(consumable_by_item.group(1))
+                            )
                         result = CONSUMABLE_RACK.apply(resource_id, targets)
                     except ConsumableRefused as refusal:
                         owner.journal.event(

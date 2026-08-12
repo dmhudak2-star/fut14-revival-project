@@ -2103,6 +2103,31 @@ class ConsumableRack:
             raise ConsumableRefused(f"consumable {resource_id} is not in the catalogue")
         return matches[0], row
 
+    def resource_of(self, item_id: int) -> int:
+        """The definition behind one owned consumable, by its item id.
+
+        The client addresses a consumable two ways. `item/resource/<id>` names
+        the definition and any owned copy will do; `item/<id>` names one
+        particular card in the club. Only the first was ever handled, so a
+        real application on 11 August at 03:00 --
+
+            POST /ut/game/fifa14/item/1950000106
+            {"apply":[{"id":1700000004}]}
+
+        -- was answered 404 and went in the unhandled journal, where nobody
+        looked. From the player's side the card simply did nothing.
+        """
+        for item in self.inventory.items:
+            if item.get("id") != item_id:
+                continue
+            if item.get("itemType") not in CONSUMABLE_TYPES:
+                raise ConsumableRefused(f"item {item_id} is not a consumable")
+            resource = item.get("resourceId")
+            if not resource:
+                raise ConsumableRefused(f"item {item_id} carries no resourceId")
+            return int(resource)
+        raise ConsumableRefused(f"item {item_id} is not in the club")
+
     def _target(self, item_id: int) -> dict:
         for item in self.inventory.items:
             if item.get("id") == item_id:
