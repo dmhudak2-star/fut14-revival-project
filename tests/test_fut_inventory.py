@@ -2687,3 +2687,62 @@ def test_a_pack_after_a_restart_does_not_reissue_ids_the_club_holds() -> None:
     second = json.loads(after.open_pack(303, random.Random(4)))
     reissued = [item["id"] for item in second["itemList"] if item["id"] in held]
     assert reissued == [], f"reissued ids the club already holds: {reissued}"
+
+
+def test_a_pack_never_hands_out_the_same_player_twice() -> None:
+    # Two Vargas out of one Team of the Season pack on 12 August. Retail does
+    # not do that, and the screen has no way to show it that is not confusing:
+    # the same card twice reads as a bug whatever the data says. So the draw is
+    # retried rather than the repeat explained.
+    import random
+
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    club = inventory.ClubInventory()
+    club.items = []
+    wallet = inventory.Wallet(coins=10**10)
+    shop = inventory.PackShop(catalogue, wallet, club)
+
+    repeats = 0
+    for pack_id in sorted(inventory.PACK_SPECS):
+        for seed in range(20):
+            opened = json.loads(shop.open_pack(pack_id, random.Random(seed)))
+            players = [
+                item for item in opened["itemList"]
+                if item.get("itemType") == "player"
+            ]
+            keys = [(item.get("assetId"), item.get("rareflag")) for item in players]
+            repeats += len(keys) - len(set(keys))
+    assert repeats == 0
+
+
+def test_the_purchased_pile_says_which_of_its_cards_repeat_the_club() -> None:
+    # The pack screen gets its pairs in the pack response. The unassigned pile
+    # is a different screen with a duplicates tab of its own, and it was handed
+    # an empty list -- so a card the pack had just flagged sat in that tab's
+    # absence.
+    import random
+
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    club = inventory.ClubInventory()
+    club.items = []
+    wallet = inventory.Wallet(coins=10**10)
+    shop = inventory.PackShop(catalogue, wallet, club)
+
+    opened = json.loads(shop.open_pack(303, random.Random(5)))
+    player = next(
+        item for item in opened["itemList"] if item.get("itemType") == "player"
+    )
+    # The club already owns that card, acquired earlier: a smaller id.
+    owned = dict(player, id=1)
+    club.items.append(owned)
+
+    pile = json.loads(shop.purchased_items())
+    pairs = {row["itemId"]: row["duplicateItemId"] for row in pile["duplicateItemIdList"]}
+    assert pairs.get(player["id"]) == 1
+    # And on the card itself, which is what the pile document carries.
+    held = next(item for item in pile["itemData"] if item["id"] == player["id"])
+    assert held["duplicateItemId"] == 1

@@ -380,6 +380,38 @@ def club_duplicate_pairs(items: list[dict]) -> list[dict]:
     return pairs
 
 
+def pile_duplicate_pairs(pending: list[dict], owned: list[dict]) -> list[dict]:
+    """Which cards waiting in the purchased pile repeat one already owned.
+
+    The pack screen gets its pairs in the pack response and shows the repeat
+    there. The unassigned pile is a different screen with a duplicates tab of
+    its own, and it was handed an empty list -- so a card that the pack itself
+    had just flagged sat in that tab's absence, unremarked. Two Vargas out of
+    one pack on 12 August: marked on the card, missing from the panel.
+
+    The card kept as the original is whichever was acquired first -- a copy in
+    the club always beats one still in the pile, and inside the pile the
+    smaller id wins, because ids are issued upwards as cards arrive.
+    """
+    first: dict[tuple, int] = {}
+    for item in sorted(owned, key=lambda row: row.get("id") or 0):
+        if item.get("itemType") == "player":
+            first.setdefault(card_signature(item), item["id"])
+    pairs: list[dict] = []
+    for item in sorted(pending, key=lambda row: row.get("id") or 0):
+        if item.get("itemType") != "player":
+            continue
+        key = card_signature(item)
+        original = first.get(key)
+        if original is None:
+            first[key] = item["id"]
+            item.pop("duplicateItemId", None)
+            continue
+        item["duplicateItemId"] = original
+        pairs.append({"itemId": item["id"], "duplicateItemId": original})
+    return pairs
+
+
 def _bounded_club(items: list[dict]) -> list[dict]:
     """The bare club, capped, without wiping out a whole kind of card.
 
@@ -1536,6 +1568,21 @@ MAX_SPECIALS_PER_PACK = 2
 ELITE_RATING = 90
 MAX_ELITE_PER_PACK = 2
 
+# How hard a pack tries to avoid handing out the same player twice.
+DISTINCT_DRAW_ATTEMPTS = 12
+
+
+def _pack_identity(card: dict) -> tuple:
+    """The player and his version, as a catalogue row spells them.
+
+    Not `card_signature`: that keys on `resourceId`, which the built
+    item carries and the catalogue row it was built from does not, so
+    comparing the two answered on different keys and let repeats
+    through. Inside one pack, the asset and the rare flag are exactly
+    "the same player, the same card".
+    """
+    return (card.get("assetId"), card.get("rareflag"))
+
 # Which special, when there is one. By weight, not by how many of each the
 # catalogue holds.
 #
@@ -1910,6 +1957,8 @@ class PackShop:
             rng,
         )
         elite_left = MAX_ELITE_PER_PACK
+        # The signatures this pack has already handed out.
+        already: set = set()
 
         drawn = []
         for slot, kind in enumerate(kinds):
@@ -1923,17 +1972,47 @@ class PackShop:
                     continue
                 # No consumable catalogue: fall through and draw a player, so
                 # the pack is still the size it advertises.
+            # A pack never hands out the same player twice. Retail does not,
+            # and the screen has no way to show it that is not confusing: two
+            # Vargas out of one pack read as a bug whatever the data says. So
+            # the draw is retried rather than the repeat explained.
+            #
+            # Bounded, and it keeps the last card if the pool cannot do better
+            # -- a bronze tier with a narrow rare band can run out of distinct
+            # cards before twelve slots are filled, and a pack that is short a
+            # card is worse than a pack with a repeat in it.
             card = None
-            if slot in specials:
-                card = self._draw_special(tier, rng, spec.get("families"))
-            if card is None:
-                # A special is a rare card, so a slot that was going to hold
-                # one and found no family to draw from still owes a rare.
-                card = self._draw_ordinary(
-                    tier, rare_slot or slot in specials, rng, elite_left
-                )
-            if card is None:
-                card = rng.choice(pool)
+            for attempt in range(DISTINCT_DRAW_ATTEMPTS):
+                # A special family can be small enough that every card in it
+                # is already in this pack -- a Team of the Week pack drawing
+                # two in forms out of a short list. After half the attempts the
+                # slot stops insisting on a special and takes a rare instead,
+                # which is a better card than the same one twice.
+                if slot in specials and attempt < DISTINCT_DRAW_ATTEMPTS // 2:
+                    card = self._draw_special(tier, rng, spec.get("families"))
+                if card is None:
+                    # A special is a rare card, so a slot that was going to
+                    # hold one and found no family to draw from still owes a
+                    # rare.
+                    card = self._draw_ordinary(
+                        tier, rare_slot or slot in specials, rng, elite_left
+                    )
+                if card is None:
+                    card = rng.choice(pool)
+                if _pack_identity(card) not in already:
+                    break
+                card = None
+            if card is None or _pack_identity(card) in already:
+                # Last resort: anything in the tier this pack has not already
+                # handed out. Only the twelve-player packs ever reach here, and
+                # only when the bands and the elite cap between them keep
+                # offering the same card back.
+                fresh = [
+                    other for other in pool
+                    if _pack_identity(other) not in already
+                ]
+                card = rng.choice(fresh) if fresh else (card or rng.choice(pool))
+            already.add(_pack_identity(card))
             if card.get("rating", 0) >= ELITE_RATING:
                 elite_left -= 1
             item = _player_item(
@@ -2044,20 +2123,24 @@ class PackShop:
     def purchased_items(self) -> bytes:
         return json.dumps(
             {
-                # Empty on purpose, and the binary says why the shape was
-                # wrong: CardsDLL carries GetCardDuplicate and HAS_DUPLICATE,
-                # so the client asks for *the card already owned* that a new
-                # one duplicates. Listing the new ids here points it at the
-                # card it is holding, which is very likely the loop it hung in.
+                # Reporting duplicates here froze the title once: after
+                # buying a second Chamakh the client fetched squad/active,
+                # tradePile and this, and stopped dead. What went out then was
+                # a bare list of the *new* ids -- which points the client at
+                # the card it is holding, and CardsDLL carrying
+                # GetCardDuplicate and HAS_DUPLICATE says it wants the card
+                # already owned.
                 #
-                # Reporting duplicates here froze the title
-                # outright: after buying a second Chamakh the client fetched
-                # squad/active, tradePile and this, and stopped dead. The pack
-                # response carries the same list without trouble, so the fault
-                # is this document specifically -- most likely the ids it wants
-                # are the cards already owned rather than the new ones, and a
-                # freeze is not worth guessing through.
-                "duplicateItemIdList": [],
+                # What goes out now is the pairing, {itemId: new,
+                # duplicateItemId: owned}, which is the shape the pack response
+                # and the club search both carry without trouble. The screen
+                # has a duplicates tab of its own and it was being handed
+                # nothing to put in it -- two Vargas out of one pack, marked on
+                # the card and missing from the panel.
+                "duplicateItemIdList": pile_duplicate_pairs(
+                    self.pending,
+                    self.inventory.items if self.inventory else [],
+                ),
                 "itemData": self.pending,
                 "credits": self.wallet.coins,
                 "totalCredits": self.wallet.coins,
