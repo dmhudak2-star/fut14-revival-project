@@ -2658,3 +2658,32 @@ def test_packing_the_same_player_twice_says_so_the_second_time() -> None:
         # Both spellings, because they are read in different places.
         assert item.get("duplicateItemId") == original
         assert pairs.get(item["id"]) == original
+
+
+def test_a_pack_after_a_restart_does_not_reissue_ids_the_club_holds() -> None:
+    # `PACK_ITEM_ID_BASE + purchases * 100 + slot` counted `purchases` from
+    # zero every time the server started, so the first pack after a restart
+    # reissued ids the saved club was already holding. `_keep` refuses an id it
+    # already holds -- soundly, since the same item twice is one card counted
+    # twice -- so a freshly packed card could be dropped on the way to the club
+    # and appear nowhere. A Record Breaker Klose went that way on 12 August:
+    # the club's 1950000205 was a Non-Rare Silver from an earlier session.
+    import random
+
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    club = inventory.ClubInventory()
+    wallet = inventory.Wallet(coins=10**9)
+
+    before = inventory.PackShop(catalogue, wallet, club)
+    first = json.loads(before.open_pack(303, random.Random(3)))
+    # The club keeps them, the way "send all to club" does.
+    club.items.extend(first["itemList"])
+    held = {item["id"] for item in club.items}
+
+    # A restart: a new shop, its counter back at zero, the same saved club.
+    after = inventory.PackShop(catalogue, wallet, club)
+    second = json.loads(after.open_pack(303, random.Random(4)))
+    reissued = [item["id"] for item in second["itemList"] if item["id"] in held]
+    assert reissued == [], f"reissued ids the club already holds: {reissued}"

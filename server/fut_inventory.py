@@ -1643,6 +1643,7 @@ class PackShop:
         # club already holds, which is a question only the club can answer.
         self.inventory = inventory
         self.purchases = 0
+        self._item_id_floor: int | None = None
         # Cards drawn but not yet acknowledged by the client. The purchased
         # items endpoint reports these, which is how they reach the club.
         self.pending: list[dict] = []
@@ -1855,6 +1856,33 @@ class PackShop:
         rng.shuffle(kinds)
         return kinds
 
+    def _next_item_id(self, slot: int) -> int:
+        """An id no card already owned is using.
+
+        This was `PACK_ITEM_ID_BASE + purchases * 100 + slot`, and `purchases`
+        counts from zero every time the server starts. So the first pack after
+        a restart reissued 1950000100 and up -- ids the saved club was already
+        holding from an earlier session.
+
+        `_keep` refuses an id it already holds, on the sound reasoning that the
+        same item arriving twice is one card counted twice rather than two
+        cards. Between them, a freshly packed card could be dropped on the way
+        to the club and never appear anywhere. That is what happened to a
+        Record Breaker Klose on 12 August: the club's 1950000205 was a
+        Non-Rare Silver from a previous session, and the 90 went nowhere.
+
+        So the counter is seeded from what is actually owned, once, the first
+        time a pack is opened after a start.
+        """
+        if self._item_id_floor is None:
+            owned = [item.get("id") or 0 for item in self.pending]
+            if self.inventory is not None:
+                owned += [item.get("id") or 0 for item in self.inventory.items]
+            highest = max((i for i in owned if i < PACK_ITEM_ID_BASE + 900_000),
+                          default=PACK_ITEM_ID_BASE)
+            self._item_id_floor = max(PACK_ITEM_ID_BASE, highest) + 1
+        return self._item_id_floor + (self.purchases - 1) * 100 + slot
+
     def spec(self, pack_id: int) -> dict | None:
         return PACK_SPECS.get(int(pack_id))
 
@@ -1885,7 +1913,7 @@ class PackShop:
 
         drawn = []
         for slot, kind in enumerate(kinds):
-            item_id = PACK_ITEM_ID_BASE + self.purchases * 100 + slot
+            item_id = self._next_item_id(slot)
             # A rare slot promises a rare card whatever kind of card it holds.
             rare_slot = slot < int(spec["rares"])
             if kind == "extra":
