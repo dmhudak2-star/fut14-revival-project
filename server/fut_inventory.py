@@ -1407,6 +1407,35 @@ PACK_SPECS: dict[int, dict] = {
     307: {"name": "Premium Gold Players Pack", "tier": "gold", "coins": 25000,
           "points": 0, "count": 12, "rares": 3, "players": 12, "premium": True,
           "group": "Gold Packs"},
+
+    # Packs this server adds. Retail FIFA 14 had no consumables-only pack and
+    # nothing above 25 000, so these are not reconstructions of anything --
+    # they are what an offline club with no store behind it needs to keep
+    # being worth playing.
+    #
+    # `players` 0 makes a pack all consumables and club items; `guaranteed`
+    # promises that many specials rather than rolling for them; `families`
+    # replaces the house spread, so a Team of the Week pack cannot hand you a
+    # Team of the Year instead.
+    108: {"name": "Consumables Pack", "tier": "silver", "coins": 2000,
+          "points": 0, "count": 12, "rares": 2, "players": 0, "premium": False,
+          "group": "Consumables"},
+    109: {"name": "Premium Consumables Pack", "tier": "gold", "coins": 6000,
+          "points": 0, "count": 24, "rares": 8, "players": 0, "premium": True,
+          "group": "Consumables"},
+    308: {"name": "Rare Gold Pack", "tier": "gold", "coins": 100000,
+          "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
+          "group": "Gold Packs"},
+    309: {"name": "Team of the Week Pack", "tier": "gold", "coins": 50000,
+          "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
+          "guaranteed": 1, "families": {"team of the week": 1.0},
+          "group": "Special Packs"},
+    310: {"name": "Team of the Season Pack", "tier": "gold", "coins": 250000,
+          "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
+          "guaranteed": 2,
+          "families": {"team of the season": 70.0, "team of the year": 12.0,
+                       "record breaker": 6.0, "team of the week": 12.0},
+          "group": "Special Packs"},
 }
 
 GOLD_PACK_ID = 304
@@ -1483,9 +1512,15 @@ SPECIAL_CHANCE = {
     103: 0.006, 104: 0.012,
     203: 0.015, 204: 0.03,
     303: 0.08, 304: 0.16, 305: 0.25, 306: 0.20, 307: 0.35,
+    # The added packs. 108 and 109 hold no players at all, so their chance
+    # is nought by construction; 308 is all rare golds and pays for it.
+    308: 0.45, 309: 1.0, 310: 1.0,
 }
-SECOND_SPECIAL_CHANCE = {303: 0.01, 304: 0.02, 305: 0.03, 306: 0.03, 307: 0.05}
+SECOND_SPECIAL_CHANCE = {303: 0.01, 304: 0.02, 305: 0.03, 306: 0.03,
+                         307: 0.05, 308: 0.10, 309: 0.25, 310: 0.35}
 MAX_SPECIALS_PER_PACK = 2
+# A pack that promises more than the house limit gets what it promises;
+# see `guaranteed` in PACK_SPECS.
 
 # No pack hands out more than two cards rated 90 or better, however the bands
 # fall. Odds are per card; this is the sentence about the pack.
@@ -1617,13 +1652,21 @@ class PackShop:
 
     # -- choosing a card ----------------------------------------------------
 
-    def _draw_special(self, tier: str, rng: random.Random) -> dict | None:
-        """One special, its family chosen by weight rather than by stock."""
+    def _draw_special(
+        self, tier: str, rng: random.Random, weights: dict | None = None
+    ) -> dict | None:
+        """One special, its family chosen by weight rather than by stock.
+
+        `weights` lets a pack promise a kind of special rather than the
+        house spread -- a Team of the Week pack that could hand you a
+        Team of the Year instead is not a Team of the Week pack.
+        """
+        table = weights or SPECIAL_FAMILY_WEIGHTS
         families = self._specials.get(tier) or {}
         choices = [
-            (name, SPECIAL_FAMILY_WEIGHTS.get(name, 0.0))
+            (name, table.get(name, 0.0))
             for name, cards in families.items()
-            if cards and SPECIAL_FAMILY_WEIGHTS.get(name, 0.0) > 0
+            if cards and table.get(name, 0.0) > 0
         ]
         if not choices:
             return None
@@ -1669,13 +1712,24 @@ class PackShop:
         """
         if not player_slots:
             return set()
+        spec = PACK_SPECS.get(int(pack_id)) or {}
+        # A pack that promises a special owes one every time, not with a
+        # probability. `guaranteed` is that promise.
+        guaranteed = max(0, int(spec.get("guaranteed", 0)))
+        chosen: set[int] = set()
+        for _ in range(min(guaranteed, len(player_slots))):
+            remaining = [slot for slot in player_slots if slot not in chosen]
+            if not remaining:
+                break
+            chosen.add(rng.choice(remaining))
         chance = SPECIAL_CHANCE.get(int(pack_id), 0.0)
-        if chance <= 0 or rng.random() >= chance:
+        if not chosen and (chance <= 0 or rng.random() >= chance):
             return set()
-        chosen = {rng.choice(player_slots)}
+        if not chosen:
+            chosen = {rng.choice(player_slots)}
         second = SECOND_SPECIAL_CHANCE.get(int(pack_id), 0.0)
         if (
-            len(chosen) < MAX_SPECIALS_PER_PACK
+            len(chosen) < max(MAX_SPECIALS_PER_PACK, guaranteed)
             and second > 0
             and rng.random() < second
         ):
@@ -1805,7 +1859,7 @@ class PackShop:
                 # the pack is still the size it advertises.
             card = None
             if slot in specials:
-                card = self._draw_special(tier, rng)
+                card = self._draw_special(tier, rng, spec.get("families"))
             if card is None:
                 # A special is a rare card, so a slot that was going to hold
                 # one and found no family to draw from still owes a rare.

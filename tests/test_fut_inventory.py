@@ -2526,3 +2526,62 @@ def test_the_empty_big_archive_declares_its_size_the_way_a_real_one_does() -> No
     assert struct.unpack_from("<I", archive, 4)[0] == len(archive)
     assert struct.unpack_from(">I", archive, 8)[0] == 0     # no entries
     assert struct.unpack_from(">I", archive, 12)[0] == 16   # header is all of it
+
+
+def test_the_added_packs_hold_what_they_advertise() -> None:
+    # Retail FIFA 14 had no consumables-only pack and nothing above 25 000, so
+    # these are not reconstructions of anything -- they are what an offline
+    # club with no store behind it needs to keep being worth playing. What is
+    # asserted is the promise each one makes on the store screen.
+    import collections
+    import random
+
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    club = inventory.ClubInventory()
+    wallet = inventory.Wallet(coins=10**9)
+    shop = inventory.PackShop(catalogue, wallet, club)
+
+    def contents(pack_id: int, runs: int = 30):
+        kinds = collections.Counter()
+        families = collections.Counter()
+        specials = 0
+        ordinary = {"rare gold", "non-rare gold", "rare silver",
+                    "non-rare silver", "rare bronze", "non-rare bronze"}
+        for seed in range(runs):
+            opened = json.loads(shop.open_pack(pack_id, random.Random(seed)))
+            assert len(opened["itemList"]) == inventory.PACK_SPECS[pack_id]["count"]
+            for item in opened["itemList"]:
+                kinds[item.get("itemType")] += 1
+                if item.get("itemType") != "player":
+                    continue
+                rarity = (item.get("rarity") or "").lower()
+                families[rarity] += 1
+                if rarity not in ordinary:
+                    specials += 1
+        return kinds, families, specials / runs
+
+    # Consumables packs hold no players at all.
+    for pack_id in (108, 109):
+        kinds, _, _ = contents(pack_id)
+        assert kinds["player"] == 0
+        assert set(kinds) <= inventory.CONSUMABLE_TYPES | {"club"}
+
+    # The 100 000 pack is rare golds, all twelve of them.
+    _, families, _ = contents(308)
+    assert families["non-rare gold"] == 0
+    assert families["rare gold"] > 0
+
+    # A Team of the Week pack owes one every time, and cannot hand out another
+    # family instead.
+    _, families, per_pack = contents(309)
+    assert per_pack >= 1.0
+    assert families["team of the week"] > 0
+    assert families["team of the year"] == 0
+    assert families["team of the season"] == 0
+
+    # The Team of the Season pack promises two, weighted to its own name.
+    _, families, per_pack = contents(310)
+    assert per_pack >= 2.0
+    assert families["team of the season"] > families["team of the year"]
