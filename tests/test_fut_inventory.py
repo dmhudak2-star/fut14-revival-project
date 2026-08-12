@@ -749,11 +749,20 @@ def test_a_special_is_not_a_duplicate_of_the_ordinary_card() -> None:
     shop = inventory.PackShop(
         inventory.CardCatalogue(), inventory.Wallet(), inventory.ClubInventory()
     )
-    ordinary = {"id": 1, "assetId": 167628, "resourceId": 100, "rareflag": 1}
-    special = {"id": 2, "assetId": 167628, "resourceId": 200, "rareflag": 1}
-    same = {"id": 3, "assetId": 167628, "resourceId": 100, "rareflag": 1}
+    # `resourceId` used to be the key. It cannot be here: this server builds it
+    # as RESOURCE_VERSION | asset_id with the version byte always 1, so every
+    # version of a player carries the same number and the key collapsed onto
+    # the asset. What names the version is the rarity, and the rating separates
+    # two cards of one player inside a family.
+    ordinary = {"id": 1, "assetId": 167628, "rarity": "Rare Gold", "rating": 74}
+    special = {"id": 2, "assetId": 167628, "rarity": "Team of the Season",
+               "rating": 84}
+    louder = {"id": 4, "assetId": 167628, "rarity": "Team of the Season",
+              "rating": 87}
+    same = {"id": 3, "assetId": 167628, "rarity": "Rare Gold", "rating": 74}
 
     assert shop._signature(ordinary) != shop._signature(special)
+    assert shop._signature(special) != shop._signature(louder)
     assert shop._signature(ordinary) == shop._signature(same)
 
 
@@ -2346,8 +2355,10 @@ def test_a_special_is_not_a_repeat_of_the_ordinary_card() -> None:
     import fut_inventory as inventory
 
     club = [
-        {"id": 20, "itemType": "player", "assetId": 167628, "resourceId": 1, "rareflag": 1},
-        {"id": 21, "itemType": "player", "assetId": 167628, "resourceId": 2, "rareflag": 3},
+        {"id": 20, "itemType": "player", "assetId": 167628,
+         "rarity": "Rare Gold", "rating": 74},
+        {"id": 21, "itemType": "player", "assetId": 167628,
+         "rarity": "Team of the Season", "rating": 84},
     ]
     assert inventory.club_duplicate_pairs(club) == []
 

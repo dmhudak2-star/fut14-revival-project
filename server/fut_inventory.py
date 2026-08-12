@@ -357,19 +357,28 @@ def first_run() -> bool:
 def card_signature(item: dict):
     """What makes two cards the same card.
 
-    `resourceId`, exactly -- not `assetId`. A player's special versions all
-    share his asset id: a Team of the Season Ruffier and a Rare Gold Ruffier
-    are both asset 167628 and are not the same card. Keying on the asset flags
-    the special as a repeat of the ordinary one.
+    The asset, the version and the rating. `resourceId` was the whole key, on
+    the reasoning that a player's specials each carry their own -- and that is
+    true of retail data and false of ours. This server builds it as
+    `RESOURCE_VERSION | asset_id` with the version byte always 1, so every
+    version of a player resolves to the same number and the key collapsed onto
+    the asset. Which is the exact mistake DUPLICATES.md warns about, reached
+    from the other end.
 
-    `assetId` with the rare flag is the fallback for a card that carries no
-    resource id, which is better than nothing but cannot tell two specials of
-    the same player apart.
+    What it looked like: a Team of the Year 98 reported as a repeat of a Team
+    of the Year 92, a Team of the Week 74 as a repeat of a Rare Silver 73, a
+    Team of the Season 84 as a repeat of a Rare Gold 79. Five such pairs in a
+    club of 213. Ibra 96 and Lahm 92 were two of them.
+
+    `rarity` is what names the version here -- "Rare Gold", "Team of the Week",
+    "iMOTM" -- and the rating separates two cards of one player inside a single
+    family. Two genuinely identical cards agree on all three.
     """
-    resource = item.get("resourceId")
-    if resource:
-        return ("resource", resource)
-    return ("asset", item.get("assetId"), item.get("rareflag"))
+    return (
+        item.get("assetId"),
+        (item.get("rarity") or "").strip().lower(),
+        item.get("rating"),
+    )
 
 
 def club_duplicate_pairs(items: list[dict]) -> list[dict]:
@@ -1623,7 +1632,7 @@ def _pack_identity(card: dict) -> tuple:
     through. Inside one pack, the asset and the rare flag are exactly
     "the same player, the same card".
     """
-    return (card.get("assetId"), card.get("rareflag"))
+    return card_signature(card)
 
 # Which special, when there is one. By weight, not by how many of each the
 # catalogue holds.
