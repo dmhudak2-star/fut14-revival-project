@@ -1431,3 +1431,32 @@ class EveryRouteAnswersTests(unittest.TestCase):
                 self.assertGreater(checked, 30)
             finally:
                 identity.stop()
+
+
+class JournalReplayTests(unittest.TestCase):
+    def test_the_most_recent_recorded_session_still_answers(self) -> None:
+        # The journals are a regression suite nobody was running. Two of
+        # tonight's fixes came out of reading them by hand -- the watch list
+        # 404ing on a capital L, and a consumable applied by its own item id
+        # falling through unhandled -- and both had been failing for days in a
+        # screen that merely looked empty.
+        import importlib.util
+
+        journals = sorted((ROOT / "runtime").glob("live-easw-*.jsonl"))
+        if not journals:
+            self.skipTest("no recorded session in runtime/")
+
+        spec = importlib.util.spec_from_file_location(
+            "replay_journal", ROOT / "tools" / "replay_journal.py"
+        )
+        replay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(replay)
+
+        # The newest session with enough in it to be worth replaying.
+        substantial = [
+            path for path in journals
+            if sum(1 for _ in replay.requests_in(path)) >= 20
+        ]
+        if not substantial:
+            self.skipTest("no recorded session with requests in it")
+        self.assertEqual(replay.replay(substantial[-1:], quiet=True), 0)
