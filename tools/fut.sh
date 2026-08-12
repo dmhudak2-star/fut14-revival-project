@@ -112,9 +112,18 @@ launch_title() {
     # says only "connectez-vous a Xbox Live et aux serveurs EA" -- which names
     # neither the patch nor the step that failed.
     case "$out" in
-        *"hostnames preserved"*) return 0 ;;
+        *"hostnames preserved"*) ;;
         *) return 1 ;;
     esac
+    # The EAS FC session is a second Blaze connection, from powdllzf, to
+    # endpoints the launch patch above does not touch -- so the client resolves
+    # them for real, reaches nothing, and the menu eventually says "Vous avez
+    # perdu la connexion avec les serveurs EA". powdllzf is not mapped yet at
+    # this point, so the patcher polls for it.
+    step "endpoints EAS FC"
+    "$PY" tools/fifa14_easfc_endpoint_patch.py "$XBOX" --local-ip "$MAC" \
+        --timeout 90 2>&1 | sed 's/^/   /'
+    return 0
 }
 
 # Keeping the patch applied without anybody watching for the main menu.
