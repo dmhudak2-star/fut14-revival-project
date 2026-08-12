@@ -73,3 +73,47 @@ Also open: whether `trophyResourceId` should simply be absent rather than
 carrying any number, and what `season/user`'s `round` should be for a season
 never played — the PC build sends wire 1 for the first fixture and warns that
 wire 0 becomes the client's 0xFFFF sentinel.
+
+
+## Attempt four, 13 August: the asset chain was not it
+
+Two real defects sat on the seasons entry path and both were fixed the night
+before, without knowing they were on it:
+
+* `/fut/items/xbl2/-1.json` was answered with the blanket `{"itemData":[]}`,
+  because the route matched digits only and the seasons screen asks for a
+  negative id -- once per division, ten times. An empty definition is what
+  makes the console build `trophies/xbl2/.big` with no basename.
+* the empty BIG archive declared its own size big-endian, so sixteen bytes
+  announced themselves as 0x10000000 -- 268 megabytes.
+
+Both are visible in this attempt's journal as fixed: the ten `-1.json` requests
+each come back with 151 bytes and a real `assetName`, and the console then asks
+for `trophies/xbl2/**item**.big` rather than `.big`.
+
+**The screen froze anyway**, in the same place:
+
+    00:31:51  GET season/list                served
+    00:31:51  GET /fut/items/xbl2/-1.json    x10, served
+    00:31:52  GET trophies/xbl2/item.big     served
+    00:31:52  GET season/user                served
+              nothing further
+
+So the asset chain is eliminated. What is wrong is in the record, which is what
+the reduction ladder below is for. The console stayed healthy throughout --
+XBDM answering, title running, only the frontend hung.
+
+## The ladder, reachable by name
+
+`FIFA14_SEASON_MODE` now takes five values rather than two:
+
+    empty     no seasons at all -- the only answer known to break nothing
+    minimal   one division, no `matches`, no `prizeSet`
+    prizes    minimal plus `prizeSet`
+    matches   minimal plus `matches`
+    native    every division, both arrays -- the shape that freezes
+
+One rung per relaunch, one entry into the mode each. `minimal` first: if that
+opens, the record's frame is right and one of the two arrays is the fault; if
+it freezes too, the fault is in the record's own members and neither array
+matters yet.

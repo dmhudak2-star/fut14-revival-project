@@ -3445,9 +3445,38 @@ def season_wire_mode() -> str:
     PC revival carried here for the same reason. The native shape stays
     reachable for a deliberate test rather than being the default that greets
     anyone who opens the mode.
+
+    Attempt four, on 13 August, changed the asset chain underneath and not the
+    document: `/fut/items/xbl2/-1.json` answers with a real definition now
+    instead of an empty one, so the console built
+    `trophies/xbl2/item.big` with a basename instead of `.big` with none, and
+    that archive no longer declares itself 268 MB long. Both were real defects
+    on this exact path. **The screen still froze**, in the same place, after
+    both documents were served -- so the asset chain was not it, and what is
+    wrong is in the record.
+
+    Which is what SEASONS.md prescribes reducing, one variable at a time. The
+    ladder is reachable by name:
+
+        empty     no seasons at all -- the only answer known to break nothing
+        minimal   one division, no `matches`, no `prizeSet`
+        prizes    minimal plus `prizeSet`
+        matches   minimal plus `matches`
+        native    every division, both arrays -- the shape that freezes
+
+    Each rung costs a server restart and one entry into the mode. Serving the
+    whole record at once produces a freeze and no information.
     """
     raw = os.environ.get("FIFA14_SEASON_MODE", "empty").strip().lower()
-    return "native" if raw in {"native", "full", "on"} else "empty"
+    if raw in {"native", "full", "on"}:
+        return "native"
+    if raw in {"minimal", "min", "bare"}:
+        return "minimal"
+    if raw in {"prizes", "prizeset"}:
+        return "prizes"
+    if raw == "matches":
+        return "matches"
+    return "empty"
 
 
 def seasons_response() -> bytes:
@@ -3460,19 +3489,30 @@ def seasons_response() -> bytes:
     something below is still wrong and the freeze is not worth serving by
     default. See `season_wire_mode`.
     """
-    if season_wire_mode() == "empty":
+    mode = season_wire_mode()
+    if mode == "empty":
         return json.dumps({"seasons": []}, separators=(",", ":")).encode()
-    return json.dumps(
-        {
-            "seasons": [
-                _season_record(index, division, matches, promote, coins)
-                for index, (division, _name, matches, promote, coins) in enumerate(
-                    SEASON_DIVISIONS, start=1
-                )
-            ]
-        },
-        separators=(",", ":"),
-    ).encode()
+
+    records = [
+        _season_record(index, division, matches, promote, coins)
+        for index, (division, _name, matches, promote, coins) in enumerate(
+            SEASON_DIVISIONS, start=1
+        )
+    ]
+    if mode != "native":
+        # One rung of the ladder: a single division, and only the array the
+        # rung is named for. Reducing is the only way through a freeze, which
+        # gives no error to read.
+        records = records[:1]
+        keep_matches = mode == "matches"
+        keep_prizes = mode == "prizes"
+        for record in records:
+            if not keep_matches:
+                record["matches"] = []
+                record["numMatches"] = 0
+            if not keep_prizes:
+                record["prizeSet"] = []
+    return json.dumps({"seasons": records}, separators=(",", ":")).encode()
 
 
 def season_user_response(division: int = 10, played: int = 0) -> bytes:
