@@ -612,6 +612,9 @@ class ProtocolTests(unittest.TestCase):
                     "/ut/game/fifa14/hub",
                     # Manager tasks are tracked, not fixed.
                     "/ut/game/fifa14/clientdata/managerquest",
+                    # Carries the club's own cards and the adopted persona.
+                    # The fixture beside it is the shape, not the contents.
+                    "/ut/game/fifa14/clubUser",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(
@@ -1550,8 +1553,20 @@ class IdentityChannelTests(unittest.TestCase):
         document = json.loads(wallet.user_info("Fondateur FUT", "FUT", persona))
         self.assertEqual(document["personaId"], persona)
 
-        # A console with no identity stored yet still answers, with nothing
-        # claimed rather than someone else's persona.
-        self.assertEqual(
-            json.loads(wallet.user_info("", "FUT", 0))["personaId"], 0
-        )
+        # And every other document that carries one carries the same. Aligning
+        # /user alone is worse than leaving them all wrong: the squad screen
+        # came back with eleven blank cards, because a client will not show a
+        # squad that belongs to somebody else.
+        inventory.PERSONA.adopt(persona)
+        try:
+            club = inventory.ClubInventory()
+            squad = json.loads(club.squad_document(club.active_squad_id(), "bpl"))
+            self.assertEqual(squad["personaId"], persona)
+            self.assertEqual(
+                json.loads(club.active_squad_response("bpl"))["personaId"], persona
+            )
+            self.assertEqual(
+                json.loads(wallet.user_info("bpl", "FUT"))["personaId"], persona
+            )
+        finally:
+            inventory.PERSONA.id = 0

@@ -266,6 +266,36 @@ def _player_item(
     }
 
 
+class Persona:
+    """Who this club belongs to, in one place.
+
+    FUT tells a client who it is through four channels and they have to carry
+    the same persona: the /user body, /eaid/personas, and the
+    EASW-Nucleus-Persona and EASW-Userid headers. The squad documents carry it
+    too.
+
+    Correcting one of them and not the others is worse than leaving them all
+    wrong, and that is exactly what happened on 12 August: /user was moved off
+    a flat 0 onto the console's real nucleus id while every squad document
+    still said 0, and the squad screen came back with eleven blank cards. The
+    data was untouched -- the server still held all 23 -- but the client will
+    not show a squad that belongs to somebody else.
+
+    So there is one value, set once when the identity is known, and every
+    document reads it. Agreement by construction rather than by remembering.
+    """
+
+    def __init__(self) -> None:
+        self.id: int = 0
+
+    def adopt(self, persona_id: int | None) -> None:
+        if persona_id:
+            self.id = int(persona_id)
+
+
+PERSONA = Persona()
+
+
 class ClubIdentity:
     """The club's name, as the player chose it.
 
@@ -804,7 +834,7 @@ class ClubInventory:
         )
         return json.dumps(
             {
-                "personaId": 0,
+                "personaId": PERSONA.id,
                 "id": squad_id,
                 "squadName": squad["name"],
                 "formation": squad["formation"],
@@ -852,7 +882,7 @@ class ClubInventory:
         )
         return json.dumps(
             {
-                "personaId": 0,
+                "personaId": PERSONA.id,
                 "id": 1,
                 "squadName": name,
                 "formation": FORMATION,
@@ -1364,7 +1394,7 @@ class Wallet:
                 # after login. There is no opponent here, but the EAS FC module
                 # opens a second session against the same identity, and it has
                 # been reporting itself disconnected throughout.
-                "personaId": int(persona_id or 0),
+                "personaId": int(persona_id or PERSONA.id),
                 "clubName": club_name,
                 "clubAbbr": club_abbr,
                 # A player who has not named his club must be allowed to. This
@@ -4343,7 +4373,7 @@ def club_user_response(inventory: "ClubInventory", name: str) -> bytes:
     def document(cards: list[dict]) -> bytes:
         return json.dumps(
             {
-                "user": [{"persona": name, "personaId": 0, "public": False}],
+                "user": [{"persona": name, "personaId": PERSONA.id, "public": False}],
                 "itemData": cards,
                 "total": len(cards),
                 "count": len(cards),

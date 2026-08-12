@@ -2101,8 +2101,14 @@ def test_club_user_carries_the_cards_the_picker_binds_against() -> None:
     payload = club_user_response(club, "Fondateur FUT")
     document = json.loads(payload)
 
+    # The same persona every other document carries. Aligning /user alone and
+    # leaving the squad documents on 0 is what emptied the squad screen: a
+    # client will not show a squad that belongs to somebody else.
+    import fut_inventory as _inventory
+
     assert document["user"] == [
-        {"persona": "Fondateur FUT", "personaId": 0, "public": False}
+        {"persona": "Fondateur FUT", "personaId": _inventory.PERSONA.id,
+         "public": False}
     ]
     items = document["itemData"]
     kinds = collections.Counter(item["itemType"] for item in items)

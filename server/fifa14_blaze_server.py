@@ -550,6 +550,7 @@ from fut_inventory import (  # noqa: E402
     club_user_response,
     consumables_response,
     apply_match_items,
+    PERSONA,
     match_result,
     match_reward,
     hub_response,
@@ -1185,6 +1186,7 @@ class Fifa14Protocol:
         if state.gamertag == ClientState.gamertag and stored_id == state.xuid:
             state.gamertag = stored_name
         self.account_store.save_identity(state.xuid, state.gamertag)
+        PERSONA.adopt(state.xuid)
 
         now = int(time.time())
         persona = [
@@ -1883,6 +1885,7 @@ class IdentityHttpService:
                     if presented is not None:
                         persona_id, persona_name = presented
                         owner.account_store.save_identity(persona_id, persona_name)
+                        PERSONA.adopt(persona_id)
                         owner.journal.event(
                             "fut_auth_identity_adopted",
                             peer=self.client_address[0],
