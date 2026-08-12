@@ -1429,13 +1429,13 @@ PACK_SPECS: dict[int, dict] = {
     309: {"name": "Team of the Week Pack", "tier": "gold", "coins": 50000,
           "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
           "guaranteed": 1, "families": {"team of the week": 1.0},
-          "group": "Packs Spéciaux"},
+          "group": "Packs Speciaux"},
     310: {"name": "Team of the Season Pack", "tier": "gold", "coins": 250000,
           "points": 0, "count": 12, "rares": 12, "players": 12, "premium": True,
           "guaranteed": 2,
           "families": {"team of the season": 70.0, "team of the year": 12.0,
                        "record breaker": 6.0, "team of the week": 12.0},
-          "group": "Packs Spéciaux"},
+          "group": "Packs Speciaux"},
 }
 
 # The order the store lists its groups in, cheapest first.
@@ -1444,7 +1444,7 @@ GROUP_ORDER = {
     "Packs Argent": 1,
     "Packs Or": 2,
     "Consommables": 3,
-    "Packs Spéciaux": 4,
+    "Packs Speciaux": 4,
 }
 
 GOLD_PACK_ID = 304
@@ -1558,7 +1558,19 @@ SPECIAL_FAMILY_WEIGHTS = {
 def store_catalogue(timestamp: int = 2147483647) -> bytes:
     """Every pack, priced, grouped and buyable."""
     purchases = []
-    for index, (pack_id, spec) in enumerate(sorted(PACK_SPECS.items())):
+    # Listed by group, cheapest first inside each, so a group's packs are
+    # contiguous and the headings come out in the order GROUP_ORDER gives.
+    # Sorting by pack id put the two consumables packs, 108 and 109, between
+    # the bronze and the silver ones.
+    ordered = sorted(
+        PACK_SPECS.items(),
+        key=lambda row: (
+            GROUP_ORDER.get(row[1]["group"], 99),
+            row[1]["coins"],
+            row[0],
+        ),
+    )
+    for index, (pack_id, spec) in enumerate(ordered):
         currencies = [
             {"name": "coins", "funds": spec["coins"], "finalFunds": spec["coins"]}
         ]
@@ -1592,7 +1604,11 @@ def store_catalogue(timestamp: int = 2147483647) -> bytes:
                 "packType": "CARDPACK",
                 "description": f"FUT_STORE_PACK_{pack_id}_DESC",
                 "displayGroup": {
-                    "priority": GROUP_ORDER.get(spec["group"], 99),
+                    # Unique per pack, which is what the document that
+                    # rendered had. The client groups by `value`, so the
+                    # priority only orders; sharing it between packs was a
+                    # change nothing asked for.
+                    "priority": index,
                     "value": spec["group"],
                 },
                 "displayGroupAssetId": tier_asset,

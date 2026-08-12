@@ -93,14 +93,43 @@ except Exception:
 PY
 }
 
+# Bare `magicboot`, which returns to the dashboard. Not `magicboot cold`: that
+# took this console off the network entirely on 12 August and it needed the
+# power button.
+reboot_to_dashboard() {
+    "$PY" -c "
+import socket, sys
+try:
+    s = socket.create_connection(('$XBOX', 730), timeout=8)
+    s.recv(256)
+    s.sendall(b'magicboot\r\n')
+    s.close()
+except Exception:
+    pass
+" >/dev/null 2>&1
+    local waited=0
+    while [ $waited -lt 200 ]; do
+        sleep 5
+        waited=$((waited + 5))
+        case "$(running_title)" in
+            *dash.xex*) return 0 ;;
+        esac
+    done
+    print -u2 "   le dashboard n'est pas revenu"
+    return 1
+}
+
 launch_title() {
     step "lancement du titre"
     case "$(running_title)" in
         *FIFA*|*fifa*)
-            print -u2 "   FIFA tourne déjà."
-            print -u2 "   Un magicboot par-dessus rebootera vers le dashboard au lieu de"
-            print -u2 "   relancer le jeu. Quitte le titre, attends le dashboard, puis relance."
-            return 1
+            # This console auto-boots FIFA from the dashboard, so "quit the
+            # title and run me again" is advice nobody can follow: by the time
+            # anyone looks, the title is back. Reboot and launch into the gap
+            # instead. The server is already up by now, which is what makes the
+            # gap wide enough to land in.
+            print "   FIFA tourne déjà -- reboot, puis lancement immédiat"
+            reboot_to_dashboard || return 1
             ;;
     esac
     local out

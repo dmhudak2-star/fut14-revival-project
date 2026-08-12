@@ -2600,18 +2600,22 @@ def test_the_store_groups_are_written_out_not_left_as_tiers() -> None:
 
     catalogue = json.loads(inventory.store_catalogue())
     groups = collections.OrderedDict()
-    for entry in catalogue["purchase"]:
-        display = entry["displayGroup"]
-        groups.setdefault((display["priority"], display["value"]), []).append(entry["id"])
+    for entry in sorted(
+        catalogue["purchase"], key=lambda row: row["displayGroup"]["priority"]
+    ):
+        groups.setdefault(entry["displayGroup"]["value"], []).append(entry["id"])
 
-    headings = [name for _, name in sorted(groups)]
+    # A group's packs are contiguous and the headings come out in order:
+    # sorting the catalogue by pack id put the consumables packs, 108 and 109,
+    # between the bronze ones and the silver ones.
+    headings = list(groups)
     assert headings == [
-        "Packs Bronze", "Packs Argent", "Packs Or", "Consommables", "Packs Spéciaux",
+        "Packs Bronze", "Packs Argent", "Packs Or", "Consommables", "Packs Speciaux",
     ]
     # The added packs get headings of their own rather than being filed under a
     # tier they only nominally belong to.
-    assert groups[(3, "Consommables")] == [108, 109]
-    assert groups[(4, "Packs Spéciaux")] == [309, 310]
+    assert groups["Consommables"] == [108, 109]
+    assert groups["Packs Speciaux"] == [309, 310]
     # The tier still names the artwork.
     for entry in catalogue["purchase"]:
         assert entry["displayGroupAssetId"] in (1, 2, 3)
