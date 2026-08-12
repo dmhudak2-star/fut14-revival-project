@@ -791,22 +791,9 @@ def test_the_totw_challenge_says_how_strong_it_is() -> None:
             "formation",
             "opponentTeam",
             "opponentRating",
-            # A Team of the Week is *this* week's team, so it is inherently
-            # time-boxed. Without a window the screen fetched the squad --
-            # 20 095 bytes, journalled -- and still answered "Il n'y a aucune
-            # Équipe de la semaine disponible": it had the team and decided
-            # none was current. The same six members carry a cup's window, and
-            # cups render.
-            "starttime",
-            "endtime",
-            "timeUntilStart",
-            "timeUntilEnd",
-            "visStart",
-            "visEnd",
         }
         assert entry["opponentRating"] > 0
         assert entry["squadName"]
-        assert entry["endtime"] > entry["starttime"]
 
 
 def test_a_bought_card_is_paired_like_a_packed_one() -> None:

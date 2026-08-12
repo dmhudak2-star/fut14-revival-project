@@ -3723,18 +3723,6 @@ def _totw_asset_ids() -> list[int]:
     return list(squads[0]["assetIds"]) if squads else []
 
 
-# When the Team of the Week is on. Always, here: the same window a cup carries,
-# spelled with the same six members, all of which are in CardsDLL's name table.
-TOTW_WINDOW = {
-    "starttime": 0,
-    "endtime": FOREVER,
-    "timeUntilStart": 0,
-    "timeUntilEnd": 315360000,
-    "visStart": 3650,
-    "visEnd": 3650,
-}
-
-
 def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
     """Team of the Week."""
     by_asset = {card["assetId"]: card for card in catalogue.cards}
@@ -3834,15 +3822,6 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
             "formation": FORMATION,
             "opponentTeam": int(team),
             "opponentRating": rating,
-            # A Team of the Week is *this* week's team, so it is inherently
-            # time-boxed, and this document said nothing about when it runs.
-            # The screen fetched it -- 20 095 bytes, journalled at 07:05:57 --
-            # and answered "Il n'y a aucune Équipe de la semaine disponible
-            # pour le moment". It had the squad and decided none was current.
-            #
-            # The same six members carry a cup's window, and cups render. Every
-            # one of them is in CardsDLL's name table.
-            **TOTW_WINDOW,
         }
 
     challenges = [challenge(i, s) for i, s in enumerate(saved_squads)]
@@ -3852,7 +3831,6 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
             "formation": FORMATION,
             "squadName": "Équipe de la semaine",
             "squadChallenge": challenges,
-            **TOTW_WINDOW,
         },
         separators=(",", ":"),
     ).encode()
