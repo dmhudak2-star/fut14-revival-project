@@ -2619,3 +2619,42 @@ def test_the_store_groups_are_written_out_not_left_as_tiers() -> None:
     # The tier still names the artwork.
     for entry in catalogue["purchase"]:
         assert entry["displayGroupAssetId"] in (1, 2, 3)
+
+
+def test_packing_the_same_player_twice_says_so_the_second_time() -> None:
+    # Klose 90, twice in a row on 12 August, with nothing on the second pack to
+    # say it was a repeat. A card drawn from a pack does not go to the club --
+    # it goes to the purchased pile and waits there until it is sent on -- and
+    # the pile was the one place the duplicate check did not look.
+    import random
+
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    club = inventory.ClubInventory()
+    club.items = []                      # an empty club: the pile is all there is
+    wallet = inventory.Wallet(coins=10**9)
+    shop = inventory.PackShop(catalogue, wallet, club)
+
+    first = json.loads(shop.open_pack(303, random.Random(11)))
+    assert first["duplicateItemIdList"] == []
+    packed = {
+        item["assetId"]: item["id"]
+        for item in first["itemList"]
+        if item.get("itemType") == "player"
+    }
+    assert packed
+
+    # The same pack again, from the same seed, draws the same players.
+    second = json.loads(shop.open_pack(303, random.Random(11)))
+    pairs = {row["itemId"]: row["duplicateItemId"] for row in second["duplicateItemIdList"]}
+    assert pairs, "the second pack reported no duplicates at all"
+    for item in second["itemList"]:
+        if item.get("itemType") != "player":
+            continue
+        original = packed.get(item["assetId"])
+        if original is None:
+            continue
+        # Both spellings, because they are read in different places.
+        assert item.get("duplicateItemId") == original
+        assert pairs.get(item["id"]) == original

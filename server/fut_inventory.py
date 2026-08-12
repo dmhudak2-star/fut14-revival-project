@@ -1960,9 +1960,18 @@ class PackShop:
         of the *new* ids, which is what froze the title: it told the screen to
         compare each card against itself.
         """
+        # Everything already owned, wherever it is sitting. The club was the
+        # only place looked at, and a card drawn from a pack does not go to the
+        # club -- it goes to the purchased pile and waits there until it is
+        # sent on. So packing the same player twice in a row said nothing the
+        # second time: the first copy was in the pile, and the pile was not
+        # being read. Klose 90, twice, on 12 August.
         owned: dict[tuple, int] = {}
+        pools: list[list[dict]] = [self.pending]
         if self.inventory is not None:
-            for item in self.inventory.items:
+            pools.append(self.inventory.items)
+        for pool in pools:
+            for item in pool:
                 if item.get("itemType") != "player":
                     continue
                 owned.setdefault(self._signature(item), item["id"])
