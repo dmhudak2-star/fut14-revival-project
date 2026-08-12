@@ -1313,10 +1313,24 @@ class GameReportingTests(unittest.TestCase):
         protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, journal)
         state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
         replies = protocol.handle(self.GAME_TYPE_21, state)
-        self.assertEqual(len(replies), 1)
+        # Two: the RPC answer, and the asynchronous ResultNotification the
+        # post-match screen waits on before it will leave. Answering the RPC
+        # alone is not the end of the handshake.
+        self.assertEqual(len(replies), 2)
         answer = decode_frame(replies[0])
         self.assertEqual(answer["message_type"], 1)
         self.assertEqual(answer["error"], 0)
+
+        notification = decode_frame(replies[1])
+        self.assertEqual(notification["component"], 28)
+        self.assertEqual(notification["command"], 114)
+        self.assertEqual(notification["message_type"], 2)
+        labels = {field.label: field.value for field in notification["fields"]}
+        self.assertEqual(labels["EROR"], 0)
+        self.assertEqual(labels["FNL"], 1)
+        # GRID travels back in both id members so the notification can be
+        # matched to the report that caused it.
+        self.assertEqual(labels["GRID"], labels["GHID"])
 
 
 class TrophyItemTests(unittest.TestCase):

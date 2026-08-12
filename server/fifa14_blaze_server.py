@@ -66,7 +66,12 @@ ROOMS = 21
 ASSOCIATION_LISTS = 25
 OSDK_SETTINGS = 2249
 OSDK_ONLINE_PASS = 2268
+# The offline game report a match end submits, and the asynchronous result the
+# post-match screen waits on before it will leave.
+GAME_REPORTING = 28
 
+GAME_REPORTING_SUBMIT_OFFLINE = 2
+GAME_REPORTING_RESULT_NOTIFICATION = 114
 REDIRECTOR_GET_SERVER_INSTANCE = 1
 UTIL_FETCH_CONFIG = 1
 UTIL_PING = 2
@@ -1597,6 +1602,43 @@ class Fifa14Protocol:
             return [self.osdk_settings(request)]
         if route == (OSDK_SETTINGS, OSDK_SETTINGS_FETCH_GROUPS):
             return [self.osdk_setting_groups(request)]
+        if route == (GAME_REPORTING, GAME_REPORTING_SUBMIT_OFFLINE):
+            # The offline game report, submitted when a match ends. Answering
+            # the RPC is not the end of it: retail follows with an asynchronous
+            # ResultNotification, and the post-match screen waits on that
+            # handshake before it will leave. An independently built revival of
+            # this game sends the same notification for the same reason.
+            #
+            # `GRID` is the report id the client put in its own submission, and
+            # it goes back in both id members so the notification can be
+            # matched to the report that caused it.
+            report = find_field(decoded["fields"], "RPRT")
+            identifier = 0
+            if report is not None and report.type == STRUCT:
+                grid = find_field(report.value, "GRID")
+                if grid is not None and isinstance(grid.value, int):
+                    identifier = max(0, grid.value)
+            self.logger.event(
+                "game_report_submitted",
+                connection=state.connection_id,
+                reportId=identifier,
+                fields=[field.label for field in decoded["fields"]],
+            )
+            return [
+                response_frame(request),
+                notification_frame(
+                    GAME_REPORTING,
+                    GAME_REPORTING_RESULT_NOTIFICATION,
+                    encode_fields(
+                        [
+                            Field("EROR", INTEGER, 0),
+                            Field("FNL", INTEGER, 1),
+                            Field("GHID", INTEGER, identifier),
+                            Field("GRID", INTEGER, identifier),
+                        ]
+                    ),
+                ),
+            ]
         if route == (OSDK_ONLINE_PASS, OSDK_ONLINE_PASS_FETCH_GATES):
             return [
                 response_frame(
