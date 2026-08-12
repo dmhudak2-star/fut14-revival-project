@@ -3690,16 +3690,33 @@ def totw_response(catalogue: "CardCatalogue", size: int = 23) -> bytes:
         by_asset[asset] for asset in _totw_asset_ids() if asset in by_asset
     ]
     if len(best) < size:
-        # Fill the bench from the catalogue's best rares, so the squad screen
-        # gets a full side rather than a partial one.
+        # Fill the bench so the squad screen gets a full side rather than a
+        # partial one -- but from the band the real Team of the Week is
+        # actually in, not from the catalogue's best rares.
+        #
+        # Taking the best put a 98, a 98, a 98, a 97 and a 97 on the bench of a
+        # side whose real members top out at 85. That is not a Team of the
+        # Week, and it is not a fair opponent either: the challenge computes
+        # `opponentRating` from the first eleven, so the padding decided how
+        # strong the team you play against is.
+        #
+        # 78 to 86 when there is nothing real to measure against, which is
+        # where an in-form side of this era sits.
+        ratings = [card.get("rating", 0) for card in best] or [78, 86]
+        floor, ceiling = max(60, min(ratings) - 2), max(ratings)
         seen = {card["assetId"] for card in best}
-        best += [
+        average = sum(ratings) / len(ratings)
+        candidates = [
             card
             for card in catalogue.cards
             if card.get("rareflag")
-            and card.get("rating", 0) >= 80
+            and floor <= card.get("rating", 0) <= ceiling
             and card["assetId"] not in seen
-        ][: size - len(best)]
+        ]
+        # Closest to the side's own average first, so the bench looks like the
+        # team rather than like a shortlist.
+        candidates.sort(key=lambda card: abs(card.get("rating", 0) - average))
+        best += candidates[: size - len(best)]
     best = best[:size]
     items = []
     for index, card in enumerate(best):

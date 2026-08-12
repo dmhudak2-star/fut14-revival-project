@@ -2477,3 +2477,31 @@ def test_an_abandoned_match_pays_nothing_and_touches_nobody() -> None:
     reward = inventory.match_reward({}, {}, completed=False)
     assert reward["totalCoins"] == 0
     assert inventory.apply_match_items(inventory.ClubInventory(), [])["fitness"] == 0
+
+
+def test_the_team_of_the_week_bench_matches_the_team() -> None:
+    # Padding the side from the catalogue's best rares put a 98, a 98, a 98, a
+    # 97 and a 97 on the bench of a team whose real members top out at 85. That
+    # is not a Team of the Week, and it is not a fair opponent either: the
+    # challenge computes opponentRating from the first eleven, so the padding
+    # decided how strong the team you play against is.
+    import fut_inventory as inventory
+
+    catalogue = inventory.CardCatalogue()
+    squad = json.loads(inventory.totw_response(catalogue))
+    ratings = sorted(
+        (card.get("rating", 0) for card in squad["itemData"]), reverse=True
+    )
+    real = [
+        card["rating"]
+        for card in catalogue.cards
+        if card["assetId"] in set(inventory._totw_asset_ids())
+    ]
+    if real:
+        # Nobody on the bench is better than the best real in-form.
+        assert ratings[0] <= max(real)
+    assert len(ratings) == 23
+
+    # And the challenge it advertises is a side you could actually face.
+    for challenge in squad["squadChallenge"]:
+        assert 60 <= challenge["opponentRating"] <= 90
