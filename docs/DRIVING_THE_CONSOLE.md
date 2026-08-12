@@ -90,3 +90,18 @@ gelée, où XBDM répond encore, d'un titre mort, où il ne répond plus. Dans l
 premier cas il redémarre par `magicboot`, attend le dashboard et relance
 `tools/fut.sh`. Deux gels dans une soirée ont chacun coûté un aller-retour avec
 un humain ; c'est ce que ça remplace.
+
+## `magicboot` : une seule forme est utilisable
+
+Trois formes ont été essayées le 12 août.
+
+| forme | résultat |
+|---|---|
+| `magicboot` | la bonne : reboot vers le dashboard |
+| `magicboot title="…FIFA 14\\default.xex"` | reboote **et relance FIFA**, à l'intro, sans aucun correctif de lancement. Le titre ne peut plus jamais atteindre le serveur, et `fut.sh` refuse de relancer par-dessus. |
+| `magicboot cold` | **sort la console du réseau.** Vingt minutes plus tard le port 730 refusait toujours et l'entrée ARP était incomplète : il a fallu le bouton d'alimentation. |
+
+`magicboot cold` ne doit jamais partir d'ici : rien de ce côté ne peut le
+rattraper. Le commentaire de `tools/fut.sh` — « un magicboot par-dessus un titre
+qui tourne reboote vers le dashboard » — décrit la première forme, pas la
+deuxième.

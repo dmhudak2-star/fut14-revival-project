@@ -164,11 +164,18 @@ class Console:
     def reboot(self, timeout: int = 240) -> bool:
         """Back to the dashboard.
 
-        `magicboot cold`, not a magicboot naming FIFA. Naming the title is what
-        this was written with, on the belief that a magicboot over a running
-        title always reboots to the dashboard -- it does not. It rebooted and
-        came straight back up in FIFA, at the intro, with none of the launch
-        patches applied, which is a title that can never reach this server.
+        Bare `magicboot`. Two other forms were tried on 12 August and neither
+        is usable:
+
+        `magicboot title="...FIFA 14\\default.xex"` rebooted and came straight
+        back up in FIFA, at the intro, with none of the launch patches applied
+        -- a title that can never reach this server, and one `fut.sh` then
+        refuses to relaunch over.
+
+        `magicboot cold` **took the console off the network entirely**. Twenty
+        minutes later port 730 was still refused and the ARP entry was
+        incomplete; it needed the power button. Never send it from here: there
+        is nothing on this side that can undo it.
 
         It drops the XBDM connection mid-command, so the exception on the way
         out is the expected outcome and not a failure.
@@ -176,7 +183,7 @@ class Console:
         self.say("reboot vers le dashboard")
         try:
             client = Xbdm(self.host)
-            client.sock.sendall(b"magicboot cold\r\n")
+            client.sock.sendall(b"magicboot\r\n")
             try:
                 client.line()
             except Exception:
