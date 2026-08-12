@@ -543,6 +543,7 @@ from fut_inventory import (  # noqa: E402
     consumable_stats_response,
     club_user_response,
     consumables_response,
+    apply_match_items,
     match_result,
     match_reward,
     hub_response,
@@ -2768,6 +2769,14 @@ class IdentityHttpService:
                         minutes=int(document.get("minutesPlayed") or 90),
                         completed=result in ("WIN", "DRAW", "LOSS"),
                     )
+                    # What the match did to the eleven who played. The captured
+                    # body carries a per-player `fitness`, and goals and
+                    # assists for whoever got them; all of it was discarded, so
+                    # nobody ever lost fitness and the whole consumable pile
+                    # had nothing to restore.
+                    played = apply_match_items(
+                        CLUB_INVENTORY, document.get("items") or []
+                    )
                     cup = {}
                     if ACTIVE_TOURNAMENT is not None:
                         cup = TOURNAMENT_PROGRESS.advance(ACTIVE_TOURNAMENT, result)
@@ -2808,6 +2817,10 @@ class IdentityHttpService:
                         coins=WALLET.coins,
                         tournament=cup.get("tournamentId"),
                         round=cup.get("round"),
+                        fitnessWritten=played["fitness"],
+                        goals=played["goals"],
+                        assists=played["assists"],
+                        unknownPlayers=played["unknown"],
                         bytes=len(payload),
                         body=request_body_preview(body),
                     )

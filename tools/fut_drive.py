@@ -161,21 +161,22 @@ class Console:
         title = self.running_title() or ""
         return "FIFA" in title or "fifa" in title
 
-    def reboot(self, timeout: int = 180) -> bool:
+    def reboot(self, timeout: int = 240) -> bool:
         """Back to the dashboard.
 
-        A magicboot issued while a title is running reboots rather than
-        relaunching, which is what makes it the way out of a hung frontend. It
-        drops the XBDM connection mid-command, so the exception on the way out
-        is the expected outcome and not a failure.
+        `magicboot cold`, not a magicboot naming FIFA. Naming the title is what
+        this was written with, on the belief that a magicboot over a running
+        title always reboots to the dashboard -- it does not. It rebooted and
+        came straight back up in FIFA, at the intro, with none of the launch
+        patches applied, which is a title that can never reach this server.
+
+        It drops the XBDM connection mid-command, so the exception on the way
+        out is the expected outcome and not a failure.
         """
         self.say("reboot vers le dashboard")
         try:
             client = Xbdm(self.host)
-            client.sock.sendall(
-                b'magicboot title="Hdd:\\Games\\FIFA 14\\default.xex" '
-                b'directory="Hdd:\\Games\\FIFA 14"\r\n'
-            )
+            client.sock.sendall(b"magicboot cold\r\n")
             try:
                 client.line()
             except Exception:

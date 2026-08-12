@@ -2347,3 +2347,94 @@ def test_a_card_on_the_transfer_list_but_not_listed_is_still_shown() -> None:
     pile = json.loads(actions.trade_pile(wallet.coins))
     assert pile["total"] == 1
     assert pile["auctionInfo"][0]["tradeId"] == 0
+
+
+# The real body this console PUT to /ut/game/fifa14/match/end on 11 August at
+# 06:12, copied out of the journal. Everything asserted below is measured
+# against this rather than against a shape borrowed from another platform.
+REAL_MATCH_END = {
+    "endReason": "LOSS",
+    "myRating": 10,
+    "opponentRating": 9,
+    "myMatchStats": {
+        "goals": 1, "shotsOnTarget": 2, "successfulTackles": 33, "corners": 2,
+        "cleansheets": 0, "passingPercentage": 79, "possessionPercentage": 55,
+        "manOfTheMatch": 1, "fouls": 2, "yellowCards": 0, "redCards": 0,
+        "offsides": 1,
+    },
+    "opponentMatchStats": {
+        "goals": 2, "shotsOnTarget": 4, "successfulTackles": 22, "corners": 2,
+        "cleansheets": 0, "passingPercentage": 84, "possessionPercentage": 45,
+        "manOfTheMatch": 0, "fouls": 0, "yellowCards": 0, "redCards": 0,
+        "offsides": 0,
+    },
+    "items": [
+        {"id": 1800000019, "fitness": 99},
+        {"id": 1800000011, "fitness": 95, "assists": 1},
+        {"id": 1800000018, "fitness": 96, "goals": 1},
+    ],
+    "matchData": "532382ea8a2e1141811bc087ce2e219066222a58be5e210d578fb521802ba8ca",
+}
+
+
+def test_the_real_match_end_body_settles() -> None:
+    import fut_inventory as inventory
+
+    assert inventory.match_result(REAL_MATCH_END) == "LOSS"
+    reward = inventory.match_reward(
+        REAL_MATCH_END["myMatchStats"],
+        REAL_MATCH_END["opponentMatchStats"],
+    )
+    # The two percentage members are spelled `passingPercentage` and
+    # `possessionPercentage` on this platform; reading them under any other
+    # name pays nothing for either, silently.
+    assert reward["bonuses"]["passAccuracy"] > 0
+    assert reward["bonuses"]["possession"] > 0
+    assert reward["bonuses"]["manOfTheMatch"] == inventory.MOTM_AWARD
+    # Two conceded, so no clean sheet.
+    assert "cleanSheet" not in reward["bonuses"]
+    assert reward["goalsFor"] == 1 and reward["goalsAgainst"] == 2
+    # A loss still pays: the match was played to the end.
+    assert reward["completionAward"] == inventory.MATCH_COMPLETION_AWARD
+    assert reward["totalCoins"] > 0
+
+
+def test_a_match_writes_fitness_goals_and_assists_back_to_the_club() -> None:
+    # The captured body carries a per-player fitness, and goals and assists for
+    # whoever got them. All of it was discarded, so nobody in the club ever
+    # lost fitness -- which is what left the whole consumable pile with nothing
+    # to restore.
+    import fut_inventory as inventory
+
+    club = inventory.ClubInventory()
+    players = [item for item in club.items if item.get("itemType") == "player"][:3]
+    for index, entry in enumerate(REAL_MATCH_END["items"]):
+        entry = dict(entry, id=players[index]["id"])
+        REAL_MATCH_END["items"][index] = entry
+    players[1]["assists"] = 4
+    players[1]["lifetimeAssists"] = 9
+
+    touched = inventory.apply_match_items(club, REAL_MATCH_END["items"])
+    assert touched == {"fitness": 3, "goals": 1, "assists": 1, "unknown": []}
+    assert players[0]["fitness"] == 99
+    # Fitness is written, not subtracted: the client sends what it is *after*.
+    assert players[1]["fitness"] == 95
+    # Goals and assists are added up, because each payload carries one match.
+    assert players[1]["assists"] == 5
+    assert players[1]["lifetimeAssists"] == 10
+    assert players[2]["goals"] == 1
+
+    # A card that is not in the club is reported rather than quietly dropped.
+    touched = inventory.apply_match_items(club, [{"id": 42, "fitness": 1}])
+    assert touched["unknown"] == [42]
+
+
+def test_an_abandoned_match_pays_nothing_and_touches_nobody() -> None:
+    # The other captured body: {"endReason":"DNF","items":[],"matchData":...}
+    import fut_inventory as inventory
+
+    document = {"endReason": "DNF", "items": [], "matchData": "aad944f8"}
+    assert inventory.match_result(document) == "DNF"
+    reward = inventory.match_reward({}, {}, completed=False)
+    assert reward["totalCoins"] == 0
+    assert inventory.apply_match_items(inventory.ClubInventory(), [])["fitness"] == 0

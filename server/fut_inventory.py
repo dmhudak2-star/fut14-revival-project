@@ -3557,6 +3557,58 @@ def match_result(document: dict) -> str:
     return "NO_CONTEST"
 
 
+def apply_match_items(inventory: "ClubInventory", items: list) -> dict:
+    """Write back what the match did to the eleven who played.
+
+    The real `/match/end` body -- captured from this console on 11 August --
+    carries an `items` array beside the two stat blocks:
+
+        {"id": 1800000019, "fitness": 99}
+        {"id": 1800000011, "fitness": 95, "assists": 1}
+        {"id": 1800000018, "fitness": 96, "goals": 1}
+
+    All of it was thrown away. Nobody ever lost fitness, which is why a fitness
+    card had nothing to restore and the whole consumable pile was decoration:
+    every player in the club sat at 99 for ever.
+
+    `fitness` is written, not accumulated -- the client sends the value *after*
+    the match, not the wear. Goals and assists are added up, because each
+    payload carries only what happened in that one match.
+
+    `goals`, `assists` and `lifetimeAssists` are members the cards already
+    carry and the name table has. `lifetimeGoals` is in neither, so nothing is
+    invented for it. `statsList` and `lifetimeStats` are index/value arrays
+    whose indices are not established here, and they are left alone rather
+    than written to on a guess about which index means what.
+    """
+    by_id = {item["id"]: item for item in inventory.items if item.get("id")}
+    touched = {"fitness": 0, "goals": 0, "assists": 0, "unknown": []}
+    for entry in items or []:
+        if not isinstance(entry, dict):
+            continue
+        card = by_id.get(entry.get("id"))
+        if card is None:
+            touched["unknown"].append(entry.get("id"))
+            continue
+        if "fitness" in entry:
+            try:
+                card["fitness"] = max(0, min(99, int(entry["fitness"])))
+                touched["fitness"] += 1
+            except (TypeError, ValueError):
+                pass
+        for member, lifetime in (("goals", None), ("assists", "lifetimeAssists")):
+            try:
+                scored = int(entry.get(member) or 0)
+            except (TypeError, ValueError):
+                continue
+            if scored <= 0:
+                continue
+            card[member] = int(card.get(member) or 0) + scored
+            if lifetime:
+                card[lifetime] = int(card.get(lifetime) or 0) + scored
+            touched[member] += scored
+    return touched
+
 
 def active_tournaments_response() -> bytes:
     """Only the cups actually entered.

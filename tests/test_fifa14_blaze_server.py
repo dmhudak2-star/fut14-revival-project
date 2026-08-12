@@ -1253,3 +1253,67 @@ class RouteSpellingTests(unittest.TestCase):
             if route.lower() not in server.FUT_ROUTE_SPELLINGS
         )
         self.assertEqual(missing, [], f"routes missing from the spelling map: {missing}")
+
+
+class GameReportingTests(unittest.TestCase):
+    """The offline game report the console really submits, component 28/2."""
+
+    # Both captured off this console. The first is what a FUT match submits
+    # (`gameType21`), the second a longer report carrying a club record
+    # (`gameType85`). Each one used to take the Blaze connection down with it:
+    # the TDF decoder had no case for type 7 and raised on `PRVT` at offset 5.
+    GAME_TYPE_21 = bytes.fromhex(
+        "004A001C000200000000003F9AECE80000C32DB40700CB0CB4039E1B650701"
+        "9FC2908E179E1B65038F4CB9010100C2CA640000CE3BF2009C76CEBB270001"
+        "00009F2A6400009F4E70010B67616D655479706532310000"
+    )
+    GAME_TYPE_85 = bytes.fromhex(
+        "00AF001C000200000000007D9AECE80000C32DB40700CB0CB4039E1B650701"
+        "9BFDB5C50F9E1B65038E7CB407009E1B7203872A6400008E7CB40701"
+        "9DD5DD9F1D8E7CB4038ED9F203CB6B2D0000DEEC2B000000B64A6600020000"
+        "8F4A6400009F2A6400009F4A6D00AE57A73A6D0000B27A640000CA1BAB0000"
+        "CAFA640000CE5A640000CF4D730000D39C25010B67616D655479706538350000"
+        "A66C320700D21B72070000009F2A6400009F4E70010B67616D65547970653835"
+        "0000"
+    )
+
+    def test_the_offline_game_report_decodes_and_re_encodes_unchanged(self) -> None:
+        for name, frame in (("21", self.GAME_TYPE_21), ("85", self.GAME_TYPE_85)):
+            with self.subTest(game_type=name):
+                decoded = decode_frame(frame)
+                self.assertEqual(decoded["component"], 28)
+                self.assertEqual(decoded["command"], 2)
+                labels = [field.label for field in decoded["fields"]]
+                self.assertEqual(labels, ["FNSH", "PRVT", "RPRT"])
+                # Re-encoding byte for byte is what says the shape was read
+                # rather than guessed: there is no slack for a wrong rule to
+                # hide in.
+                self.assertEqual(encode_fields(decoded["fields"]), frame[12:])
+
+    def test_the_report_carries_a_variable_tdf_holding_the_game(self) -> None:
+        decoded = decode_frame(self.GAME_TYPE_21)
+        report = SERVER.find_field(decoded["fields"], "RPRT")
+        self.assertEqual(report.type, STRUCT)
+        # PRVT is an unset variable; GAME is a set one, carrying the 32-bit id
+        # of the class whose fields follow.
+        private = SERVER.find_field(decoded["fields"], "PRVT")
+        self.assertEqual(private.type, 7)
+        self.assertIsNone(private.value)
+        game = SERVER.find_field(report.value, "GAME")
+        self.assertEqual(game.type, 7)
+        tdf_id, fields = game.value
+        self.assertEqual(tdf_id, 0xB8E2109F)
+        inner = SERVER.find_field(fields, "GAME")
+        self.assertEqual(SERVER.find_field(inner.value, "SCOR").value, 7580)
+
+    def test_submitting_a_report_is_answered_rather_than_dropped(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, journal)
+        state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
+        replies = protocol.handle(self.GAME_TYPE_21, state)
+        self.assertEqual(len(replies), 1)
+        answer = decode_frame(replies[0])
+        self.assertEqual(answer["message_type"], 1)
+        self.assertEqual(answer["error"], 0)
