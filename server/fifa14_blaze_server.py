@@ -1930,7 +1930,11 @@ class IdentityHttpService:
                     # until it is observed.
                     self.reply(
                         200,
-                        WALLET.user_info(club_name(), CLUB_IDENTITY.abbr) + b"\n",
+                        WALLET.user_info(
+                            club_name(),
+                            CLUB_IDENTITY.abbr,
+                            owner.account_store.load_identity()[0],
+                        ) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -2762,7 +2766,11 @@ class IdentityHttpService:
                     payload = (
                         WALLET.credits_response()
                         if normalized_path.endswith("/credits")
-                        else WALLET.user_info(club_name(), CLUB_IDENTITY.abbr)
+                        else WALLET.user_info(
+                            club_name(),
+                            CLUB_IDENTITY.abbr,
+                            owner.account_store.load_identity()[0],
+                        )
                     )
                     self.reply(
                         200,

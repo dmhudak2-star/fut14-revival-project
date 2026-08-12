@@ -1533,3 +1533,25 @@ class SessionResumeTests(unittest.TestCase):
         # a session this server never handed out.
         self.assertEqual(len(replies), 1)
         self.assertFalse(state.authenticated)
+
+
+class IdentityChannelTests(unittest.TestCase):
+    def test_the_user_document_carries_the_persona_the_headers_do(self) -> None:
+        # FUT tells a client who it is through four channels and they have to
+        # agree: the /user body's personaId, /eaid/personas, and the
+        # EASW-Nucleus-Persona and EASW-Userid headers. Ours carried the
+        # console's real nucleus id in both headers and a flat 0 in the body.
+        import json
+
+        import fut_inventory as inventory
+
+        wallet = inventory.Wallet()
+        persona = 2535469248587161
+        document = json.loads(wallet.user_info("Fondateur FUT", "FUT", persona))
+        self.assertEqual(document["personaId"], persona)
+
+        # A console with no identity stored yet still answers, with nothing
+        # claimed rather than someone else's persona.
+        self.assertEqual(
+            json.loads(wallet.user_info("", "FUT", 0))["personaId"], 0
+        )

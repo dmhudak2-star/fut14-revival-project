@@ -1344,7 +1344,8 @@ class Wallet:
             separators=(",", ":"),
         ).encode()
 
-    def user_info(self, club_name: str, club_abbr: str) -> bytes:
+    def user_info(self, club_name: str, club_abbr: str,
+                  persona_id: int = 0) -> bytes:
         """FutGetUserInfo, flat -- there is no `userInfo` wrapper.
 
         Wrapping it is what made the club header print 0xCDCDCDCD: the parser
@@ -1352,7 +1353,18 @@ class Wallet:
         """
         return json.dumps(
             {
-                "personaId": 0,
+                # The same persona the EASW-Nucleus-Persona and EASW-Userid
+                # headers carry. This was a flat 0 while both headers carried
+                # the console's real nucleus id, so the four channels FUT
+                # identifies a client through did not agree.
+                #
+                # Notes from a deployment with working online play put a name
+                # to what that costs: an opponent that loads as a stub with a
+                # blank eleven, and sessions that die about nineteen seconds
+                # after login. There is no opponent here, but the EAS FC module
+                # opens a second session against the same identity, and it has
+                # been reporting itself disconnected throughout.
+                "personaId": int(persona_id or 0),
                 "clubName": club_name,
                 "clubAbbr": club_abbr,
                 # A player who has not named his club must be allowed to. This
