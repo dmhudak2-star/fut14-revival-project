@@ -3547,7 +3547,21 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
         # `round`, and they go back one at a time.
         document = {"seasonId": 1}
         if mode in {"user-division", "user-round"}:
-            document["divisionId"] = int(division)
+            # `divisionId` is the member that freezes: `{"seasonId": 1}` alone
+            # holds the screen, adding this one hangs it. And the value it was
+            # sent, 10, is exactly the `divisionId` the single served record
+            # carries -- so "it must name a division in the list" is not the
+            # rule, since it did.
+            #
+            # What 10 also is, on a list of ten, is one past the last index;
+            # on a list of one it is far past. FIFA14_SEASON_DIVISION overrides
+            # it so the reading can be tested rather than argued.
+            try:
+                document["divisionId"] = int(
+                    os.environ.get("FIFA14_SEASON_DIVISION", division)
+                )
+            except ValueError:
+                document["divisionId"] = int(division)
         if mode == "user-round":
             document["round"] = 1
         return json.dumps(document, separators=(",", ":")).encode()
