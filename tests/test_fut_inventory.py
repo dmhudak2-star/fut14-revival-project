@@ -1771,26 +1771,65 @@ def test_training_raises_one_attribute_or_all_six() -> None:
     assert all(entry["value"] > 50 for entry in player["attributeList"])
 
 
-def test_the_contested_families_are_refused_and_recorded() -> None:
-    # 91-136 and 232. This server's catalogue calls 91-110 play styles, the PC
-    # revival's calls them position changes, and the binary carries both a
-    # FUT_CONSUMABLE_PLAYERSTYLE and a FUT_CONSUMABLE_POSITIONMOD. Writing
-    # either field on a coin flip changes the wrong thing on a real card.
+def test_the_position_block_is_still_refused_and_recorded() -> None:
+    # 232. Both catalogues call it a position change and the binary carries a
+    # FUT_CONSUMABLE_POSITIONMOD -- but the card the console rendered for it
+    # reads "DEBLOQUER / Capacite +8 moral", which is a stadium unlock. Writing
+    # preferredPosition on the strength of that changes the wrong thing on a
+    # real card, and the card is spent either way.
     from fut_inventory import ConsumableRefused
 
     inventory, rack, by_subtype = _rack()
     player = next(i for i in inventory.items if i["itemType"] == "player")
-    for subtype in (91, 121, 232):
-        card = by_subtype[subtype][0]
-        try:
-            rack.apply(card["resourceId"], [player["id"]])
-        except ConsumableRefused:
-            pass
-        else:
-            raise AssertionError(f"subtype {subtype} was applied")
-        assert card in inventory.items
+    card = by_subtype[232][0]
+    try:
+        rack.apply(card["resourceId"], [player["id"]])
+    except ConsumableRefused:
+        pass
+    else:
+        raise AssertionError("subtype 232 was applied")
+    assert card in inventory.items
     # Recorded, so one application from the console names the family.
-    assert [entry["cardsubtypeid"] for entry in rack.refused] == [91, 121, 232]
+    assert [entry["cardsubtypeid"] for entry in rack.refused] == [232]
+
+
+def test_a_chemistry_style_is_written_onto_the_card() -> None:
+    # Refused for weeks on the grounds that 91-136 might be position
+    # modifiers. What settles it is the member CardsDLL counts these under --
+    # consumablesTrainingPlayerPlayStyle and consumablesTrainingGkPlayStyle --
+    # which is in the binary's name table and is not a label anybody here
+    # chose. Two ranges, outfield and goalkeeper, which is how chemistry
+    # styles are split and is not how a position modifier would be.
+    from fut_inventory import ConsumableRefused
+
+    inventory, rack, by_subtype = _rack()
+    outfield = next(
+        i for i in inventory.items
+        if i["itemType"] == "player" and i.get("preferredPosition") != "GK"
+    )
+    assert outfield["playStyle"] == 0
+    rack.apply(by_subtype[91][0]["resourceId"], [outfield["id"]])
+    assert outfield["playStyle"] == 91
+
+    keeper = next(
+        (i for i in inventory.items
+         if i["itemType"] == "player" and i.get("preferredPosition") == "GK"),
+        None,
+    )
+    if keeper is not None:
+        rack.apply(by_subtype[121][0]["resourceId"], [keeper["id"]])
+        assert keeper["playStyle"] == 121
+
+    # The split is enforced: a goalkeeper style on an outfield player is the
+    # one mistake the two ranges make obvious, and the card is not spent.
+    card = by_subtype[122][0]
+    try:
+        rack.apply(card["resourceId"], [outfield["id"]])
+    except ConsumableRefused:
+        pass
+    else:
+        raise AssertionError("a goalkeeper style went onto an outfield player")
+    assert card in inventory.items
 
 
 def test_a_card_changed_by_a_consumable_survives_a_restart() -> None:

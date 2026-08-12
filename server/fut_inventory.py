@@ -2002,6 +2002,11 @@ PILE_CLUB = 7
 # carries. The blocks come from `tools/build_consumables.py`, which reads them
 # out of `cards_ng_db.db`.
 CONTRACT_PLAYER, CONTRACT_MANAGER = 201, 202
+# Chemistry styles, split the way CardsDLL counts them: outfield players under
+# `consumablesTrainingPlayerPlayStyle`, goalkeepers under
+# `consumablesTrainingGkPlayStyle`.
+PLAY_STYLE_OUTFIELD = (91, 110)
+PLAY_STYLE_GK = (121, 136)
 HEALING_FIRST, HEALING_ANY = 211, 218
 FITNESS_PLAYER, FITNESS_SQUAD = 219, 220
 
@@ -2172,17 +2177,21 @@ class ConsumableRack:
             where = "all six" if index is None else f"attribute {index}"
             return [target], f"training {where} +{amount}"
 
-        # The play style block (91-136) and the position block (232). What
-        # each card in them does is contested: this server's catalogue calls
-        # 91-110 play styles, the PC revival's calls them position changes
-        # with an explicit transition, and the binary carries both a
-        # FUT_CONSUMABLE_PLAYERSTYLE and a FUT_CONSUMABLE_POSITIONMOD.
+        if PLAY_STYLE_OUTFIELD[0] <= subtype <= PLAY_STYLE_GK[1]:
+            return self._play_style(target, subtype)
+
+        # The position block (232). What each card in it does is contested:
+        # this server's catalogue called it a position change, the PC
+        # revival's agrees, and the binary carries a FUT_CONSUMABLE_POSITIONMOD
+        # -- but the card the console actually rendered for 232 reads
+        # "DÉBLOQUER / Capacité +8 moral", which is a stadium unlock and not a
+        # position at all. Both catalogues are wrong about it and the client
+        # refuses to keep the card.
         #
-        # Writing `playStyle` or `preferredPosition` on the strength of a
-        # coin flip would silently change the wrong field on a real card, and
-        # a card is spent either way. Refused, and recorded: one application
-        # from the console names the family, because the screen shows the
-        # player what the card was.
+        # Writing `preferredPosition` on the strength of that would silently
+        # change the wrong field on a real card, and a card is spent either
+        # way. Refused, and recorded: one application from the console names
+        # the family, because the screen shows the player what the card was.
         self.refused.append(
             {
                 "resourceId": row.get("definitionId"),
@@ -2196,6 +2205,42 @@ class ConsumableRack:
         raise ConsumableRefused(
             f"subtype {subtype} has no established effect on this platform"
         )
+
+    def _play_style(self, target: dict, subtype: int) -> tuple[list[dict], str]:
+        """A chemistry style, written onto the card's own `playStyle`.
+
+        This was refused for weeks, on the grounds that 91-136 might be
+        position modifiers rather than play styles. What settles it is the
+        member CardsDLL counts these cards under, which is in the binary's own
+        name table and is not a label anybody here chose:
+
+            91-110   consumablesTrainingPlayerPlayStyle
+            121-136  consumablesTrainingGkPlayStyle
+
+        Two ranges, one for outfield players and one for goalkeepers, which is
+        exactly how chemistry styles are split in FUT and is not how a position
+        modifier would be. `playStyle` is a member every player card already
+        carries, and it has sat at 0 on every card in the club since the club
+        existed.
+
+        What is *not* established is the numbering: the value written is the
+        card's own `cardsubtypeid`, on the reading that the style is the
+        subtype. If that enumeration turns out to be offset, the visible
+        consequence is one card showing the wrong style name -- another style
+        card puts it right, which is not true of a wrongly written position.
+
+        The goalkeeper split is enforced. A GK style on an outfield player is
+        the one mistake the ranges make obvious, and spending the card on it
+        would be the player's loss.
+        """
+        keeper = (target.get("preferredPosition") or "").upper() == "GK"
+        for_keeper = PLAY_STYLE_GK[0] <= subtype <= PLAY_STYLE_GK[1]
+        if for_keeper and not keeper:
+            raise ConsumableRefused("a goalkeeper style needs a goalkeeper")
+        if not for_keeper and keeper:
+            raise ConsumableRefused("an outfield style cannot go on a goalkeeper")
+        target["playStyle"] = subtype
+        return [target], f"play style {subtype}"
 
     def _heal(self, target: dict, subtype: int, amount: int) -> tuple[list[dict], str]:
         games = int(target.get("injuryGames", 0) or 0)
