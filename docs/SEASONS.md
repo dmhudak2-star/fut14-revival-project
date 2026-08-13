@@ -270,3 +270,38 @@ parce que la console l'a confirmé.
 Ce qui trancherait, en une relance : servir `divisionId: 5` et lire l'écusson.
 `6` désignerait `divisionId + 1`, `5` désignerait `10 - divisionId`, et DIV 1
 à nouveau dirait que le badge ne vient pas de nous du tout.
+
+## Le test `divisionId: 5`, et ce qu'il règle
+
+Servi le 13 août à 16:52, avec `FIFA14_SEASON_DIVISION_ID=5` et rien d'autre
+de changé :
+
+    season/user  ->  {"seasonId":10,"divisionId":5,"round":1}
+
+Deux lectures à l'écran, et elles éliminent toutes les deux ce membre.
+
+**L'écusson affiche DIV 1.** Ni 6 ni 5 : la même valeur qu'avec 0 et qu'avec
+9. Le blason de la Saison Actuelle ne suit pas `divisionId`, et il ne vient
+pas de ce document. Il vaut d'ailleurs DIV 1 sur la tuile **Saison en ligne**
+aussi, un mode que ce serveur ne sert pas du tout — c'est donc un défaut du
+client.
+
+**Les récompenses restent celles de la division 10.** Championnat 400, Montée
+1 500, Maintien 300 — le disque de la division 10 — alors que l'index 5 de la
+liste servie est la Division 6, qui vaudrait 1 000 / 600 / 300. Donc
+`divisionId` ne choisit pas non plus le disque.
+
+Ce qui laisse : **`divisionId` ne pilote rien d'observable**. Sa seule
+propriété établie est qu'à 10 il gèle l'écran, ce qui reste une borne réelle
+et la raison pour laquelle il faut lui donner une valeur basse.
+
+Ce qui choisit le disque, alors, c'est le client lui-même : sa requête porte
+`divisionList=10` depuis la toute première entrée dans le mode, le 12 août à
+21:03, avant qu'aucune saison n'existe côté serveur. **La division est tenue
+côté client**, et `season/user` ne la lui apprend pas.
+
+Ça recadre la recherche sur la reprise : si la division vit chez le client, la
+progression aussi, et ce qu'il faut lui rendre est ce qu'il a lui-même
+sauvegardé — le blob de `season/<id>/division/<div>/user`, qu'il ne redemande
+pourtant jamais à la réouverture. C'est là qu'il faut chercher, pas dans
+`season/user`.
