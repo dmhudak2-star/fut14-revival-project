@@ -244,3 +244,29 @@ du module. Ce qui manque pour le servir, c'est le score encaissé : le corps de
 `match/end` porte les buts de chaque joueur — donc les miens — et rien sur
 l'adversaire. Le servir demanderait d'inventer la moitié de chaque score, ce
 que ce dépôt ne fait pas.
+
+## Rectification : l'écusson ne suit pas `divisionId`
+
+J'ai écrit plus haut que le badge **DIV 1** prouvait que `divisionId` indexe la
+table du client. Il ne prouve rien : vérifié le 13 août à 16:27, avec
+`divisionId: 9` servi et la liste réordonnée, **l'écusson affiche toujours
+DIV 1**. Il l'affichait déjà avec `divisionId: 0`. Il ne suit donc pas ce
+membre, et sa valeur est constante quoi qu'on envoie — vraisemblablement un
+défaut du client, ou l'asset de trophée, que `trophyResourceId: -1` laisse
+sans rien.
+
+Ce qui reste vrai de ce raccourci :
+
+* **dix gèle**, zéro et neuf tiennent. La borne est réelle.
+* le panneau de détails affiche bien les seuils et récompenses de la division
+  visée — mais il le faisait dans les deux configurations, puisque la liste a
+  été réordonnée en même temps. Il ne discrimine pas non plus.
+
+Autrement dit, entre `divisionId = 0` avec liste décroissante et
+`divisionId = 9` avec liste croissante, **rien d'observé ne les sépare**. Le
+second est gardé parce qu'il donne au membre le même sens des deux côtés, pas
+parce que la console l'a confirmé.
+
+Ce qui trancherait, en une relance : servir `divisionId: 5` et lire l'écusson.
+`6` désignerait `divisionId + 1`, `5` désignerait `10 - divisionId`, et DIV 1
+à nouveau dirait que le badge ne vient pas de nous du tout.
