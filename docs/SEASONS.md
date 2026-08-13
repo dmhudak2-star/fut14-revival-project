@@ -186,3 +186,61 @@ nombre déjà joués. Il lit maintenant la saison sauvegardée.
 L'écran de fin affiche « MATCHS RESTANTS 9 », « BILAN 0-0-1 », la forme, et la
 barre montée/maintien. C'est le même appel de création de match que les
 coupes, avec `seasonId`/`divisionId` à la place de `tournamentId`.
+
+## Correction du 13 août, après-midi : `divisionId` est un index *client*
+
+Ce qui est écrit plus haut — « `divisionId` est le rang du disque dans la
+liste servie » — est faux, et l'écran l'a dit d'un coup : avec `divisionId: 0`
+l'écusson de la Saison Actuelle affiche **DIV 1**, avec à côté « Matchs
+restants : 10 » et « 12 PTS TITRE ». Aucune de ces valeurs n'est dans le
+disque servi pour la division 10.
+
+Donc `divisionId` indexe **la table de divisions du client**, qui va de la
+Division 1 (index 0) à la Division 10 (index 9). Dix gelait parce que dix est
+un cran au-delà de son dernier index — ça, c'était juste. Zéro tenait l'écran
+parce que zéro est un index valide, pas parce que c'était le bon : il mettait
+le club en Division 1.
+
+`divisionId` vaut donc `division - 1`, et `SEASON_DIVISIONS` est réordonnée en
+croissant pour que le même nombre soit juste des deux côtés. Vérifié sur la
+console : le client sauvegarde maintenant dans
+`PUT /ut/game/fifa14/season/10/division/10/user`, et le panneau de détails
+affiche les valeurs de la division 10 — titre 12, montée 2, 400 / 1 500 / 300.
+
+Le client compte **dix rencontres** par saison quoi qu'on serve : après un
+match abandonné en division 10, où cette table n'en donnait que quatre,
+l'écran de fin annonçait « MATCHS RESTANTS 9 ». Les dix divisions en ont dix.
+
+## Ce qui reste : reprendre une saison entamée
+
+Une saison au round 2 est proposée à nouveau au démarrage — « Voulez-vous
+vraiment débuter cette Saison Joueur Solo ? » — et la colonne Score de la
+liste des rencontres reste vide.
+
+Ce n'est pas faute d'avoir l'information. Le serveur la tient et la sert :
+
+    season/user  ->  {"seasonId":10,"divisionId":9,"round":2,
+                      "seasonGamesWon":0,"seasonGamesDraw":0,"seasonGamesLost":1,
+                      "seasonCoins":0}
+
+Et le blob que le client s'était sauvegardé lui est rendu intact sur
+`season/10/division/10/user`. Ce qu'on sait de plus, et qui délimite la
+recherche :
+
+* **le client ne redemande pas le blob.** En rouvrant le mode il ne lit que
+  `season/list` puis `season/user`, puis ne parle plus au serveur du tout —
+  la liste des rencontres est dessinée hors ligne. La seule fois où il a
+  demandé `season/<id>/division/<div>/user`, le 13 août à 14:41:38, la route
+  n'était pas encore écrite et il a pris un 404.
+* **`round` n'est pas lu non plus**, ou pas là. Round 2 servi, et la première
+  rencontre reste marquée « SUIV. ».
+* **les quatre membres de bilan sont ignorés.** `seasonGamesWon` et
+  `seasonCoins` sont partis avec les bonnes valeurs à 15:32:11 et l'en-tête
+  affichait `BILAN 0-0-0` et `CRÉDITS 0`.
+
+Ce qui reste debout, par élimination : l'état de reprise est dans les disques
+de `matches`, que la colonne Score attend. `score` est dans la table de noms
+du module. Ce qui manque pour le servir, c'est le score encaissé : le corps de
+`match/end` porte les buts de chaque joueur — donc les miens — et rien sur
+l'adversaire. Le servir demanderait d'inventer la moitié de chaque score, ce
+que ce dépôt ne fait pas.

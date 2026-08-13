@@ -3220,17 +3220,23 @@ def _draw_extra(
 # So `divisionId` is `division - 1`, and this list is ordered to agree with
 # it: position n holds division n + 1, and the same number is right whichever
 # table the client is indexing.
+#
+# Ten fixtures in every division, and that is not a choice either. The client
+# keeps its own count: after one match walked out of in Division 10 -- a
+# division this table used to give four fixtures -- the result screen read
+# "MATCHS RESTANTS 9". It counts ten whatever is served, so serving fewer
+# leaves a fixture list that runs out four matches into a ten-match season.
 SEASON_DIVISIONS = [
     (1, "Division 1", 10, 5, 5000),
-    (2, "Division 2", 8, 4, 3000),
-    (3, "Division 3", 7, 4, 2200),
-    (4, "Division 4", 7, 4, 1700),
-    (5, "Division 5", 6, 3, 1300),
-    (6, "Division 6", 6, 3, 1000),
-    (7, "Division 7", 5, 3, 800),
-    (8, "Division 8", 5, 2, 650),
-    (9, "Division 9", 4, 2, 500),
-    (10, "Division 10", 4, 2, 400),
+    (2, "Division 2", 10, 4, 3000),
+    (3, "Division 3", 10, 4, 2200),
+    (4, "Division 4", 10, 4, 1700),
+    (5, "Division 5", 10, 3, 1300),
+    (6, "Division 6", 10, 3, 1000),
+    (7, "Division 7", 10, 3, 800),
+    (8, "Division 8", 10, 2, 650),
+    (9, "Division 9", 10, 2, 500),
+    (10, "Division 10", 10, 2, 400),
 ]
 
 # The cups. Every member name below is one CardsDLL carries: they were read
