@@ -563,6 +563,38 @@ def test_the_club_starts_in_the_bottom_division(monkeypatch) -> None:
     assert json.loads(inventory.season_user_response(10, played=3))["round"] == 4
 
 
+def test_a_season_under_way_is_reported_where_it_actually_stands(monkeypatch) -> None:
+    # The client saves its own progress after every match -- it went up at
+    # round 2 the moment the first one was walked out of, on 13 August. Until
+    # that route was handled this document answered round 1 for ever, so
+    # re-entering the mode offered ten matches out of ten however many had
+    # been played.
+    inventory = _native_seasons(monkeypatch)
+    inventory.SEASON_PROGRESS.entries.clear()
+    try:
+        inventory.SEASON_PROGRESS.apply(
+            1, 10, {"round": 4, "data": "QUJD", "progressData": "REVG"}
+        )
+        standing = json.loads(inventory.season_user_response())
+        assert standing["round"] == 4
+        # Still the division's position, not its number.
+        assert (standing["seasonId"], standing["divisionId"]) == (1, 0)
+
+        # Promoted: division 9 is the second record, so position 1.
+        inventory.SEASON_PROGRESS.entries.clear()
+        inventory.SEASON_PROGRESS.apply(
+            2, 9, {"round": 2, "data": "QUJD", "progressData": "REVG"}
+        )
+        promoted = json.loads(inventory.season_user_response())
+        assert (promoted["seasonId"], promoted["divisionId"], promoted["round"]) == (
+            2,
+            1,
+            2,
+        )
+    finally:
+        inventory.SEASON_PROGRESS.entries.clear()
+
+
 def test_the_cup_list_carries_the_shape_the_binary_names() -> None:
     # A generated list froze the title when Compétition Joueur Solo was opened,
     # and the list was emptied until the fields could come from the binary.

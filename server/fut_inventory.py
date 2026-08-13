@@ -3575,6 +3575,18 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
         # and a single division, so neither array is the fault and the question
         # becomes which of the two documents carries it.
         return b"{}"
+    # Where the club actually stands, if it stands anywhere. The client saves
+    # its own progress to `season/<id>/division/<div>/user` after every match
+    # -- it went up at round 2 the moment the first one was walked out of --
+    # and until that was handled this document reported round 1 for ever, so
+    # re-entering the mode offered ten matches remaining out of ten however
+    # many had been played.
+    saved = SEASON_PROGRESS.current()
+    if saved is not None:
+        _season, saved_division = saved
+        entry = SEASON_PROGRESS.entries.get(saved) or {}
+        division = saved_division
+        played = max(0, int(entry.get("round") or 1) - 1)
     index = next(
         (
             position
