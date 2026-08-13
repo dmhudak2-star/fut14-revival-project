@@ -574,6 +574,12 @@ CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
 CONSUMABLE_RACK = ConsumableRack(CLUB_INVENTORY)
 # The cup a match is being played in, remembered from the last progress save.
 ACTIVE_TOURNAMENT: int | None = None
+# The season a match is being played in. Unlike a cup, the client says so in
+# the match it creates: `POST /match` carries `seasonId` and `divisionId`
+# beside the squad, exactly where a cup match carries `tournamentId`. So this
+# is read rather than inferred, and it is cleared when a cup match is created
+# so that one mode cannot settle the other's result.
+ACTIVE_SEASON: tuple[int, int] | None = None
 
 # Entering FUT needs a relaunch, so without this every session started from the
 # icebreaker packs again: the club counter back to 92, the pack you opened
@@ -1759,6 +1765,11 @@ class IdentityHttpService:
                     self.wfile.write(body)
 
             def serve_identity(self) -> None:
+                # Both are read early -- settling a match end -- and written
+                # late, when a cup saves its progress or a match is created,
+                # so the declaration has to lead the function rather than sit
+                # beside either assignment.
+                global ACTIVE_TOURNAMENT, ACTIVE_SEASON
                 parsed = urllib.parse.urlsplit(self.path)
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(content_length) if content_length else b""
@@ -2220,7 +2231,6 @@ class IdentityHttpService:
                         # payload. The client says so by saving progress into
                         # this cup as it enters it, and that is the only place
                         # it says so at all.
-                        global ACTIVE_TOURNAMENT
                         ACTIVE_TOURNAMENT = tournament_id
                         CLUB_SAVE.save(
                             CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
@@ -3024,6 +3034,15 @@ class IdentityHttpService:
                     )
                     if earned:
                         WALLET.credit(earned)
+                    # The season's own record. Nothing else keeps it: the
+                    # client's progress goes up as an opaque blob and the
+                    # header asks for the numbers separately, which is why it
+                    # read BILAN 0-0-0 over a season won 3-0.
+                    season_record = {}
+                    if ACTIVE_SEASON is not None:
+                        season_record = SEASON_PROGRESS.settle(
+                            ACTIVE_SEASON[0], ACTIVE_SEASON[1], result, earned
+                        )
                     CLUB_SAVE.save(
                         CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
                     )
@@ -3054,6 +3073,14 @@ class IdentityHttpService:
                         coins=WALLET.coins,
                         tournament=cup.get("tournamentId"),
                         round=cup.get("round"),
+                        season=ACTIVE_SEASON,
+                        seasonRecord=(
+                            f"{season_record.get('won', 0)}-"
+                            f"{season_record.get('draw', 0)}-"
+                            f"{season_record.get('lost', 0)}"
+                            if season_record
+                            else None
+                        ),
                         fitnessWritten=played["fitness"],
                         goals=played["goals"],
                         assists=played["assists"],
@@ -3241,6 +3268,46 @@ class IdentityHttpService:
                     self.reply(
                         200,
                         with_balance(fixture, WALLET.coins) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Creating a match says which mode it belongs to. A cup match
+                # carries `tournamentId`, a season match carries `seasonId`
+                # and `divisionId` -- and for cups that ownership had to be
+                # inferred from whichever cup saved its progress last, because
+                # nothing else said so. Seasons need no such inference.
+                #
+                # The reply is unchanged: `{}` is what this route has always
+                # answered and the match starts on it.
+                if (
+                    normalized_path == "/ut/game/fifa14/match"
+                    and self.command == "POST"
+                ):
+                    try:
+                        created = json.loads(body or b"{}")
+                    except ValueError:
+                        created = {}
+                    if isinstance(created, dict) and "seasonId" in created:
+                        ACTIVE_SEASON = (
+                            int(created.get("seasonId") or 0),
+                            int(created.get("divisionId") or 0),
+                        )
+                        ACTIVE_TOURNAMENT = None
+                    elif isinstance(created, dict) and "tournamentId" in created:
+                        ACTIVE_SEASON = None
+                    owner.journal.event(
+                        "fut_match_created",
+                        peer=self.client_address[0],
+                        season=ACTIVE_SEASON,
+                        tournament=ACTIVE_TOURNAMENT,
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        FUT_ROUTES[normalized_path] + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",

@@ -591,6 +591,52 @@ def test_a_season_under_way_is_reported_where_it_actually_stands(monkeypatch) ->
             1,
             2,
         )
+
+        # Relegated back to a division already played. The club is where it
+        # was written last, not where it was written first.
+        inventory.SEASON_PROGRESS.apply(
+            1, 10, {"round": 3, "data": "QUJD", "progressData": "REVG"}
+        )
+        back = json.loads(inventory.season_user_response())
+        assert (back["seasonId"], back["divisionId"], back["round"]) == (1, 0, 3)
+    finally:
+        inventory.SEASON_PROGRESS.entries.clear()
+
+
+def test_the_season_header_gets_a_record_once_there_is_one(monkeypatch) -> None:
+    # `CRÉDITS 0`, `POINTS FIFA 0` and `BILAN 0-0-0` sat over a club holding
+    # nine hundred million and a season won 3-0. That header is the season's,
+    # and nothing was ever sent for it: the client keeps its progress in an
+    # opaque blob and asks for the numbers separately.
+    inventory = _native_seasons(monkeypatch)
+    inventory.SEASON_PROGRESS.entries.clear()
+    try:
+        # A club that has never played a season sends exactly the three
+        # members bisected into working, and nothing beside them.
+        assert set(json.loads(inventory.season_user_response())) == {
+            "seasonId",
+            "divisionId",
+            "round",
+        }
+
+        inventory.SEASON_PROGRESS.settle(1, 10, "WIN", 626)
+        inventory.SEASON_PROGRESS.settle(1, 10, "DRAW", 300)
+        inventory.SEASON_PROGRESS.settle(1, 10, "QUIT", 0)
+        standing = json.loads(inventory.season_user_response())
+        assert standing["seasonGamesWon"] == 1
+        assert standing["seasonGamesDraw"] == 1
+        # A walk-out counts as a loss, the way it does for a cup.
+        assert standing["seasonGamesLost"] == 1
+        assert standing["seasonCoins"] == 926
+
+        # The client's own save must not wipe the record it never sends.
+        inventory.SEASON_PROGRESS.apply(
+            1, 10, {"round": 4, "data": "QUJD", "progressData": "REVG"}
+        )
+        kept = json.loads(inventory.season_user_response())
+        assert kept["seasonGamesWon"] == 1
+        assert kept["seasonCoins"] == 926
+        assert kept["round"] == 4
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
 

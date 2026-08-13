@@ -3582,6 +3582,7 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
     # re-entering the mode offered ten matches remaining out of ten however
     # many had been played.
     saved = SEASON_PROGRESS.current()
+    entry: dict = {}
     if saved is not None:
         _season, saved_division = saved
         entry = SEASON_PROGRESS.entries.get(saved) or {}
@@ -3616,9 +3617,43 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
             # division numbers descend 10..1.
             "divisionId": index - 1,
             "round": max(0, int(played)) + 1,
+            **_season_record_members(entry),
         },
         separators=(",", ":"),
     ).encode()
+
+
+def _season_record_members(entry: dict) -> dict:
+    """What the season header shows, for a season that has one.
+
+    `CRÉDITS 0`, `POINTS FIFA 0` and `BILAN 0-0-0` sat over a club holding
+    nine hundred million and a season won 3-0 on 13 August. That header is
+    the *season's*, not the club's, and nothing was ever sent for it -- the
+    client keeps its own progress in an opaque gzipped blob and asks for the
+    numbers separately.
+
+    All four names are CardsDLL's own, read out of the sorted JSON name table
+    where they sit contiguously between `seasonId` and `seasonCoins`.
+
+    Nothing goes out for a club that has never played a season. The
+    three-member document is the one bisected into working, and a fresh club
+    keeps exactly it.
+    """
+    if not entry:
+        return {}
+    played = (
+        int(entry.get("won") or 0)
+        + int(entry.get("draw") or 0)
+        + int(entry.get("lost") or 0)
+    )
+    if not played and not int(entry.get("coins") or 0):
+        return {}
+    return {
+        "seasonGamesWon": int(entry.get("won") or 0),
+        "seasonGamesDraw": int(entry.get("draw") or 0),
+        "seasonGamesLost": int(entry.get("lost") or 0),
+        "seasonCoins": int(entry.get("coins") or 0),
+    }
 
 
 FOREVER = 2147483647
@@ -3939,7 +3974,21 @@ class SeasonProgress:
             "data": pick("data", "seasonData", default="") or "",
             "progressDataVersion": int(pick("progressDataVersion", default=1) or 1),
             "progressData": pick("progressData", "progressdata", default="") or "",
+            # The record, which the client never sends and never gets back
+            # from anywhere else. It is carried alongside the client's own
+            # blob rather than inside it: the blob is opaque, gzipped and
+            # written by the title, and the header wants numbers.
+            "won": int(current.get("won") or 0),
+            "draw": int(current.get("draw") or 0),
+            "lost": int(current.get("lost") or 0),
+            "coins": int(current.get("coins") or 0),
         }
+        # Re-inserted rather than assigned in place, so `current` can read the
+        # most recently written season off the end. A club that is promoted
+        # and then relegated writes division 9 and then division 10 again, and
+        # a plain assignment would leave 10 sitting where it was first
+        # inserted -- reporting the club in a division it has left.
+        self.entries.pop(key, None)
         self.entries[key] = entry
         return entry
 
@@ -3968,6 +4017,29 @@ class SeasonProgress:
             },
             separators=(",", ":"),
         ).encode()
+
+    def settle(self, season: int, division: int, result: str,
+               coins: int = 0) -> dict:
+        """Add a played match to the record.
+
+        Nothing else keeps it. The client sends its own progress up as an
+        opaque gzipped blob and asks for the numbers back separately, which is
+        why the seasons header read `CRÉDITS 0`, `POINTS FIFA 0` and
+        `BILAN 0-0-0` over a club holding nine hundred million and a season
+        that had just been won 3-0.
+        """
+        key = self._key(season, division)
+        if key not in self.entries:
+            self.apply(season, division, {})
+        entry = self.entries[key]
+        if result == "WIN":
+            entry["won"] = int(entry.get("won") or 0) + 1
+        elif result == "DRAW":
+            entry["draw"] = int(entry.get("draw") or 0) + 1
+        elif result in ("LOSS", "QUIT", "DNF"):
+            entry["lost"] = int(entry.get("lost") or 0) + 1
+        entry["coins"] = int(entry.get("coins") or 0) + max(0, int(coins))
+        return entry
 
     def reset(self, season: int, division: int) -> bool:
         return self.entries.pop(self._key(season, division), None) is not None
