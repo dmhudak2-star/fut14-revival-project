@@ -3978,10 +3978,15 @@ class SeasonProgress:
             # from anywhere else. It is carried alongside the client's own
             # blob rather than inside it: the blob is opaque, gzipped and
             # written by the title, and the header wants numbers.
-            "won": int(current.get("won") or 0),
-            "draw": int(current.get("draw") or 0),
-            "lost": int(current.get("lost") or 0),
-            "coins": int(current.get("coins") or 0),
+            #
+            # Read from the document as well as from what is already held,
+            # because `restore` comes through here too -- and reading it from
+            # `current` alone silently dropped the whole record on every
+            # restart, which looks exactly like never having kept it.
+            "won": int(pick("won", default=0) or 0),
+            "draw": int(pick("draw", default=0) or 0),
+            "lost": int(pick("lost", default=0) or 0),
+            "coins": int(pick("coins", default=0) or 0),
         }
         # Re-inserted rather than assigned in place, so `current` can read the
         # most recently written season off the end. A club that is promoted

@@ -43,30 +43,28 @@ bouton, puis disparaître. Il n'en tenait aucun compte.
 fait passer la première pression. Le compteur d'images le prouve : il descend de
 60 par seconde, donc le titre interroge bien le point d'accroche.
 
-## Les boîtes système : plus hors de portée (13 août 2026)
+## Le sélecteur de stockage : toujours hors de portée (revérifié le 13 août)
 
-Ce qui suit était vrai et ne l'est plus. Le sélecteur de périphérique de
-stockage **se referme sous la manette virtuelle** : un seul A, `frames=30`,
-et l'écran suivant est l'avertissement de sauvegarde automatique, qu'un
-deuxième A referme aussi. La séquence complète depuis un lancement à froid,
-sans personne devant :
+J'ai cru une fois le contraire et je me suis trompé. Le 13 août à 13:57 la
+boîte « Choisir périph. » s'est refermée juste après un A de la manette
+virtuelle, et j'en ai conclu qu'elle y répondait. Elle ne répond pas : à
+14:58, sur la même console et le même lancement, trois A à 30, 45 et 60
+images n'ont rien fait, puis huit A d'affilée non plus. La fermeture de 13:57
+n'était pas causée par la pression, elle a seulement coïncidé avec elle.
 
-    A       (drapeau) choix de la langue
-    START   écran-titre « APPUYEZ SUR START »
-    A       « Choisir périph. » -> Disque dur, déjà surligné
-    A       avertissement de sauvegarde automatique
-            -> menu principal FIFA, ULTIMATE TEAM surligné
+Ce qui distingue les deux cas est vérifiable, et c'est ce qu'il fallait
+regarder du premier coup : les pressions de la même session **passaient**
+ailleurs — START sur l'écran-titre, START sur la vidéo d'intro, DOWN puis A
+sur un modal de FUT. La manette marchait. C'est ce dialogue-là qui ne la lit
+pas, ce que le paragraphe d'origine disait déjà.
 
-Ce qui a changé entre les deux constats n'est pas établi. Ce qui l'est, c'est
-que `Console.press()` maintient zéro bouton entre les impulsions depuis, et
-que c'est exactement la correction qui avait fait passer la première pression
-dans un menu du jeu. La conclusion « XAM lit la manette par un autre chemin »
-reposait sur des pressions qui ne tenaient pas — donc sur rien.
+La raison est dans le crochet : le stub ne sert que `r3 == 0`, l'index
+d'utilisateur 0 de `XamInputGetState`. Le sélecteur est dessiné par XAM et
+lit la manette par un autre chemin, qui ne passe pas par cette fonction.
 
-Le paragraphe d'origine est gardé ci-dessous : le conseil console-side reste
-le meilleur si le sélecteur redevenait un obstacle.
+Le remède reste celui d'en dessous, côté console et une seule fois.
 
-## ~~Ce qui reste hors de portée : les boîtes de dialogue système~~
+## Ce qui reste hors de portée : les boîtes de dialogue système
 
 À chaque démarrage à froid, FIFA affiche le sélecteur de périphérique de
 stockage du 360 — « Choisir périph. », disque dur ou clé USB. Tant qu'on n'a

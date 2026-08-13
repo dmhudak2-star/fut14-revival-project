@@ -637,6 +637,16 @@ def test_the_season_header_gets_a_record_once_there_is_one(monkeypatch) -> None:
         assert kept["seasonGamesWon"] == 1
         assert kept["seasonCoins"] == 926
         assert kept["round"] == 4
+
+        # And it has to survive a restart. `restore` comes through the same
+        # `apply`, so a record read only from what is already held is dropped
+        # on every launch -- which looks exactly like never having kept one.
+        saved = inventory.SEASON_PROGRESS.state()
+        inventory.SEASON_PROGRESS.entries.clear()
+        inventory.SEASON_PROGRESS.restore(saved)
+        restored = json.loads(inventory.season_user_response())
+        assert restored["seasonGamesWon"] == 1
+        assert restored["seasonCoins"] == 926
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
 
