@@ -831,6 +831,26 @@ class TournamentRouteTests(unittest.TestCase):
             finally:
                 identity.stop()
 
+    def test_starting_or_resetting_a_season_is_answered_not_404ed(self) -> None:
+        # `ut/%s/season/%s/user` and `ut/%s/season/%s/reset` are in CardsDLL's
+        # own URL template table under SEASONUSER_ALTER and SEASONRESET. Until
+        # now neither was handled, so both got the 404 that every unknown FUT
+        # route gets -- and a 404 here is a hang with nothing to read.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                for path, method in (
+                    ("/ut/game/fifa14/season/1/user", "PUT"),
+                    ("/ut/game/fifa14/season/1/reset", "PUT"),
+                    ("/ut/game/fifa14/season/1/user", "GET"),
+                ):
+                    status, body = self._get(port, path, method, b"{}")
+                    self.assertEqual((path, status), (path, 200))
+                    self.assertIsInstance(body, dict)
+            finally:
+                identity.stop()
+
 
 class TcpServerTests(unittest.TestCase):
     def test_fut_boot_xml_has_required_native_parser_fields(self) -> None:

@@ -2115,6 +2115,47 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # Starting or resetting a season. CardsDLL's URL template
+                # table carries two routes this server has never answered:
+                #
+                #     SEASONUSER_ALTER   ut/%s/season/%s/user
+                #     SEASONRESET        ut/%s/season/%s/reset
+                #
+                # They are the seasons' equivalent of `tournament/user/<id>`,
+                # which is what the cup screen PUTs the moment a cup is
+                # entered. Unhandled, they were answered 404 -- and a 404 on a
+                # FUT route is a hang with nothing to read, which is exactly
+                # what the seasons screen does after "Voulez-vous vraiment
+                # débuter cette Saison Joueur Solo ?".
+                #
+                # What the client sends here has never been seen, so nothing
+                # is invented from it: the body is journalled and the reply is
+                # the same `season/user` document the screen already accepts.
+                # The next journal says what the body actually carries.
+                season_alter = re.fullmatch(
+                    r"/ut/game/fifa14/season/(\d+)/(user|reset)", normalized_path
+                )
+                if season_alter:
+                    season_id = int(season_alter.group(1))
+                    payload = season_user_response()
+                    owner.journal.event(
+                        "fut_season_alter",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        season=season_id,
+                        action=season_alter.group(2),
+                        body=request_body_preview(body),
+                        payload=payload.decode("utf-8", "replace")[:400],
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # A single cup's saved run. The client serialises this itself
                 # -- CardsDLL carries the format strings it builds the body
                 # from -- so it arrives with `round`, `dataVersion`, `data`,
