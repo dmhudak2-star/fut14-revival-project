@@ -892,6 +892,70 @@ class TournamentRouteTests(unittest.TestCase):
             finally:
                 identity.stop()
 
+    def test_a_season_match_settles_into_the_season_it_was_created_in(self) -> None:
+        # The whole chain, in the order the console walks it. Which mode owns
+        # a result had to be inferred for cups, from whichever cup saved its
+        # progress last; a season match says so itself, in the body that
+        # creates it.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            previous = SERVER.ACTIVE_SEASON
+            coins_before = SERVER.WALLET.coins
+            try:
+                port = identity.server.server_address[1]
+                SERVER.SEASON_PROGRESS.entries.clear()
+
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match",
+                    "POST",
+                    json_module.dumps(
+                        {
+                            "squadId": 4,
+                            "type": "OFFLINE",
+                            "seasonId": 1,
+                            "divisionId": 10,
+                        }
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(SERVER.ACTIVE_SEASON, (1, 10))
+
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match/end",
+                    "PUT",
+                    json_module.dumps(
+                        {"endReason": "WIN", "items": [], "matchData": "ab"}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+
+                entry = SERVER.SEASON_PROGRESS.entries[(1, 10)]
+                self.assertEqual(entry["won"], 1)
+                self.assertEqual(entry["lost"], 0)
+                # Whatever the match paid went to the wallet and to the
+                # season's own total, which are two different numbers on two
+                # different screens.
+                self.assertEqual(entry["coins"], SERVER.WALLET.coins - coins_before)
+
+                # A cup match afterwards must not settle into the season.
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match",
+                    "POST",
+                    json_module.dumps(
+                        {"squadId": 4, "type": "OFFLINE", "tournamentId": 3}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                self.assertIsNone(SERVER.ACTIVE_SEASON)
+            finally:
+                SERVER.ACTIVE_SEASON = previous
+                SERVER.SEASON_PROGRESS.entries.clear()
+                identity.stop()
+
     def test_the_season_history_is_answered_empty_rather_than_404ed(self) -> None:
         # Asked for once per type the moment a season starts. A 404 here is a
         # hang with nothing to read, and no season has ever been finished, so
