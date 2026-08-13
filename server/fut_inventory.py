@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import random
+import threading
 import time
 
 # How many cards go out when the club is asked for with no count of its own.
@@ -266,6 +267,88 @@ def _player_item(
     }
 
 
+# -- one club per player ---------------------------------------------------
+#
+# This server held exactly one club: one inventory, one wallet, one save file.
+# With one console on a LAN that is invisible. On a server two people can
+# reach it means they share a club and overwrite each other's cards, coins and
+# seasons.
+#
+# The key was already on the wire, on every FUT request, and had only never
+# been read:
+#
+#     Easw-Session-Data-Nucleus-Id: 2535469248587161
+#
+# It is the same value as `nuc` in the body of `/ut/auth`, and it names the
+# *profile* rather than the console -- which is the right grain, because a FUT
+# club belongs to a gamertag. A gamertag can move consoles and a console can
+# hold several gamertags.
+#
+# What that key has to select was in module-level names -- CLUB_INVENTORY,
+# WALLET, TOURNAMENT_PROGRESS and a dozen more -- read from about two hundred
+# places across two files. Passing a tenant argument through all of them would
+# have been a two-hundred-site edit to code where nearly every site is a
+# behaviour somebody had to discover from the console first, and where a
+# mistake reads as a game bug rather than as a refactor.
+#
+# So the names stay exactly as they are, and what they point at becomes a view
+# onto whichever club the request in hand belongs to. Call sites are unchanged
+# and cannot forget.
+
+_CURRENT = threading.local()
+
+
+def current_tenant() -> "Tenant":
+    """The club this thread is serving.
+
+    Falls back to the default club, which is what a single-console setup and
+    the whole test suite use. Nothing has to be bound for the server to behave
+    exactly as it did when one club was all there was.
+    """
+    tenant = getattr(_CURRENT, "tenant", None)
+    if tenant is None:
+        tenant = TENANTS.default()
+        _CURRENT.tenant = tenant
+    return tenant
+
+
+def use_tenant(tenant: "Tenant | None") -> None:
+    """Bind this thread to a club, or unbind it with None.
+
+    The server is a ThreadingHTTPServer -- a thread per connection -- so "the
+    request in hand" is exactly per thread. A thread that is never bound gets
+    the default club rather than an error, so a half-converted path degrades
+    to the old single-club behaviour instead of failing.
+    """
+    _CURRENT.tenant = tenant
+
+
+class TenantView:
+    """A module-level name that follows the current club.
+
+    Reads and writes both go to the live object, so `WALLET.coins` and
+    `WALLET.coins = 0` land on the right club without the call site knowing
+    there is more than one.
+    """
+
+    __slots__ = ("_member",)
+
+    def __init__(self, member: str) -> None:
+        object.__setattr__(self, "_member", member)
+
+    def _live(self):
+        return getattr(current_tenant(), object.__getattribute__(self, "_member"))
+
+    def __getattr__(self, name: str):
+        return getattr(self._live(), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(self._live(), name, value)
+
+    def __repr__(self) -> str:
+        return repr(self._live())
+
+
 class Persona:
     """Who this club belongs to, in one place.
 
@@ -293,7 +376,7 @@ class Persona:
             self.id = int(persona_id)
 
 
-PERSONA = Persona()
+PERSONA = TenantView("persona")
 
 
 class ClubIdentity:
@@ -331,7 +414,7 @@ class ClubIdentity:
             self.abbr = str(saved.get("abbr") or "FUT")
 
 
-CLUB_IDENTITY = ClubIdentity()
+CLUB_IDENTITY = TenantView("identity")
 
 
 def first_run() -> bool:
@@ -1083,14 +1166,21 @@ class CardCatalogue:
 
     _issued = 0
 
+    @staticmethod
+    def read_cards(path: Path) -> list[dict]:
+        """Parse the card file. Slow, and the same answer for every club."""
+        if not path.exists():
+            return []
+        return [
+            card
+            for card in json.loads(path.read_text()).get("cards", [])
+            if _card_resolves(card)
+        ]
+
     def __init__(self, path: Path = CARD_CATALOGUE) -> None:
-        self.cards: list[dict] = []
-        if path.exists():
-            self.cards = [
-                card
-                for card in json.loads(path.read_text()).get("cards", [])
-                if _card_resolves(card)
-            ]
+        # Shared, not copied: see `shared_catalogue_cards`. Everything below
+        # this line is per club.
+        self.cards: list[dict] = shared_catalogue_cards(path)
         # Listings are generated per search, so a bid arriving later refers to
         # a trade id that no longer exists anywhere unless it is remembered.
         self.served: dict[int, dict] = {}
@@ -3964,7 +4054,7 @@ class TournamentProgress:
                 self.apply(int(key), value)
 
 
-TOURNAMENT_PROGRESS = TournamentProgress()
+TOURNAMENT_PROGRESS = TenantView("tournaments")
 
 
 class SeasonProgress:
@@ -4123,7 +4213,7 @@ class SeasonProgress:
                 continue
 
 
-SEASON_PROGRESS = SeasonProgress()
+SEASON_PROGRESS = TenantView("seasons")
 
 
 def season_history_response(kind: str = "offline") -> bytes:
@@ -4866,18 +4956,47 @@ SAVE_FILE = Path(
 )
 
 
+def club_save_path(persona_id: int) -> Path:
+    """Where one club's save lives.
+
+    Persona 0 is the club nobody has named yet -- a single-console setup that
+    has not identified itself, and the whole test suite -- and it keeps the
+    historical path, so nothing about that case changes. A real nucleus id
+    gets its own file beside it.
+    """
+    if not persona_id:
+        return SAVE_FILE
+    return SAVE_FILE.parent / "clubs" / f"{int(persona_id)}.json"
+
+
 class ClubSave:
     """The club's own state, written to disk and reloaded."""
 
-    def __init__(self, path: Path = SAVE_FILE) -> None:
+    def __init__(self, path: Path = SAVE_FILE, fallback: Path | None = None) -> None:
         self.path = path
+        # Read from here when this club has no save of its own yet.
+        #
+        # Before the server knew about more than one club there was a single
+        # `runtime/club-save.json`, and on the console this was built for it
+        # holds a real club -- 963 million coins, 218 cards acquired, a cup and
+        # a season under way. Keying saves by persona without this would have
+        # left that file on disk and started its owner from nothing.
+        #
+        # Nothing ever writes back to it: the first save this club makes goes
+        # to `path`, and the original stays exactly as it was, which also makes
+        # it the backup. On a server deployed fresh the file does not exist and
+        # this never comes into play.
+        self.fallback = fallback
 
     def load(self, inventory: "ClubInventory", wallet: "Wallet",
              actions: "CardActions", tasks: "ManagerTasks | None" = None) -> bool:
-        if not self.path.exists():
+        source = self.path
+        if not source.exists():
+            source = self.fallback if self.fallback is not None else source
+        if not source.exists():
             return False
         try:
-            saved = json.loads(self.path.read_text())
+            saved = json.loads(source.read_text())
         except (ValueError, OSError):
             return False
         wallet.coins = int(saved.get("coins", wallet.coins))
@@ -5026,3 +5145,157 @@ class ManagerTasks:
             },
             separators=(",", ":"),
         ).encode()
+
+
+# -- the clubs themselves --------------------------------------------------
+#
+# Everything one player owns, in one object, so that "which club is this
+# request about" has an answer that is not a module global.
+#
+# What is deliberately *not* in here: the card catalogue's 14 019 parsed
+# cards. They are the same file for everybody and cost 3.7 MB of JSON to
+# parse, which is the difference between a server that can hold twenty clubs
+# and one that cannot. `CardCatalogue` still gets built per club, because
+# `served` and `sold` are that club's own -- a card bought by one player must
+# not vanish from another's market -- but the card list behind them is read
+# once and shared. Nothing mutates it: `self.cards` is read in exactly one
+# place, a comprehension in `search`, and the drawing code builds new item
+# dicts rather than editing catalogue entries.
+
+_CARDS_LOCK = threading.Lock()
+_CARDS_SHARED: dict[str, list[dict]] = {}
+
+
+def shared_catalogue_cards(path: Path) -> list[dict]:
+    """The parsed card list for `path`, read once and shared by every club."""
+    key = str(path)
+    with _CARDS_LOCK:
+        cards = _CARDS_SHARED.get(key)
+        if cards is None:
+            cards = CardCatalogue.read_cards(path)
+            _CARDS_SHARED[key] = cards
+        return cards
+
+
+class Tenant:
+    """One player's club, and everything that belongs to it alone."""
+
+    def __init__(self, persona_id: int = 0, save: "ClubSave | None" = None) -> None:
+        self.persona_id = int(persona_id or 0)
+        # Two requests from the same console arrive on two threads -- the
+        # client closes the connection after each one -- and both of them can
+        # save. This serialises the writes for one club without making two
+        # clubs wait for each other.
+        self.lock = threading.RLock()
+        self.persona = Persona()
+        self.persona.adopt(self.persona_id)
+        self.identity = ClubIdentity()
+        self.inventory = ClubInventory()
+        self.catalogue = CardCatalogue()
+        self.wallet = Wallet()
+        self.shop = PackShop(self.catalogue, self.wallet, self.inventory)
+        self.actions = CardActions(self.shop, self.wallet, self.inventory)
+        self.rack = ConsumableRack(self.inventory)
+        self.tasks = ManagerTasks()
+        self.tournaments = TournamentProgress()
+        self.seasons = SeasonProgress()
+        # The cup, and the season, a match in flight belongs to. Read when the
+        # match ends and written when it is created, so neither can be a local.
+        self.active_tournament: int | None = None
+        self.active_season: tuple[int, int] | None = None
+        self.save = save if save is not None else ClubSave(
+            club_save_path(self.persona_id),
+            fallback=None if not self.persona_id else SAVE_FILE,
+        )
+        self.loaded = False
+        self.granted = 0
+        # Loading reaches TOURNAMENT_PROGRESS, SEASON_PROGRESS and
+        # CLUB_IDENTITY through the views above, and a view answers with
+        # whichever club the thread is currently serving. Without this bind a
+        # club restores its cups into the club that happened to be bound
+        # already -- silently, and only when a second player connects.
+        previous = getattr(_CURRENT, "tenant", None)
+        _CURRENT.tenant = self
+        try:
+            self._open()
+        finally:
+            _CURRENT.tenant = previous
+
+    def _open(self) -> None:
+        """Restore the club, or seed a brand new one.
+
+        This is the block that used to sit at the top of the server module,
+        moved here unchanged in behaviour: a club that is not a first run
+        loads its save and is called `Fondateur FUT`, and a first run opens
+        three starter packs instead.
+        """
+        if not first_run():
+            self.loaded = self.save.load(
+                self.inventory, self.wallet, self.actions, self.tasks
+            )
+            # A club that has been created has a name. Saying nothing here
+            # tells the client no club exists, which is what the first-run
+            # flag is for -- so outside first-run mode the name is set.
+            self.identity.name = CLUB_NAME_DEFAULT
+            # Said out loud when a club opens. A cup run that was in the save
+            # one evening and gone the next launch left nothing to look at
+            # afterwards. With more than one club it also says which one.
+            print(
+                f"club {self.persona_id}: loaded={self.loaded} "
+                f"coins={self.wallet.coins} "
+                f"cups={self.tournaments.state()!r:.120} "
+                f"resumable={self.tournaments.active_ids()} "
+                f"save={self.save.path}",
+                flush=True,
+            )
+        else:
+            self.granted = self.shop.grant_starter_packs()
+            print(
+                f"club {self.persona_id}: first run, {self.granted} cards "
+                f"from {len(STARTER_PACKS)} starter packs",
+                flush=True,
+            )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Tenant persona={self.persona_id} coins={self.wallet.coins} "
+            f"cards={len(self.inventory.items)} save={self.save.path.name}>"
+        )
+
+
+class TenantRegistry:
+    """Every club this server is holding, keyed by nucleus id."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._clubs: dict[int, Tenant] = {}
+
+    def get(self, persona_id: int | None) -> Tenant:
+        """The club for this persona, opened on first sight."""
+        key = int(persona_id or 0)
+        with self._lock:
+            club = self._clubs.get(key)
+            if club is None:
+                club = Tenant(key)
+                self._clubs[key] = club
+            return club
+
+    def default(self) -> Tenant:
+        """The club a thread that has not identified itself gets."""
+        return self.get(0)
+
+    def known(self) -> list[int]:
+        with self._lock:
+            return sorted(self._clubs)
+
+    def forget(self, persona_id: int | None = None) -> None:
+        """Drop one club, or all of them. For tests and for a reset."""
+        with self._lock:
+            if persona_id is None:
+                self._clubs.clear()
+            else:
+                self._clubs.pop(int(persona_id or 0), None)
+        use_tenant(None)
+
+
+TENANTS = TenantRegistry()

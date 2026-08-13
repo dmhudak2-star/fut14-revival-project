@@ -527,20 +527,14 @@ def with_balance(payload: bytes, coins: int) -> bytes:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
     GOLD_PACK_ID,
-    CardActions,
-    ConsumableRack,
     ConsumableRefused,
-    ClubSave,
-    ManagerTasks,
-    CardCatalogue,
-    ClubInventory,
-    PackShop,
-    Wallet,
     CLUB_IDENTITY,
-    STARTER_PACKS,
+    TENANTS,
     TOURNAMENT_PROGRESS,
+    TenantView,
+    current_tenant,
+    use_tenant,
     empty_big_archive,
-    first_run,
     trophy_item_response,
     active_tournaments_response,
     SEASON_PROGRESS,
@@ -563,64 +557,29 @@ from fut_inventory import (  # noqa: E402
     tournaments_response,
 )
 
-CLUB_INVENTORY = ClubInventory()
-CARD_CATALOGUE = CardCatalogue()
-WALLET = Wallet()
-PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET, CLUB_INVENTORY)
-CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
+# These used to be the one club this server held. They are now views onto
+# whichever club the request in hand belongs to -- see `Tenant` and
+# `TenantView` in fut_inventory. Every call site below is unchanged, and a
+# thread that never identifies itself gets the default club, which is exactly
+# the single-club behaviour these names had before.
+#
+# Opening a club -- loading its save, or seeding it from the icebreaker packs
+# on a first run -- moved into `Tenant._open` with its reasoning intact. It
+# happens the first time a persona is seen rather than at import.
+CLUB_INVENTORY = TenantView("inventory")
+CARD_CATALOGUE = TenantView("catalogue")
+WALLET = TenantView("wallet")
+PACK_SHOP = TenantView("shop")
+CARD_ACTIONS = TenantView("actions")
 # Applying a contract, a fitness card or a training card. Until this existed
 # the club could hold consumables and show them, and nothing could be done
 # with one.
-CONSUMABLE_RACK = ConsumableRack(CLUB_INVENTORY)
-# The cup a match is being played in, remembered from the last progress save.
-ACTIVE_TOURNAMENT: int | None = None
-# The season a match is being played in. Unlike a cup, the client says so in
-# the match it creates: `POST /match` carries `seasonId` and `divisionId`
-# beside the squad, exactly where a cup match carries `tournamentId`. So this
-# is read rather than inferred, and it is cleared when a cup match is created
-# so that one mode cannot settle the other's result.
-ACTIVE_SEASON: tuple[int, int] | None = None
-
+CONSUMABLE_RACK = TenantView("rack")
 # Entering FUT needs a relaunch, so without this every session started from the
 # icebreaker packs again: the club counter back to 92, the pack you opened
 # gone, the coins reset.
-MANAGER_TASKS = ManagerTasks()
-CLUB_SAVE = ClubSave()
-# A first run has no prior save by definition. Loading one puts back exactly
-# what the flag exists to remove -- the saved squad carries its name, so
-# `squad/list` went on announcing a club while every other route said there was
-# none. Deleting the file by hand between runs is not a fix: the server writes
-# a new one within seconds of the client touching anything.
-if not first_run():
-    _loaded = CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
-    # Said out loud at startup. A cup run that was in the save one evening and
-    # gone the next launch left nothing to look at afterwards -- the only way
-    # to tell what had been restored was to re-read the file by hand and hope
-    # it had not been rewritten since.
-    print(
-        f"club save: loaded={_loaded} coins={WALLET.coins} "
-        f"cups={TOURNAMENT_PROGRESS.state()!r:.120} "
-        f"resumable={TOURNAMENT_PROGRESS.active_ids()}",
-        flush=True,
-    )
-else:
-    # A new club opens with three packs: bronze, silver, gold. Ordinary cards
-    # only and nothing above 78, so the start is a start. The captain
-    # selection that would normally hand out the first squad is not reachable
-    # from this server -- fcc_login1 decides it on native state, see
-    # docs/ICEBREAKER_DECISION.md -- and an empty club with nothing to open is
-    # worse than no icebreaker.
-    _granted = PACK_SHOP.grant_starter_packs()
-    print(
-        f"first run: {_granted} cards from {len(STARTER_PACKS)} starter packs",
-        flush=True,
-    )
-# A club that has been created has a name. Saying "Fondateur FUT" while the
-# club holds nothing tells the client a club already exists, which is exactly
-# the reason it never offers to create one -- emptying the cards was not
-# enough on its own. In first-run mode the name is empty: no club yet.
-if not first_run():
-    CLUB_IDENTITY.name = "Fondateur FUT"
+MANAGER_TASKS = TenantView("tasks")
+CLUB_SAVE = TenantView("save")
 
 
 def club_name() -> str:
@@ -680,6 +639,81 @@ def auth_request_identity(body: bytes) -> tuple[int, str] | None:
     if isinstance(persona, int) and not isinstance(persona, bool) and persona > 0:
         return persona, display_name
     return nucleus, display_name
+
+
+# -- which club a request belongs to ---------------------------------------
+#
+# The obvious candidate is the nucleus id header, and it is the wrong one. On
+# a full session into Saison Joueur Solo it appeared on **one** request out of
+# forty-nine; `X-UT-SID` appeared on forty-six. The session id is the only
+# thing the client puts on requests generally, which is exactly what it is for.
+#
+# It was one constant for everybody -- `LOCAL-XBOX360-FIFA14-SID` -- so every
+# request after the auth was anonymous. Minting it per persona turns the
+# client's own echo into the routing key, with no session table to keep.
+#
+# Derived rather than stored on purpose: `tools/fut.sh` restarts this server
+# on every single launch, and a stored table would strand a client still
+# holding the session id from a minute ago. A derived one still resolves.
+
+UT_SID_BASE = "LOCAL-XBOX360-FIFA14-SID"
+NUCLEUS_HEADER = "Easw-Session-Data-Nucleus-Id"
+
+
+def ut_session_id(persona_id: int | None) -> str:
+    """The FUT session id handed out at ``/ut/auth`` for this persona."""
+    if not persona_id:
+        return UT_SID_BASE
+    return f"{UT_SID_BASE}-{int(persona_id)}"
+
+
+def sid_persona(sid: str | None) -> int:
+    """The persona a session id names, or 0 for the anonymous one.
+
+    The bare base is what an older server handed out, and it still resolves --
+    to the default club, which is where a single-console setup already was.
+    """
+    if not sid or not sid.startswith(UT_SID_BASE):
+        return 0
+    try:
+        return int(sid[len(UT_SID_BASE):].lstrip("-"))
+    except ValueError:
+        return 0
+
+
+def request_persona(headers, body: bytes) -> int:
+    """The nucleus id this request belongs to, or 0 if it does not say.
+
+    Three sources, most specific first. ``/ut/auth`` is the one request that
+    can carry none of the first two -- it is the request that *establishes* the
+    session -- and it names the persona in its body, so even the first request
+    of a session routes to the right club.
+    """
+    if headers is not None:
+        persona = sid_persona(headers.get("X-UT-SID"))
+        if persona:
+            return persona
+        raw = headers.get(NUCLEUS_HEADER)
+        try:
+            if raw and int(raw) > 0:
+                return int(raw)
+        except (TypeError, ValueError):
+            pass
+    presented = auth_request_identity(body)
+    return int(presented[0]) if presented else 0
+
+
+def bind_request_club(headers, body: bytes):
+    """Point this thread at the club this request is about, and return it.
+
+    A request that names nobody -- the redirector, a resource fetch, the
+    localisation files -- gets the default club, which is precisely the single
+    club this server held before. Threads are per connection here, so nothing
+    binds over another console's request.
+    """
+    club = TENANTS.get(request_persona(headers, body))
+    use_tenant(club)
+    return club
 
 
 def find_field(fields: list[Field], label: str) -> Field | None:
@@ -1195,7 +1229,12 @@ class Fifa14Protocol:
         if state.gamertag == ClientState.gamertag and stored_id == state.xuid:
             state.gamertag = stored_name
         self.account_store.save_identity(state.xuid, state.gamertag)
-        PERSONA.adopt(state.xuid)
+        # Named, not bound. The Blaze side touches exactly one piece of club
+        # state -- the persona -- so it says which club it means instead of
+        # binding the thread to one. Binding here was the first attempt and it
+        # was wrong: `Fifa14Protocol.handle` is called directly, without a
+        # connection around it, and the binding then outlived the caller.
+        TENANTS.get(state.xuid).persona.adopt(state.xuid)
 
         now = int(time.time())
         persona = [
@@ -1765,14 +1804,32 @@ class IdentityHttpService:
                     self.wfile.write(body)
 
             def serve_identity(self) -> None:
-                # Both are read early -- settling a match end -- and written
-                # late, when a cup saves its progress or a match is created,
-                # so the declaration has to lead the function rather than sit
-                # beside either assignment.
-                global ACTIVE_TOURNAMENT, ACTIVE_SEASON
+                # Bind a club for this request, and give the thread back the
+                # way it was found.
+                #
+                # Connections get their own thread here, so in production the
+                # binding could not outlive the request anyway. But it is
+                # thread-wide, and anything that does reuse a thread inherits
+                # whichever club the previous request was about. The test
+                # suite runs an entire file on one thread and caught this
+                # immediately: a season test cleaned up through the module
+                # view afterwards and cleared the wrong club's table.
+                previous = current_tenant()
+                try:
+                    self._serve_identity()
+                finally:
+                    use_tenant(previous)
+
+            def _serve_identity(self) -> None:
                 parsed = urllib.parse.urlsplit(self.path)
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(content_length) if content_length else b""
+                # Which club this is about, decided once and before anything
+                # reads club state. `club` is also what the cup and season a
+                # match belongs to now hang off: they used to be module
+                # globals, which is the same bug as the club itself -- two
+                # consoles, one in-flight match between them.
+                club = bind_request_club(self.headers, body)
                 owner.journal.event(
                     "identity_http_request",
                     peer=self.client_address[0],
@@ -1894,7 +1951,11 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path == "/ut/auth":
-                    sid = "LOCAL-XBOX360-FIFA14-SID"
+                    # The session id the client will echo on every request
+                    # after this one, and therefore what routes them to this
+                    # club. `bind_request_club` above has already read the
+                    # persona out of this request's own body.
+                    sid = ut_session_id(club.persona_id)
                     presented = auth_request_identity(body)
                     if presented is not None:
                         persona_id, persona_name = presented
@@ -2231,7 +2292,7 @@ class IdentityHttpService:
                         # payload. The client says so by saving progress into
                         # this cup as it enters it, and that is the only place
                         # it says so at all.
-                        ACTIVE_TOURNAMENT = tournament_id
+                        club.active_tournament = tournament_id
                         CLUB_SAVE.save(
                             CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
                         )
@@ -3025,8 +3086,8 @@ class IdentityHttpService:
                         CLUB_INVENTORY, document.get("items") or []
                     )
                     cup = {}
-                    if ACTIVE_TOURNAMENT is not None:
-                        cup = TOURNAMENT_PROGRESS.advance(ACTIVE_TOURNAMENT, result)
+                    if club.active_tournament is not None:
+                        cup = TOURNAMENT_PROGRESS.advance(club.active_tournament, result)
                     earned = (
                         reward["totalCoins"]
                         + int(cup.get("roundCoins") or 0)
@@ -3039,9 +3100,9 @@ class IdentityHttpService:
                     # header asks for the numbers separately, which is why it
                     # read BILAN 0-0-0 over a season won 3-0.
                     season_record = {}
-                    if ACTIVE_SEASON is not None:
+                    if club.active_season is not None:
                         season_record = SEASON_PROGRESS.settle(
-                            ACTIVE_SEASON[0], ACTIVE_SEASON[1], result, earned
+                            club.active_season[0], club.active_season[1], result, earned
                         )
                     CLUB_SAVE.save(
                         CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
@@ -3073,7 +3134,7 @@ class IdentityHttpService:
                         coins=WALLET.coins,
                         tournament=cup.get("tournamentId"),
                         round=cup.get("round"),
-                        season=ACTIVE_SEASON,
+                        season=club.active_season,
                         seasonRecord=(
                             f"{season_record.get('won', 0)}-"
                             f"{season_record.get('draw', 0)}-"
@@ -3291,18 +3352,18 @@ class IdentityHttpService:
                     except ValueError:
                         created = {}
                     if isinstance(created, dict) and "seasonId" in created:
-                        ACTIVE_SEASON = (
+                        club.active_season = (
                             int(created.get("seasonId") or 0),
                             int(created.get("divisionId") or 0),
                         )
-                        ACTIVE_TOURNAMENT = None
+                        club.active_tournament = None
                     elif isinstance(created, dict) and "tournamentId" in created:
-                        ACTIVE_SEASON = None
+                        club.active_season = None
                     owner.journal.event(
                         "fut_match_created",
                         peer=self.client_address[0],
-                        season=ACTIVE_SEASON,
-                        tournament=ACTIVE_TOURNAMENT,
+                        season=club.active_season,
+                        tournament=club.active_tournament,
                         body=request_body_preview(body),
                     )
                     self.reply(

@@ -2899,3 +2899,90 @@ def test_a_card_is_never_reported_as_a_duplicate_of_itself() -> None:
     assert inventory.pile_duplicate_pairs([fresh], [owned, fresh]) == [
         {"itemId": 1800000050, "duplicateItemId": 17}
     ]
+
+
+def test_two_players_do_not_share_a_club() -> None:
+    # The whole point. This server held one inventory, one wallet, one save
+    # file, so two consoles reaching it played the same club and overwrote
+    # each other -- silently, because nothing about a shared club looks
+    # different from a busy one.
+    import fut_inventory as inventory
+
+    one = inventory.TENANTS.get(1111)
+    two = inventory.TENANTS.get(2222)
+    assert one is not two
+    assert inventory.TENANTS.get(1111) is one  # opened once, then remembered
+
+    before = two.wallet.coins
+    one.wallet.coins = 42
+    assert two.wallet.coins == before
+
+    one.inventory.items.append({"id": 999, "itemType": "player", "assetId": 1})
+    assert not any(item["id"] == 999 for item in two.inventory.items)
+
+    # Not "the other club is empty": both seed from the same save when they
+    # have none of their own, which is the point of the fallback. What must
+    # hold is that a write to one is not a write to the other.
+    one.seasons.apply(1, 10, {"round": 3, "dataVersion": 1, "data": "marqueur"})
+    assert one.seasons.entries[(1, 10)]["data"] == "marqueur"
+    assert (two.seasons.entries.get((1, 10)) or {}).get("data") != "marqueur"
+
+    # A match in flight belongs to one club too. It used to be a module
+    # global, which is the same defect one level down: two consoles, one
+    # in-flight match between them.
+    one.active_season = (1, 10)
+    assert two.active_season is None
+
+    inventory.TENANTS.forget(1111)
+    inventory.TENANTS.forget(2222)
+
+
+def test_the_card_catalogue_is_read_once_and_shared() -> None:
+    # Per club, `served` and `sold` have to be that club's own -- a card
+    # bought by one player must not vanish from another's market. The 14 000
+    # cards behind them are the same file for everybody, and parsing 3.7 MB of
+    # JSON per club is the difference between a server that holds twenty and
+    # one that does not.
+    import fut_inventory as inventory
+
+    one = inventory.TENANTS.get(3333)
+    two = inventory.TENANTS.get(4444)
+    assert one.catalogue is not two.catalogue
+    assert one.catalogue.sold is not two.catalogue.sold
+    assert one.catalogue.cards is two.catalogue.cards
+
+    inventory.TENANTS.forget(3333)
+    inventory.TENANTS.forget(4444)
+
+
+def test_a_named_club_saves_beside_the_unnamed_one_and_seeds_from_it(tmp_path) -> None:
+    # A persona gets its own file. It also *reads* the single-club save when
+    # it has none of its own yet, which is what carries the club that already
+    # exists on this console -- 963 million coins and a season under way --
+    # over to its owner instead of starting him from nothing.
+    #
+    # Nothing writes back to the old file: it stays exactly as it was, which
+    # makes it the backup as well.
+    import fut_inventory as inventory
+
+    legacy = tmp_path / "club-save.json"
+    legacy.write_text(json.dumps({"coins": 4242, "acquired": [], "sold": []}))
+
+    named = inventory.club_save_path.__globals__["SAVE_FILE"]
+    assert inventory.club_save_path(0) == named
+    assert inventory.club_save_path(77).name == "77.json"
+    assert inventory.club_save_path(77).parent.name == "clubs"
+
+    save = inventory.ClubSave(tmp_path / "clubs" / "77.json", fallback=legacy)
+    club = inventory.ClubInventory()
+    wallet = inventory.Wallet()
+    actions = inventory.CardActions(
+        inventory.PackShop(inventory.CardCatalogue(), wallet, club), wallet, club
+    )
+    assert save.load(club, wallet, actions) is True
+    assert wallet.coins == 4242
+
+    # And the first save it makes goes to its own file, not back to the old one.
+    save.save(club, wallet, actions)
+    assert (tmp_path / "clubs" / "77.json").exists()
+    assert json.loads(legacy.read_text())["coins"] == 4242

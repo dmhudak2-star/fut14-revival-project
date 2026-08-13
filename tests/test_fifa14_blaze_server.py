@@ -900,7 +900,7 @@ class TournamentRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             identity = self._identity(temp)
             json_module = __import__("json")
-            previous = SERVER.ACTIVE_SEASON
+            previous = SERVER.TENANTS.default().active_season
             coins_before = SERVER.WALLET.coins
             try:
                 port = identity.server.server_address[1]
@@ -920,7 +920,7 @@ class TournamentRouteTests(unittest.TestCase):
                     ).encode(),
                 )
                 self.assertEqual(status, 200)
-                self.assertEqual(SERVER.ACTIVE_SEASON, (1, 10))
+                self.assertEqual(SERVER.TENANTS.default().active_season, (1, 10))
 
                 status, _ = self._get(
                     port,
@@ -950,10 +950,109 @@ class TournamentRouteTests(unittest.TestCase):
                     ).encode(),
                 )
                 self.assertEqual(status, 200)
-                self.assertIsNone(SERVER.ACTIVE_SEASON)
+                self.assertIsNone(SERVER.TENANTS.default().active_season)
             finally:
-                SERVER.ACTIVE_SEASON = previous
+                SERVER.TENANTS.default().active_season = previous
                 SERVER.SEASON_PROGRESS.entries.clear()
+                identity.stop()
+
+    def _sid_get(self, port: int, path: str, method: str, body: bytes | None,
+                 sid: str | None = None, nucleus: int | None = None):
+        """Like `_get`, but says who is asking."""
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        headers = {}
+        if sid is not None:
+            headers["X-UT-SID"] = sid
+        if nucleus is not None:
+            headers["Easw-Session-Data-Nucleus-Id"] = str(nucleus)
+        client.request(method, path, body, headers)
+        response = client.getresponse()
+        payload = __import__("json").loads(response.read())
+        status = response.status
+        client.close()
+        return status, payload
+
+    def test_two_consoles_do_not_share_a_club(self) -> None:
+        # The routing key is the FUT session id, not the nucleus header. On a
+        # full session into Saison Joueur Solo the nucleus header appeared on
+        # one request out of forty-nine and `X-UT-SID` on forty-six -- so the
+        # session id is the only thing that can route a request generally,
+        # which is what it is for.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            try:
+                port = identity.server.server_address[1]
+
+                # `/ut/auth` mints the session id, derived from the persona
+                # the request itself presents. Derived rather than stored: the
+                # launcher restarts this server on every run, and a stored
+                # table would strand a client still holding the last one.
+                status, body = self._sid_get(
+                    port, "/ut/auth", "POST",
+                    json_module.dumps(
+                        {"nuc": 111, "nucleusPersonaId": 111,
+                         "nucleusPersonaDisplayName": "Un"}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                first = body["sid"]
+                self.assertEqual(SERVER.sid_persona(first), 111)
+                self.assertNotEqual(first, SERVER.UT_SID_BASE)
+
+                status, body = self._sid_get(
+                    port, "/ut/auth", "POST",
+                    json_module.dumps(
+                        {"nuc": 222, "nucleusPersonaId": 222,
+                         "nucleusPersonaDisplayName": "Deux"}
+                    ).encode(),
+                )
+                second = body["sid"]
+                self.assertNotEqual(first, second)
+
+                # Both clubs seeded from the suite's scratch save, which by
+                # now carries whatever an earlier test left in it. What is
+                # under test is where a result *lands*, so start both from a
+                # clean season table.
+                for persona in (111, 222):
+                    SERVER.TENANTS.get(persona).seasons.entries.clear()
+
+                # Each console starts a season, and each one keeps its own.
+                for sid, season in ((first, 1), (second, 7)):
+                    status, _ = self._sid_get(
+                        port, "/ut/game/fifa14/match", "POST",
+                        json_module.dumps(
+                            {"squadId": 4, "type": "OFFLINE",
+                             "seasonId": season, "divisionId": 10}
+                        ).encode(),
+                        sid=sid,
+                    )
+                    self.assertEqual(status, 200)
+
+                self.assertEqual(SERVER.TENANTS.get(111).active_season, (1, 10))
+                self.assertEqual(SERVER.TENANTS.get(222).active_season, (7, 10))
+
+                # And a win settles into the club that created the match, not
+                # into whichever one the server saw last.
+                status, _ = self._sid_get(
+                    port, "/ut/game/fifa14/match/end", "PUT",
+                    json_module.dumps(
+                        {"endReason": "WIN", "items": [], "matchData": "ab"}
+                    ).encode(),
+                    sid=first,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    SERVER.TENANTS.get(111).seasons.entries[(1, 10)]["won"], 1
+                )
+                self.assertEqual(SERVER.TENANTS.get(222).seasons.entries, {})
+
+                # A session id from an older server still resolves -- to the
+                # default club, which is where a single console already was.
+                self.assertEqual(SERVER.sid_persona(SERVER.UT_SID_BASE), 0)
+            finally:
+                SERVER.TENANTS.forget(111)
+                SERVER.TENANTS.forget(222)
                 identity.stop()
 
     def test_the_season_history_is_answered_empty_rather_than_404ed(self) -> None:
