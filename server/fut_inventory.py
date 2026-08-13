@@ -3208,17 +3208,29 @@ def _draw_extra(
 # empty list the way fcc_login2 refuses an empty squad, so "none available" is
 # not a neutral answer -- it is the error the screen reports.
 
+# Division 1 first, and the order is not cosmetic.
+#
+# `divisionId` is an index, which is what the freeze on 13 August established:
+# 10 hung the screen and 0 held it. What 0 *shows*, though, is a badge reading
+# **DIV 1** -- so the index is not into this list, it is into the client's own
+# table of divisions, and that table starts at Division 1. The screen proved
+# it twice over: beside the DIV 1 badge it read "Matchs restants : 10" and
+# "12 PTS TITRE", neither of which is in the record served for it.
+#
+# So `divisionId` is `division - 1`, and this list is ordered to agree with
+# it: position n holds division n + 1, and the same number is right whichever
+# table the client is indexing.
 SEASON_DIVISIONS = [
-    (10, "Division 10", 4, 2, 400),
-    (9, "Division 9", 4, 2, 500),
-    (8, "Division 8", 5, 2, 650),
-    (7, "Division 7", 5, 3, 800),
-    (6, "Division 6", 6, 3, 1000),
-    (5, "Division 5", 6, 3, 1300),
-    (4, "Division 4", 7, 4, 1700),
-    (3, "Division 3", 7, 4, 2200),
-    (2, "Division 2", 8, 4, 3000),
     (1, "Division 1", 10, 5, 5000),
+    (2, "Division 2", 8, 4, 3000),
+    (3, "Division 3", 7, 4, 2200),
+    (4, "Division 4", 7, 4, 1700),
+    (5, "Division 5", 6, 3, 1300),
+    (6, "Division 6", 6, 3, 1000),
+    (7, "Division 7", 5, 3, 800),
+    (8, "Division 8", 5, 2, 650),
+    (9, "Division 9", 4, 2, 500),
+    (10, "Division 10", 4, 2, 400),
 ]
 
 # The cups. Every member name below is one CardsDLL carries: they were read
@@ -3599,22 +3611,25 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
     return json.dumps(
         {
             "seasonId": index,
-            # The division's **position** in the list served above, counted
-            # from zero -- not its number. Sending the number is what froze the
-            # mode for as long as it has existed.
+            # The division's number minus one -- an index, counted from zero,
+            # into the client's own table of divisions.
             #
             # Bisected down `season/user`'s three members on 13 August:
             # `{}` opened the screen and held, `{"seasonId": 1}` held,
-            # `{"seasonId": 1, "divisionId": 10}` opened and then hung, and all
-            # three together hung. So it is this member, and it is not failing
-            # to name a division the list holds -- the record served beside it
-            # carried `divisionId` 10 itself. What 10 also is, on a list of
-            # ten, is one past the last index. Sent as 0 the screen holds and
-            # offers to start the season.
+            # `{"seasonId": 1, "divisionId": 10}` opened and then hung. Ten is
+            # one past the last index of a table of ten, which is what hung
+            # it; it was not failing to name a division the served list holds,
+            # since the record beside it carried `divisionId` 10 itself.
             #
-            # The two run in opposite directions, which is what made the
-            # confusion easy to keep: record ids ascend 1..10 while the
-            # division numbers descend 10..1.
+            # Zero held the screen, and that was mistaken for the answer.
+            # What zero *renders* is a badge reading **DIV 1**, over "Matchs
+            # restants : 10" and "12 PTS TITRE" -- none of which is in the
+            # record served for it. So the index is into the client's table,
+            # not into ours, and that table starts at Division 1.
+            #
+            # `SEASON_DIVISIONS` is ordered to agree, so this is both the
+            # division's number minus one and its position in the list served
+            # above.
             "divisionId": index - 1,
             "round": max(0, int(played)) + 1,
             **_season_record_members(entry),

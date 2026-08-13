@@ -546,20 +546,21 @@ def test_the_club_starts_in_the_bottom_division(monkeypatch) -> None:
     # is decremented by the client, so 1 selects the first list record, and
     # round 1 is the first fixture -- wire 0 becomes its invalid sentinel.
     assert set(standing) == {"seasonId", "divisionId", "round"}
-    assert standing["seasonId"] == 1
-    # The division's *position* in the list, from zero -- not its number.
-    # Sending 10 froze the mode for as long as it existed: bisected on
-    # 13 August, `{"seasonId": 1}` held the screen and adding `divisionId: 10`
-    # hung it, while 0 held and offered to start the season. The record served
-    # beside it carries `divisionId` 10 itself, so it was not failing to name a
-    # division the list holds -- 10 is one past the last index of a list of
-    # ten. Ids ascend 1..10 while division numbers descend 10..1, which is what
-    # kept the confusion alive.
-    assert standing["divisionId"] == 0
+    assert standing["seasonId"] == 10
+    # The division's number minus one: an index into the client's own table of
+    # divisions, which starts at Division 1.
+    #
+    # Sending 10 froze the mode for as long as it existed -- one past the last
+    # index of a table of ten. Zero held it, and that was mistaken for the
+    # answer: what zero renders is a badge reading DIV 1, over "Matchs
+    # restants : 10" and "12 PTS TITRE", none of which is in the record served
+    # for it. So the index is into the client's table, not into ours, and
+    # SEASON_DIVISIONS is ordered to agree.
+    assert standing["divisionId"] == 9
     assert standing["round"] == 1
-    # A club in division 5 is the sixth record, so the fifth position.
+    # A club in division 5 is the fifth record, and index four.
     higher = json.loads(inventory.season_user_response(5))
-    assert (higher["seasonId"], higher["divisionId"]) == (6, 5)
+    assert (higher["seasonId"], higher["divisionId"]) == (5, 4)
     assert json.loads(inventory.season_user_response(10, played=3))["round"] == 4
 
 
@@ -577,18 +578,18 @@ def test_a_season_under_way_is_reported_where_it_actually_stands(monkeypatch) ->
         )
         standing = json.loads(inventory.season_user_response())
         assert standing["round"] == 4
-        # Still the division's position, not its number.
-        assert (standing["seasonId"], standing["divisionId"]) == (1, 0)
+        # Still the division's number minus one.
+        assert (standing["seasonId"], standing["divisionId"]) == (10, 9)
 
-        # Promoted: division 9 is the second record, so position 1.
+        # Promoted: division 9 is the ninth record, and index eight.
         inventory.SEASON_PROGRESS.entries.clear()
         inventory.SEASON_PROGRESS.apply(
             2, 9, {"round": 2, "data": "QUJD", "progressData": "REVG"}
         )
         promoted = json.loads(inventory.season_user_response())
         assert (promoted["seasonId"], promoted["divisionId"], promoted["round"]) == (
-            2,
-            1,
+            9,
+            8,
             2,
         )
 
@@ -598,7 +599,7 @@ def test_a_season_under_way_is_reported_where_it_actually_stands(monkeypatch) ->
             1, 10, {"round": 3, "data": "QUJD", "progressData": "REVG"}
         )
         back = json.loads(inventory.season_user_response())
-        assert (back["seasonId"], back["divisionId"], back["round"]) == (1, 0, 3)
+        assert (back["seasonId"], back["divisionId"], back["round"]) == (10, 9, 3)
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
 
