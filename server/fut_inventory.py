@@ -4003,6 +4003,14 @@ class SeasonProgress:
             "lost": int(pick("lost", default=0) or 0),
             "coins": int(pick("coins", default=0) or 0),
         }
+        # Starting the season over. The client says so by saving round 1 on a
+        # season that had got past it, which is what it did at 15:32 on 13
+        # August after answering "Oui" to "Voulez-vous vraiment débuter cette
+        # Saison Joueur Solo ?". Carrying the old record into the new season
+        # would have the header counting wins from a season that no longer
+        # exists.
+        if entry["round"] <= 1 < int(current.get("round") or 1):
+            entry.update({"won": 0, "draw": 0, "lost": 0, "coins": 0})
         # Re-inserted rather than assigned in place, so `current` can read the
         # most recently written season off the end. A club that is promoted
         # and then relegated writes division 9 and then division 10 again, and

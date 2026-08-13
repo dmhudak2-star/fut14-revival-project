@@ -648,6 +648,19 @@ def test_the_season_header_gets_a_record_once_there_is_one(monkeypatch) -> None:
         restored = json.loads(inventory.season_user_response())
         assert restored["seasonGamesWon"] == 1
         assert restored["seasonCoins"] == 926
+
+        # Starting the season over drops the record with it. The client says
+        # so by saving round 1 on a season that had got past it, which is
+        # what it did after "Voulez-vous vraiment débuter cette Saison Joueur
+        # Solo ?" was answered "Oui".
+        inventory.SEASON_PROGRESS.apply(
+            1, 10, {"round": 1, "data": "QUJD", "progressData": "REVG"}
+        )
+        assert set(json.loads(inventory.season_user_response())) == {
+            "seasonId",
+            "divisionId",
+            "round",
+        }
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
 
