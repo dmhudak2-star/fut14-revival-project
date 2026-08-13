@@ -3875,6 +3875,131 @@ class TournamentProgress:
 TOURNAMENT_PROGRESS = TournamentProgress()
 
 
+class SeasonProgress:
+    """A season under way, kept across launches.
+
+    The route is one level deeper than the URL template table suggests. The
+    table carries `ut/%s/season/%%s/user`, and `%%s` is not the season id: the
+    format string beside the season serialiser is `%d/division/%d`, so what
+    goes on the wire is
+
+        PUT /ut/game/fifa14/season/1/division/10/user
+
+    and that is exactly what the console sent on 13 August at 13:37:48, on
+    starting a Saison Joueur Solo. It answered 404, which is a hang with
+    nothing to read -- the same 404 the cups' `tournament/user/<id>` was
+    getting before it was handled.
+
+    The division in the path is the division's **number**, not the position
+    `season/user` reports. The client reads `divisionId` out of the record it
+    picked and puts that in the URL, which is how position 0 becomes
+    `division/10`.
+
+    The body is the cup's body with one word changed: `.rdata` carries
+    `{"round":%d,"dataVersion":%d,"data":"` for seasons against
+    `{"round":%d,"dataVersion":%d,"tournamentData":"` for cups, and they share
+    the `","progressDataVersion":%d,"progressData":"` tail. So this is
+    `TournamentProgress` keyed by a pair and spelling the blob `data`.
+    """
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[int, int], dict] = {}
+
+    @staticmethod
+    def _key(season: int, division: int) -> tuple[int, int]:
+        return (int(season), int(division))
+
+    def apply(self, season: int, division: int, document: dict) -> dict:
+        key = self._key(season, division)
+        if not isinstance(document, dict):
+            document = {}
+        current = self.entries.get(key, {})
+
+        def pick(*names, default=0):
+            for name in names:
+                if name in document:
+                    return document[name]
+            return current.get(names[0], default)
+
+        entry = {
+            "round": int(pick("round", default=1) or 1),
+            "dataVersion": int(pick("dataVersion", default=1) or 1),
+            "data": pick("data", "seasonData", default="") or "",
+            "progressDataVersion": int(pick("progressDataVersion", default=1) or 1),
+            "progressData": pick("progressData", "progressdata", default="") or "",
+        }
+        self.entries[key] = entry
+        return entry
+
+    def response(self, season: int, division: int) -> bytes:
+        """Handed back exactly as the client wrote it, or as no season at all.
+
+        `TournamentProgress` learned this the hard way: a run saved before the
+        first match is one the client cannot resume, and answering it with the
+        saved blob freezes the title. The season serialiser is the same
+        serialiser, so the same rule applies here before it costs another
+        evening -- an unplayed season is answered with nothing rather than
+        with a bracket that has no first match behind it.
+        """
+        entry = self.entries.get(self._key(season, division))
+        if entry is None or TournamentProgress.unplayed(
+            {"round": entry["round"], "progressData": entry["progressData"]}
+        ):
+            return b"{}"
+        return json.dumps(
+            {
+                "round": entry["round"],
+                "dataVersion": entry["dataVersion"],
+                "data": entry["data"],
+                "progressDataVersion": entry["progressDataVersion"],
+                "progressData": entry["progressData"],
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def reset(self, season: int, division: int) -> bool:
+        return self.entries.pop(self._key(season, division), None) is not None
+
+    def current(self) -> tuple[int, int] | None:
+        """The season and division most recently written, if any."""
+        if not self.entries:
+            return None
+        return next(reversed(list(self.entries)))
+
+    def state(self) -> dict:
+        return {f"{season}:{division}": value
+                for (season, division), value in self.entries.items()}
+
+    def restore(self, saved: dict | None) -> None:
+        for key, value in (saved or {}).items():
+            if not isinstance(value, dict):
+                continue
+            season, _, division = str(key).partition(":")
+            try:
+                self.apply(int(season), int(division or 0), value)
+            except ValueError:
+                continue
+
+
+SEASON_PROGRESS = SeasonProgress()
+
+
+def season_history_response(kind: str = "offline") -> bytes:
+    """Seasons already finished, of which there are none.
+
+    Asked for straight after a season is started, once per type -- `.rdata`
+    carries `/season/user/history?type=offline`, `?type=online` and the two
+    World Cup spellings -- and answered 404 until now.
+
+    An empty object is what goes out, and deliberately: no season has ever
+    been completed here, so any list this could carry would be invented. The
+    same reading is what `season/user` was reduced to before the divisions
+    were understood, and it is the answer the parser reads as "nothing yet"
+    rather than as a document it cannot make sense of.
+    """
+    return b"{}"
+
+
 # -- settling a match -------------------------------------------------------
 #
 # `/ut/game/fifa14/match/end` answered with three empty members and threw the
@@ -4652,6 +4777,7 @@ class ClubSave:
             int(key): value for key, value in saved.get("listings", {}).items()
         }
         TOURNAMENT_PROGRESS.restore(saved.get("tournaments"))
+        SEASON_PROGRESS.restore(saved.get("seasons"))
         CLUB_IDENTITY.restore(saved.get("club"))
         return True
 
@@ -4690,6 +4816,7 @@ class ClubSave:
             "transfer": actions.transfer,
             "listings": {str(key): value for key, value in actions.listings.items()},
             "tournaments": TOURNAMENT_PROGRESS.state(),
+            "seasons": SEASON_PROGRESS.state(),
             "club": CLUB_IDENTITY.state(),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -439,6 +439,7 @@ HANDLED_ROUTES = (
     "/ut/game/fifa14/purchased/items",
     "/ut/game/fifa14/season/list",
     "/ut/game/fifa14/season/user",
+    "/ut/game/fifa14/season/user/history",
     "/ut/game/fifa14/squad",
     "/ut/game/fifa14/squad/active",
     "/ut/game/fifa14/squad/list",
@@ -542,6 +543,8 @@ from fut_inventory import (  # noqa: E402
     first_run,
     trophy_item_response,
     active_tournaments_response,
+    SEASON_PROGRESS,
+    season_history_response,
     season_user_response,
     seasons_response,
     tournament_teams_response,
@@ -2115,37 +2118,78 @@ class IdentityHttpService:
                         },
                     )
                     return
-                # Starting or resetting a season. CardsDLL's URL template
-                # table carries two routes this server has never answered:
+                # A season under way. The URL template table carries
+                # SEASONUSER_ALTER as `ut/%s/season/%s/user`, and reading that
+                # `%s` as the season id was wrong: beside the season
+                # serialiser sits `%d/division/%d`, and what the console
+                # actually sent on starting a Saison Joueur Solo was
                 #
-                #     SEASONUSER_ALTER   ut/%s/season/%s/user
-                #     SEASONRESET        ut/%s/season/%s/reset
+                #     PUT /ut/game/fifa14/season/1/division/10/user
                 #
-                # They are the seasons' equivalent of `tournament/user/<id>`,
-                # which is what the cup screen PUTs the moment a cup is
-                # entered. Unhandled, they were answered 404 -- and a 404 on a
-                # FUT route is a hang with nothing to read, which is exactly
-                # what the seasons screen does after "Voulez-vous vraiment
+                # which fell through to the blanket 404. A 404 on a FUT route
+                # is a hang with nothing to read, and this one lands exactly
+                # where the screen stops: right after "Voulez-vous vraiment
                 # débuter cette Saison Joueur Solo ?".
                 #
-                # What the client sends here has never been seen, so nothing
-                # is invented from it: the body is journalled and the reply is
-                # the same `season/user` document the screen already accepts.
-                # The next journal says what the body actually carries.
+                # The division in the path is the division's number, not the
+                # position `season/user` reports -- the client reads
+                # `divisionId` out of the record it picked -- so both are kept
+                # and neither is converted into the other.
                 season_alter = re.fullmatch(
-                    r"/ut/game/fifa14/season/(\d+)/(user|reset)", normalized_path
+                    r"/ut/game/fifa14/season/(\d+)/division/(-?\d+)/(user|reset)",
+                    normalized_path,
                 )
                 if season_alter:
                     season_id = int(season_alter.group(1))
-                    payload = season_user_response()
+                    division_id = int(season_alter.group(2))
+                    action = season_alter.group(3)
+                    if action == "reset":
+                        SEASON_PROGRESS.reset(season_id, division_id)
+                    elif self.command in ("PUT", "POST"):
+                        try:
+                            document = json.loads(body or b"{}")
+                        except ValueError:
+                            document = {}
+                        SEASON_PROGRESS.apply(season_id, division_id, document)
+                    CLUB_SAVE.save(
+                        CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                    )
+                    payload = SEASON_PROGRESS.response(season_id, division_id)
                     owner.journal.event(
                         "fut_season_alter",
                         peer=self.client_address[0],
                         method=self.command,
                         season=season_id,
-                        action=season_alter.group(2),
+                        division=division_id,
+                        action=action,
                         body=request_body_preview(body),
                         payload=payload.decode("utf-8", "replace")[:400],
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Seasons already finished. Asked for once per type the
+                # moment a season starts -- `?type=offline`, `?type=online`
+                # and two World Cup spellings, all four in `.rdata` -- and
+                # answered 404 until now.
+                if normalized_path == "/ut/game/fifa14/season/user/history":
+                    kind = (
+                        urllib.parse.parse_qs(parsed.query).get("type")
+                        or ["offline"]
+                    )[0]
+                    payload = season_history_response(kind)
+                    owner.journal.event(
+                        "fut_season_history",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        history_type=kind,
+                        bytes=len(payload),
                     )
                     self.reply(
                         200,

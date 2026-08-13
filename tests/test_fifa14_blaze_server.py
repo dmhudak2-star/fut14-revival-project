@@ -831,23 +831,80 @@ class TournamentRouteTests(unittest.TestCase):
             finally:
                 identity.stop()
 
-    def test_starting_or_resetting_a_season_is_answered_not_404ed(self) -> None:
-        # `ut/%s/season/%s/user` and `ut/%s/season/%s/reset` are in CardsDLL's
-        # own URL template table under SEASONUSER_ALTER and SEASONRESET. Until
-        # now neither was handled, so both got the 404 that every unknown FUT
-        # route gets -- and a 404 here is a hang with nothing to read.
+    def test_a_season_is_saved_under_its_season_and_division(self) -> None:
+        # The route the console actually sent on starting a Saison Joueur
+        # Solo. `ut/%s/season/%s/user` in the URL template table reads as one
+        # id; the format string beside the season serialiser is
+        # `%d/division/%d`, and the wire agrees with the second reading.
         with tempfile.TemporaryDirectory() as temp:
             identity = self._identity(temp)
             try:
                 port = identity.server.server_address[1]
-                for path, method in (
-                    ("/ut/game/fifa14/season/1/user", "PUT"),
-                    ("/ut/game/fifa14/season/1/reset", "PUT"),
-                    ("/ut/game/fifa14/season/1/user", "GET"),
-                ):
-                    status, body = self._get(port, path, method, b"{}")
-                    self.assertEqual((path, status), (path, 200))
-                    self.assertIsInstance(body, dict)
+                path = "/ut/game/fifa14/season/1/division/10/user"
+                # Round one with an empty progress blob is a season with no
+                # first match behind it -- the same shape that froze the cups
+                # when it was handed back. It is answered as no season at all.
+                started = __import__("json").dumps(
+                    {
+                        "round": 1,
+                        "dataVersion": 1,
+                        "data": "AAAAEAUAAAABAAAAAAAAAAAAAAA=",
+                        "progressDataVersion": 1,
+                        "progressData": "AAAAAA==",
+                    }
+                ).encode()
+                status, body = self._get(port, path, "PUT", started)
+                self.assertEqual((status, body), (200, {}))
+
+                # A season actually under way comes back the way it went up,
+                # spelled `data` -- the seasons' word, not the cups'.
+                played = __import__("json").dumps(
+                    {
+                        "round": 3,
+                        "dataVersion": 1,
+                        "data": "QUJD",
+                        "progressDataVersion": 1,
+                        "progressData": "REVG",
+                    }
+                ).encode()
+                status, _ = self._get(port, path, "PUT", played)
+                self.assertEqual(status, 200)
+                status, body = self._get(port, path, "GET")
+                self.assertEqual(status, 200)
+                self.assertEqual(body["round"], 3)
+                self.assertEqual(body["data"], "QUJD")
+                self.assertEqual(body["progressData"], "REVG")
+                self.assertNotIn("tournamentData", body)
+                self.assertNotIn("seasonId", body)
+
+                # Another division is another season, not the same one.
+                status, body = self._get(
+                    port, "/ut/game/fifa14/season/1/division/9/user", "GET"
+                )
+                self.assertEqual((status, body), (200, {}))
+
+                status, _ = self._get(
+                    port, "/ut/game/fifa14/season/1/division/10/reset", "PUT", b"{}"
+                )
+                self.assertEqual(status, 200)
+                status, body = self._get(port, path, "GET")
+                self.assertEqual((status, body), (200, {}))
+            finally:
+                identity.stop()
+
+    def test_the_season_history_is_answered_empty_rather_than_404ed(self) -> None:
+        # Asked for once per type the moment a season starts. A 404 here is a
+        # hang with nothing to read, and no season has ever been finished, so
+        # there is nothing to invent either.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                for kind in ("offline", "online", "WC_TOURNAMENT_OFFINE"):
+                    status, body = self._get(
+                        port, f"/ut/game/fifa14/season/user/history?type={kind}"
+                    )
+                    self.assertEqual((kind, status, body), (kind, 200, {}))
             finally:
                 identity.stop()
 
