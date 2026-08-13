@@ -3636,12 +3636,36 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
             # `SEASON_DIVISIONS` is ordered to agree, so this is both the
             # division's number minus one and its position in the list served
             # above.
-            "divisionId": index - 1,
+            "divisionId": _season_division_id(index - 1),
             "round": max(0, int(played)) + 1,
             **_season_record_members(entry),
         },
         separators=(",", ":"),
     ).encode()
+
+
+def _season_division_id(computed: int) -> int:
+    """`FIFA14_SEASON_DIVISION_ID` overrides what goes out, for one question.
+
+    The seasons shield reads **DIV 1** whether `divisionId` is 0 or 9, so it
+    does not follow the member and proves nothing about what the member means.
+    One value separates the readings still standing, and the shield is the
+    only place to read the answer:
+
+        served 5  ->  shield 6   the client adds one
+        served 5  ->  shield 5   the client subtracts from ten
+        served 5  ->  shield 1   the shield is not ours at all
+
+    Nothing else in the document moves, so whatever the shield says is about
+    this member and nothing else.
+    """
+    raw = os.environ.get("FIFA14_SEASON_DIVISION_ID")
+    if raw is None or not raw.strip():
+        return int(computed)
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return int(computed)
 
 
 def _season_record_members(entry: dict) -> dict:
