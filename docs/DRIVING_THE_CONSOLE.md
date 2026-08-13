@@ -62,6 +62,18 @@ La raison est dans le crochet : le stub ne sert que `r3 == 0`, l'index
 d'utilisateur 0 de `XamInputGetState`. Le sélecteur est dessiné par XAM et
 lit la manette par un autre chemin, qui ne passe pas par cette fonction.
 
+Quatre formes de pression essayées, toutes sans effet : impulsions courtes,
+maintiens longs (30, 45 et 60 images), douze A patients à 3,5 s d'intervalle,
+et un maintien continu de trente secondes obtenu en enchaînant les pressions
+sans espace. Ce que la boîte fait, en revanche, c'est **céder toute seule** :
+le 13 août elle s'est refermée après une douzaine de minutes. Ce n'est pas
+utilisable — le titre, lui, ne survit pas à l'attente : il était resté bloqué
+au chargement, `/futBoot.xml` demandé puis plus rien.
+
+Il n'y a pas non plus d'extension JRPC pour appeler une fonction à distance :
+`consolefeatures` répond `DEBUGGING`, c'est-à-dire le XBDM d'origine
+(`dmversion` 2.0.21076.11, `consoletype` reviewerkit).
+
 Le remède reste celui d'en dessous, côté console et une seule fois.
 
 ## Ce qui reste hors de portée : les boîtes de dialogue système
