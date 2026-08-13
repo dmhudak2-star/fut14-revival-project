@@ -43,7 +43,30 @@ bouton, puis disparaître. Il n'en tenait aucun compte.
 fait passer la première pression. Le compteur d'images le prouve : il descend de
 60 par seconde, donc le titre interroge bien le point d'accroche.
 
-## Ce qui reste hors de portée : les boîtes de dialogue système
+## Les boîtes système : plus hors de portée (13 août 2026)
+
+Ce qui suit était vrai et ne l'est plus. Le sélecteur de périphérique de
+stockage **se referme sous la manette virtuelle** : un seul A, `frames=30`,
+et l'écran suivant est l'avertissement de sauvegarde automatique, qu'un
+deuxième A referme aussi. La séquence complète depuis un lancement à froid,
+sans personne devant :
+
+    A       (drapeau) choix de la langue
+    START   écran-titre « APPUYEZ SUR START »
+    A       « Choisir périph. » -> Disque dur, déjà surligné
+    A       avertissement de sauvegarde automatique
+            -> menu principal FIFA, ULTIMATE TEAM surligné
+
+Ce qui a changé entre les deux constats n'est pas établi. Ce qui l'est, c'est
+que `Console.press()` maintient zéro bouton entre les impulsions depuis, et
+que c'est exactement la correction qui avait fait passer la première pression
+dans un menu du jeu. La conclusion « XAM lit la manette par un autre chemin »
+reposait sur des pressions qui ne tenaient pas — donc sur rien.
+
+Le paragraphe d'origine est gardé ci-dessous : le conseil console-side reste
+le meilleur si le sélecteur redevenait un obstacle.
+
+## ~~Ce qui reste hors de portée : les boîtes de dialogue système~~
 
 À chaque démarrage à froid, FIFA affiche le sélecteur de périphérique de
 stockage du 360 — « Choisir périph. », disque dur ou clé USB. Tant qu'on n'a

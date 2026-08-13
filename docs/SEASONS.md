@@ -117,3 +117,72 @@ One rung per relaunch, one entry into the mode each. `minimal` first: if that
 opens, the record's frame is right and one of the two arrays is the fault; if
 it freezes too, the fault is in the record's own members and neither array
 matters yet.
+
+## Résolu — 13 août 2026
+
+Le mode s'ouvre, se joue, et se souvient. Trois défauts distincts, dans cet
+ordre.
+
+### 1. `divisionId` est un rang, pas un numéro
+
+La bissection de l'échelle ci-dessus a nommé le membre en cinq relances :
+
+    {}                                       ouvre, et tient
+    {"seasonId":1}                           ouvre, et tient
+    {"seasonId":1,"divisionId":10}           ouvre, puis gèle
+    {"seasonId":1,"divisionId":10,"round":1} gèle
+    {"seasonId":1,"divisionId":0}            ouvre, tient, propose de démarrer
+
+Ce n'est pas « nommer une division que la liste ne contient pas » : le disque
+servi à côté portait `divisionId` 10 lui-même. Ce que 10 est aussi, sur une
+liste de dix, c'est un cran au-delà du dernier index. Le client lit ce membre
+comme la **position** du disque dans la liste servie, comptée depuis zéro.
+
+Le piège tient à ce que les deux suites vont en sens inverse : les ids de
+disques montent de 1 à 10 pendant que les numéros de division descendent de 10
+à 1. `divisionId: 0` et `division 10` désignent la même chose.
+
+Avec ça, la liste complète — dix divisions, quatre matchs et quatre
+récompenses chacune, 12 590 octets — s'ouvre sans broncher.
+
+### 2. La route de sauvegarde est un cran plus profonde
+
+La table de modèles d'URL porte `ut/%s/season/%%s/user` sous
+`SEASONUSER_ALTER`, et lire ce `%%s` comme l'id de la saison est faux. La
+chaîne de format qui sert à le construire est ailleurs, à côté du sérialiseur
+de saison : `%d/division/%d`. Ce qui part sur le fil est donc
+
+    PUT /ut/game/fifa14/season/1/division/10/user
+    GET /ut/game/fifa14/season/user/history?type=offline
+
+Les deux tombaient sur le 404 générique. Le numéro de division dans le chemin
+est bien le **numéro**, pas la position : le client relit `divisionId` dans le
+disque qu'il a choisi, ce qui fait que la position 0 devient `division/10`. Les
+deux sens coexistent, chacun à sa place.
+
+Le corps est celui des coupes avec un mot changé — `.rdata` épelle le blob
+`data` pour les saisons contre `tournamentData` pour les coupes, avec la même
+queue `progressData`. `SeasonProgress` est donc `TournamentProgress` clé par
+une paire, et il hérite de la règle que les coupes ont payée : une saison
+sauvegardée au round 1 avec un blob vide n'a pas de premier match à reprendre,
+et se répond « pas de saison ».
+
+### 3. `season/user` mentait sur l'avancement
+
+Le client sauvegarde sa propre progression après chaque match — round 2 dès le
+premier match abandonné. `season/user` répondait round 1 quoi qu'il arrive,
+donc rentrer dans le mode proposait dix matchs sur dix quel qu'en soit le
+nombre déjà joués. Il lit maintenant la saison sauvegardée.
+
+### Ce que la console a fait, une fois les trois corrigés
+
+    13:37:17  GET  season/list                    12 590 o, dix divisions
+    13:37:18  GET  season/user                    {"seasonId":1,"divisionId":0,"round":1}
+    13:37:48  PUT  season/1/division/10/user      round 1, la saison démarre
+    13:39:19  POST match   {"squadId":4,"type":"OFFLINE","seasonId":1,"divisionId":10,…}
+    13:48:12  PUT  match/end                      QUIT, 18 formes, 1 but, 1 passe
+    13:48:12  PUT  season/1/division/10/user      round 2
+
+L'écran de fin affiche « MATCHS RESTANTS 9 », « BILAN 0-0-1 », la forme, et la
+barre montée/maintien. C'est le même appel de création de match que les
+coupes, avec `seasonId`/`divisionId` à la place de `tournamentId`.
