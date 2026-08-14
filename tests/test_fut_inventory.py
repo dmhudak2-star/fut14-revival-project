@@ -613,7 +613,8 @@ def test_the_season_header_gets_a_record_once_there_is_one(monkeypatch) -> None:
     inventory.SEASON_PROGRESS.entries.clear()
     try:
         # A club that has never played a season sends exactly the three
-        # members bisected into working, and nothing beside them.
+        # members bisected into working -- and no blob, so there is nothing to
+        # decode out of registers nothing has filled.
         assert set(json.loads(inventory.season_user_response())) == {
             "seasonId",
             "divisionId",
@@ -656,11 +657,26 @@ def test_the_season_header_gets_a_record_once_there_is_one(monkeypatch) -> None:
         inventory.SEASON_PROGRESS.apply(
             1, 10, {"round": 1, "data": "QUJD", "progressData": "REVG"}
         )
-        assert set(json.loads(inventory.season_user_response())) == {
+        # The record goes, the blob stays: the client has just written one,
+        # and `data` is what tells it a season exists at all.
+        restarted = json.loads(inventory.season_user_response())
+        assert set(restarted) == {
+            "seasonId", "divisionId", "round", "data", "dataVersion",
+        }
+        assert "seasonGamesWon" not in restarted
+        assert restarted["round"] == 1
+        # The record goes, the blob stays: the client has just written one, and
+        # `data` is what tells it a season exists at all.
+        restarted = json.loads(inventory.season_user_response())
+        assert set(restarted) == {
             "seasonId",
             "divisionId",
             "round",
+            "data",
+            "dataVersion",
         }
+        assert "seasonGamesWon" not in restarted
+        assert restarted["round"] == 1
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
 
@@ -3071,3 +3087,65 @@ def test_the_unclaimed_club_stops_reading_the_old_save(tmp_path, monkeypatch) ->
     club, wallet, actions = fresh()
     assert save.load(club, wallet, actions) is False
     assert wallet.coins != 4242
+
+
+def test_the_season_under_way_is_the_one_with_matches_behind_it() -> None:
+    # A club can hold two entries for the same division: the key carries the
+    # `seasonId` this server served, and that index moved from 1 to 10 when the
+    # division table was reordered. The client rewrites its blob on entering
+    # the mode, so the empty new key was always the last written -- and "most
+    # recently written" reported a season with nothing played over one with a
+    # match won.
+    #
+    # On screen that read as "not started", and the client offered to begin the
+    # season again rather than resume it.
+    import fut_inventory as inventory
+
+    seasons = inventory.SeasonProgress()
+    seasons.apply(1, 10, {"round": 1, "data": "QQ=="})
+    seasons.settle(1, 10, "WIN", 626)
+    seasons.apply(10, 10, {"round": 1, "data": "QQ=="})     # written later, empty
+
+    assert seasons.current() == (1, 10)
+    entry = seasons.entries[seasons.current()]
+    assert entry["won"] == 1
+
+    # With nothing played anywhere, the most recent still wins.
+    fresh = inventory.SeasonProgress()
+    fresh.apply(1, 10, {"round": 1, "data": "QQ=="})
+    fresh.apply(10, 10, {"round": 1, "data": "QQ=="})
+    assert fresh.current() == (10, 10)
+
+
+def test_the_season_header_carries_the_blob_that_says_it_started(monkeypatch) -> None:
+    # The reader for this document, CardsDLLzf+0x1adf28, knows five members:
+    # data, dataVersion, divisionId, round, seasonId. Three were sent. The two
+    # missing ones are what carry the state, and nothing else asks for them --
+    # the client only ever PUTs to `season/<id>/division/<div>/user`, it never
+    # GETs it. So a season with a match behind it looked identical to one never
+    # started, and the screen kept offering to begin it.
+    import fut_inventory as inventory
+
+    monkeypatch.setenv("FIFA14_SEASON_MODE", "native")
+    inventory.SEASON_PROGRESS.entries.clear()
+    try:
+        inventory.SEASON_PROGRESS.apply(
+            10, 10, {"round": 1, "dataVersion": 1, "data": "QUJD"}
+        )
+        inventory.SEASON_PROGRESS.settle(10, 10, "WIN", 626)
+        document = json.loads(inventory.season_user_response())
+
+        assert document["data"] == "QUJD"
+        assert document["dataVersion"] == 1
+        # And the blob before the version that decodes it.
+        members = list(document)
+        assert members.index("data") < members.index("dataVersion")
+
+        # A club that has never played sends no blob, and therefore nothing
+        # that could be decoded out of uninitialised registers.
+        inventory.SEASON_PROGRESS.entries.clear()
+        bare = json.loads(inventory.season_user_response())
+        assert "data" not in bare
+        assert "dataVersion" not in bare
+    finally:
+        inventory.SEASON_PROGRESS.entries.clear()

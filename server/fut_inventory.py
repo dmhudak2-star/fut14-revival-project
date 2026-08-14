@@ -3751,6 +3751,24 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
             # above.
             "divisionId": _season_division_id(index - 1),
             "round": max(0, int(played)) + 1,
+            # The season's own blob, and the version that decodes it.
+            #
+            # The reader for this document is CardsDLLzf+0x1adf28 and it knows
+            # five members: data, dataVersion, divisionId, round, seasonId.
+            # Three were being sent. The two left out are the ones that carry
+            # the state, and nothing else asks for them -- the client never
+            # GETs `season/<id>/division/<div>/user`, it only PUTs there. So a
+            # season with a match behind it looked, from here, exactly like one
+            # that had never started, and the screen offered to begin it again.
+            #
+            # `data` before `dataVersion`, always: the version branch decodes
+            # using registers the data branch fills, and getting that backwards
+            # is what asks for a 3 GB buffer. See `cup_resume_mode`.
+            **(
+                {"data": entry["data"], "dataVersion": entry.get("dataVersion", 1)}
+                if entry.get("data")
+                else {}
+            ),
             **_season_record_members(entry),
         },
         separators=(",", ":"),
@@ -4293,10 +4311,35 @@ class SeasonProgress:
         return self.entries.pop(self._key(season, division), None) is not None
 
     def current(self) -> tuple[int, int] | None:
-        """The season and division most recently written, if any."""
+        """The season under way, which is the one with matches behind it.
+
+        "Most recently written" was the rule and it picked wrong. A club can
+        hold two entries for the same division -- this one holds `1:10` and
+        `10:10`, both Division 10 -- because the key carries the `seasonId`
+        *this server* served, and that index moved from 1 to 10 when
+        `SEASON_DIVISIONS` was reordered. The client rewrites its blob on
+        entering the mode, so the empty new key was always the last written and
+        the entry holding a real record was never reported.
+
+        The visible cost: `season/user` answered round 1 over a season with a
+        match won, the client read that as "not started", and offered to begin
+        the season again instead of resuming it.
+
+        So the season with the most matches played wins, and the most recently
+        written breaks a tie -- which is the old rule, kept for the ordinary
+        case where nothing has been played yet.
+        """
         if not self.entries:
             return None
-        return next(reversed(list(self.entries)))
+        order = list(self.entries)
+
+        def played(key: tuple[int, int]) -> tuple[int, int]:
+            entry = self.entries[key]
+            count = sum(int(entry.get(name) or 0)
+                        for name in ("won", "draw", "lost"))
+            return count, order.index(key)
+
+        return max(order, key=played)
 
     def state(self) -> dict:
         return {f"{season}:{division}": value
