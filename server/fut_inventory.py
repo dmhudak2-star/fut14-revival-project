@@ -4237,19 +4237,30 @@ class SeasonProgress:
             {"round": entry["round"], "progressData": entry["progressData"]}
         ):
             return b"{}"
-        # Same ordering rule as a cup, for the same reason: see
-        # `cup_resume_mode`. The blob goes out before the version that decodes
-        # it, because the client's own serialiser puts them the other way round
-        # and cannot then read its own document back.
+        # The season reader is CardsDLLzf+0x1adf28 and it is the cup reader's
+        # twin. Same five-way dispatch on numeric ids against the table at
+        # 0x8921E498, same trap:
         #
-        # `seasonData` rather than the `data` the client writes: the id table
-        # at 0x8921E498 carries `seasonData` at 443 and `data` at 133, and the
-        # season reader has not been read out yet -- so the name that groups
-        # with the other season members is the better guess of the two.
+        #     133  data         fills the buffer and length registers
+        #     134  dataVersion  when it is 1, decodes using those registers
+        #     148  divisionId   an int
+        #     429  round        an int, stored minus one
+        #     445  seasonId     an int
+        #
+        # So `data` -- the name the client itself writes, not the `seasonData`
+        # that sits with the other season members in the table and was guessed
+        # here before the reader was read out. And `data` before `dataVersion`,
+        # because the version branch decodes what the data branch left behind
+        # and the client's own serialiser (0xa35c) writes them the other way
+        # round.
+        #
+        # `seasonId` and `divisionId` are accepted too but not sent: the client
+        # has both in the request path already, and nothing unverified goes out
+        # on a route that costs a frozen console to test.
         return json.dumps(
             {
                 "round": entry["round"],
-                "seasonData": entry["data"],
+                "data": entry["data"],
                 "dataVersion": entry["dataVersion"],
             },
             separators=(",", ":"),

@@ -925,10 +925,13 @@ class TournamentRouteTests(unittest.TestCase):
                 status, body = self._get(port, path, "GET")
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
-                # The blob before the version that decodes it, same rule as a
-                # cup.
-                self.assertEqual(list(body), ["round", "seasonData", "dataVersion"])
-                self.assertNotIn("data", body)
+                # The five members the season reader at CardsDLLzf+0x1adf28
+                # matches are data(133), dataVersion(134), divisionId(148),
+                # round(429) and seasonId(445) -- so the blob is `data`, and it
+                # goes out before the version that decodes it.
+                self.assertEqual(list(body), ["round", "data", "dataVersion"])
+                self.assertEqual(body["data"], "QUJD")
+                self.assertNotIn("seasonData", body)
                 self.assertNotIn("progressData", body)
                 self.assertNotIn("tournamentData", body)
                 self.assertNotIn("seasonId", body)
