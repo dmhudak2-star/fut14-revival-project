@@ -21,6 +21,7 @@ import signal
 import socket
 import ssl
 import sys
+import secrets
 import threading
 import time
 import urllib.parse
@@ -529,6 +530,7 @@ from fut_inventory import (  # noqa: E402
     GOLD_PACK_ID,
     ConsumableRefused,
     CLUB_IDENTITY,
+    SAVE_FILE,
     TENANTS,
     TOURNAMENT_PROGRESS,
     TenantView,
@@ -659,40 +661,130 @@ def auth_request_identity(body: bytes) -> tuple[int, str] | None:
 UT_SID_BASE = "LOCAL-XBOX360-FIFA14-SID"
 NUCLEUS_HEADER = "Easw-Session-Data-Nucleus-Id"
 
-
-def ut_session_id(persona_id: int | None) -> str:
-    """The FUT session id handed out at ``/ut/auth`` for this persona."""
-    if not persona_id:
-        return UT_SID_BASE
-    return f"{UT_SID_BASE}-{int(persona_id)}"
+# Requests that may name their club without a session, because they are asked
+# before one exists. `accountinfo` is the whole list: the console sends it with
+# the nucleus header a minute and a half before it ever posts `/ut/auth`.
+UNAUTHENTICATED_ROUTES = ("/ut/game/fifa14/user/accountinfo",)
 
 
-def sid_persona(sid: str | None) -> int:
-    """The persona a session id names, or 0 for the anonymous one.
+def normalize_route(path: str) -> str:
+    """The spelling this server routes on, for a raw request path.
 
-    The bare base is what an older server handed out, and it still resolves --
-    to the default club, which is where a single-console setup already was.
+    The Xbox client omits the leading `/ut` on Cards operations and calls
+    Authentication `pow/auth` where the PC one says `ut/auth`. The handler
+    below has always folded those; this pulls the fold out so that deciding
+    *who a request is* can happen before the routing, which is where it has to
+    happen.
     """
-    if not sid or not sid.startswith(UT_SID_BASE):
-        return 0
-    try:
-        return int(sid[len(UT_SID_BASE):].lstrip("-"))
-    except ValueError:
-        return 0
+    normalized = path
+    if normalized.startswith("/fut/ut/"):
+        normalized = normalized[4:]
+    if normalized == "/pow/auth":
+        normalized = "/ut/auth"
+    elif normalized.startswith("/game/fifa14/"):
+        normalized = "/ut" + normalized
+    return normalized
 
 
-def request_persona(headers, body: bytes) -> int:
-    """The nucleus id this request belongs to, or 0 if it does not say.
+class SessionStore:
+    """Which club a FUT session id belongs to.
 
-    Three sources, most specific first. ``/ut/auth`` is the one request that
-    can carry none of the first two -- it is the request that *establishes* the
-    session -- and it names the persona in its body, so even the first request
-    of a session routes to the right club.
+    The session id used to be `LOCAL-XBOX360-FIFA14-SID-<xuid>`, derived from
+    the persona it named. On a LAN that is fine and nobody can reach the server
+    anyway. Publicly it means the credential *is* the user id: a Xbox XUID is
+    not a secret, so anyone who has one takes that club, sells its cards and
+    empties its wallet. An open beta cannot ship that.
+
+    So the id is random and the mapping is kept here. It is written to disk
+    beside the club saves because `tools/fut.sh` restarts this server on every
+    single launch, and an in-memory table would log every console out each
+    time -- which is exactly the objection that made the derived id attractive
+    in the first place.
+
+    One token per persona: a fresh `/ut/auth` replaces the previous one. The
+    client always uses the newest, and a table that only grows is a table that
+    eventually has to be pruned.
     """
-    if headers is not None:
-        persona = sid_persona(headers.get("X-UT-SID"))
-        if persona:
-            return persona
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or (SAVE_FILE.parent / "sessions.json")
+        self._lock = threading.RLock()
+        self._by_token: dict[str, int] = {}
+        self._by_persona: dict[int, str] = {}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            saved = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict):
+            return
+        for token, persona in saved.items():
+            try:
+                self._by_token[str(token)] = int(persona)
+                self._by_persona[int(persona)] = str(token)
+            except (TypeError, ValueError):
+                continue
+
+    def _save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps(self._by_token, separators=(",", ":"))
+            )
+        except OSError:
+            pass
+
+    def issue(self, persona_id: int) -> str:
+        """A new session id for this persona, replacing any it already had."""
+        with self._lock:
+            previous = self._by_persona.get(int(persona_id))
+            if previous:
+                self._by_token.pop(previous, None)
+            token = f"{UT_SID_BASE}-{secrets.token_urlsafe(24)}"
+            self._by_token[token] = int(persona_id)
+            self._by_persona[int(persona_id)] = token
+            self._save()
+            return token
+
+    def persona(self, token: str | None) -> int:
+        if not token:
+            return 0
+        with self._lock:
+            return self._by_token.get(token, 0)
+
+    def forget(self, persona_id: int) -> None:
+        with self._lock:
+            token = self._by_persona.pop(int(persona_id), None)
+            if token:
+                self._by_token.pop(token, None)
+            self._save()
+
+
+SESSIONS = SessionStore()
+
+
+def request_persona(headers, body: bytes, path: str = "") -> int:
+    """The nucleus id this request belongs to, or 0 if it cannot prove one.
+
+    The session id is the only thing trusted for a request that changes
+    anything. The nucleus header is not: it is the user id in plain sight, so
+    honouring it would put back exactly the hole the random token closes.
+
+    Two exceptions, and both are bootstrap rather than trust:
+
+      * `/ut/auth` names its persona in its own body. It is the request that
+        establishes the session, so it has nothing else to offer.
+      * `accountinfo` is asked before `/ut/auth` -- ninety seconds before, on
+        the console this was built against -- and only reads. It is allowed the
+        nucleus header, and nothing else is.
+    """
+    token = headers.get("X-UT-SID") if headers is not None else None
+    persona = SESSIONS.persona(token)
+    if persona:
+        return persona
+    if path in UNAUTHENTICATED_ROUTES and headers is not None:
         raw = headers.get(NUCLEUS_HEADER)
         try:
             if raw and int(raw) > 0:
@@ -703,15 +795,15 @@ def request_persona(headers, body: bytes) -> int:
     return int(presented[0]) if presented else 0
 
 
-def bind_request_club(headers, body: bytes):
-    """Point this thread at the club this request is about, and return it.
+def bind_request_club(headers, body: bytes, path: str = ""):
+    """Point this thread at the club this request proves, and return it.
 
-    A request that names nobody -- the redirector, a resource fetch, the
-    localisation files -- gets the default club, which is precisely the single
-    club this server held before. Threads are per connection here, so nothing
-    binds over another console's request.
+    A request that proves nobody -- the redirector, a resource fetch, a forged
+    header -- gets the default club. That club holds no player's cards on a
+    server anyone can reach, so the failure mode of an unproven request is
+    seeing nothing rather than seeing somebody else's.
     """
-    club = TENANTS.get(request_persona(headers, body))
+    club = TENANTS.get(request_persona(headers, body, path))
     use_tenant(club)
     return club
 
@@ -1829,7 +1921,7 @@ class IdentityHttpService:
                 # match belongs to now hang off: they used to be module
                 # globals, which is the same bug as the club itself -- two
                 # consoles, one in-flight match between them.
-                club = bind_request_club(self.headers, body)
+                club = bind_request_club(self.headers, body, normalize_route(parsed.path))
                 owner.journal.event(
                     "identity_http_request",
                     peer=self.client_address[0],
@@ -1955,7 +2047,7 @@ class IdentityHttpService:
                     # after this one, and therefore what routes them to this
                     # club. `bind_request_club` above has already read the
                     # persona out of this request's own body.
-                    sid = ut_session_id(club.persona_id)
+                    sid = SESSIONS.issue(club.persona_id)
                     presented = auth_request_identity(body)
                     if presented is not None:
                         persona_id, persona_name = presented

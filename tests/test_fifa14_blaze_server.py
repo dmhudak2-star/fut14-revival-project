@@ -1056,7 +1056,7 @@ class TournamentRouteTests(unittest.TestCase):
                 )
                 self.assertEqual(status, 200)
                 first = body["sid"]
-                self.assertEqual(SERVER.sid_persona(first), 111)
+                self.assertEqual(SERVER.SESSIONS.persona(first), 111)
                 self.assertNotEqual(first, SERVER.UT_SID_BASE)
 
                 status, body = self._sid_get(
@@ -1106,9 +1106,20 @@ class TournamentRouteTests(unittest.TestCase):
                 )
                 self.assertEqual(SERVER.TENANTS.get(222).seasons.entries, {})
 
-                # A session id from an older server still resolves -- to the
-                # default club, which is where a single console already was.
-                self.assertEqual(SERVER.sid_persona(SERVER.UT_SID_BASE), 0)
+                # An id this server never issued proves nothing, and lands on
+                # the default club rather than on somebody else's.
+                self.assertEqual(SERVER.SESSIONS.persona(SERVER.UT_SID_BASE), 0)
+                self.assertEqual(SERVER.SESSIONS.persona("forgé"), 0)
+
+                # And the nucleus header alone no longer names a club on a
+                # route that can change one: that header is the user id in
+                # plain sight.
+                status, body = self._sid_get(
+                    port, "/ut/game/fifa14/tournament/user/list", "GET", None,
+                    nucleus=111,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(body, {"tournamentId": []})
             finally:
                 SERVER.TENANTS.forget(111)
                 SERVER.TENANTS.forget(222)
@@ -1212,7 +1223,11 @@ class TcpServerTests(unittest.TestCase):
                 response = client.getresponse()
                 auth = __import__("json").loads(response.read())
                 self.assertEqual(response.status, 200)
-                self.assertEqual(auth["sid"], "LOCAL-XBOX360-FIFA14-SID")
+                # Random, not derived from the persona: on a public server a
+                # session id derived from the XUID *is* the user id, and a XUID
+                # is not a secret. See `SessionStore`.
+                self.assertTrue(auth["sid"].startswith("LOCAL-XBOX360-FIFA14-SID-"))
+                self.assertGreater(len(auth["sid"]), len("LOCAL-XBOX360-FIFA14-SID-") + 16)
                 self.assertIn("serverTime", auth)
                 self.assertIn("lastOnlineTime", auth)
                 client.close()
@@ -1227,11 +1242,14 @@ class TcpServerTests(unittest.TestCase):
                 response = client.getresponse()
                 xbox_auth = __import__("json").loads(response.read())
                 self.assertEqual(response.status, 200)
-                self.assertEqual(
-                    response.getheader("X-UT-SID"),
-                    "LOCAL-XBOX360-FIFA14-SID",
+                self.assertTrue(
+                    response.getheader("X-UT-SID").startswith(
+                        "LOCAL-XBOX360-FIFA14-SID-"
+                    )
                 )
-                self.assertEqual(xbox_auth["sid"], "LOCAL-XBOX360-FIFA14-SID")
+                self.assertTrue(
+                    xbox_auth["sid"].startswith("LOCAL-XBOX360-FIFA14-SID-")
+                )
                 client.close()
 
                 client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)

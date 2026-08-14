@@ -226,9 +226,7 @@ Ce qui reste vrai et qu'il faut garder en tête :
 
 - **Rétention** : un club par persona qui n'est jamais purgé, sur un serveur
   public, croît sans limite. 175 Ko par club ici.
-- **Confiance** : l'en-tête nucleus n'est pas authentifié. Deux consoles
-  peuvent revendiquer le même id. Sur un LAN c'est sans objet ; publiquement,
-  c'est une décision à prendre en connaissance de cause.
+- ~~**Confiance**~~ — réglé le 14 août, voir ci-dessous.
 - **Concurrence** : deux requêtes du même club en parallèle écrivent la même
   sauvegarde. Un verrou par locataire suffit.
 
@@ -249,3 +247,47 @@ jeu, clés console, KV, profils, captures de session. `NOTICE.md` et
 4. Plus tard, si tu veux supprimer aussi le plugin : le patch statique, qui
    demande de gagner 5 % sur l'encodeur LZX *et* de résoudre la question de la
    distribution de fichiers EA.
+
+
+## L'authentification, pour une bêta ouverte — 14 août 2026
+
+L'identifiant de session était `LOCAL-XBOX360-FIFA14-SID-<xuid>`, **dérivé** du
+persona qu'il nommait. Sur un LAN c'est sans conséquence : personne d'autre
+n'atteint le serveur. Publiquement, ça veut dire que **le justificatif *est*
+l'identifiant d'utilisateur** — et un XUID Xbox n'est pas un secret. Qui en
+connaît un prend le club correspondant, vend ses cartes et vide son
+portefeuille.
+
+Une bêta ouverte ne peut pas partir avec ça.
+
+### Ce qui a changé
+
+`SessionStore` émet un jeton **aléatoire** (`secrets.token_urlsafe(24)`) à
+`/ut/auth` et retient la correspondance jeton → persona. Le jeton n'a plus
+aucun rapport avec le XUID.
+
+La table est **écrite sur disque**, à côté des sauvegardes de club. C'est ce
+qui rend le changement viable : `tools/fut.sh` redémarre le serveur à chaque
+lancement, et une table en mémoire déconnecterait toutes les consoles à chaque
+fois — l'objection même qui rendait l'identifiant dérivé séduisant.
+
+Un jeton par persona : un nouveau `/ut/auth` remplace le précédent.
+
+### Ce que le serveur accepte comme preuve
+
+| source | accepté | pourquoi |
+|---|---|---|
+| `X-UT-SID` connu du magasin | oui | la seule vraie preuve |
+| corps de `/ut/auth` (`nuc`) | amorçage | c'est la requête qui *établit* la session |
+| en-tête nucleus sur `accountinfo` | amorçage | demandé ~90 s **avant** `/ut/auth`, et en lecture seule |
+| en-tête nucleus ailleurs | **non** | c'est l'identifiant d'utilisateur à ciel ouvert |
+
+Une requête qui ne prouve rien tombe sur le club par défaut. Sur un serveur
+public ce club ne contient les cartes de personne, donc l'échec d'une requête
+non prouvée est de ne rien voir, pas de voir le club d'un autre.
+
+### Ce qui reste ouvert
+
+Le trafic est en clair — pas de TLS sur ce profil. Le jeton passe donc en clair
+sur le réseau de l'utilisateur. Contre un attaquant sur le même réseau que la
+victime, ça ne protège pas ; contre le reste d'Internet, si.
