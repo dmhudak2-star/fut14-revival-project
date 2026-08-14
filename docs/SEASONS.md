@@ -427,3 +427,46 @@ dans une structure — `round` en `+0x38`, `divisionId` en `+0x30`, `seasonId` e
 que l'écran est ouvert, et lire son `round`, dit en une mesure si notre document
 a été appliqué ou ignoré. Contrairement aux coupes il n'y a pas de gel à
 attraper, donc il faut chercher la structure plutôt que le thread.
+
+## Notre document est lu, décodé, et rangé — le rendu l'ignore — 15 août 2026
+
+Suite du désassemblage, sans console.
+
+Le conteneur de réponses de CardsDLL tient 72 objets, un par famille de route.
+**Un seul** lit la forme d'une saison : `CardsDLLzf+0x1adf28`, à `conteneur+0x568`,
+qui compare exactement `data`, `dataVersion`, `divisionId`, `round`, `seasonId`.
+Deux objets coupe (`+0x448`, `+0x508`) ont les mêmes membres blob.
+
+La branche `data` (id 133, 0x891ae0e8) **recopie** le blob dans un tampon alloué
+par `0x891add68`, et la branche `dataVersion` (id 134) l'**inflate** via le
+décodeur `0x891b3dd0` — les deux mêmes fonctions que le décodeur de coupe. Donc
+`season/user` est parsé intégralement et son blob est décodé dans l'objet
+saison. On envoie la bonne chose, dans le bon ordre, et le client la lit.
+
+Le défaut est donc **en aval du parsing**, et c'est ce qui distingue la saison
+de la coupe :
+
+- pour une coupe, peupler l'objet suffisait : l'écran du tableau lit dedans ;
+- pour une saison, l'écran « LISTE DES RENCONTRES » tire ses scores d'une autre
+  source que cet objet. Les équipes viennent de `season/list` et s'affichent ;
+  la colonne Score vient de l'état de saison et reste vide.
+
+Ça explique pourquoi ni round 2 ni le vrai blob n'ont rien changé : le parsing
+marchait déjà, le rendu ne consulte pas l'objet peuplé.
+
+Deux impasses de méthode, notées pour ne pas les refaire :
+
+- **Lecture passive en mémoire** : l'objet saison porte la vtable `0x89029e18`
+  en tête et `round` en `+0x38`, mais le conteneur (`0x8919b020`, vtable
+  `0x890258b8`) est tenu dynamiquement — aucune globale de CardsDLL ne pointe
+  dessus (1 903 candidats testés). La chaîne de pointeurs statique ne se résout
+  pas jusqu'à une racine.
+- **XBDM** n'offre pas de recherche mémoire, et lit à 53 Ko/s quelle que soit la
+  taille de bloc — 200 Mo de tas de jeu = plus d'une heure, inexploitable pour
+  un scan aveugle.
+
+Prochain pas qui n'est pas une devinette : trouver **qui lit en retour** le
+champ blob de l'objet `+0x568` (le tampon rempli par la branche `data`). Si rien
+dans le chemin de rendu ne le lit, l'état de saison est purement côté client et
+aucune réponse serveur ne peut le restaurer — ce serait la vraie réponse, et
+elle clôt la question au lieu de l'ouvrir encore.
