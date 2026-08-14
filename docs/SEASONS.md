@@ -470,3 +470,40 @@ champ blob de l'objet `+0x568` (le tampon rempli par la branche `data`). Si rien
 dans le chemin de rendu ne le lit, l'état de saison est purement côté client et
 aucune réponse serveur ne peut le restaurer — ce serait la vraie réponse, et
 elle clôt la question au lieu de l'ouvrir encore.
+
+## La cause, cernée : le client ne va jamais chercher son blob de saison — 15 août 2026
+
+Comparaison avec la coupe, qui se reprend, entièrement hors console.
+
+Les deux objets sont **structurellement identiques**. Le lecteur de coupe
+(`0x891be840`) et celui de saison (`0x891adf88`) décodent tous deux leur blob à
+`objet+0x20`, avec le même décodeur `0x891b3dd0`. Même disposition de champs
+(`round` en `+0x38`, `divisionId` en `+0x30`), même code. Notre document de
+saison est donc désérialisé et décodé exactement comme celui d'une coupe.
+
+La différence est **sur le fil**, dans la façon dont le blob arrive :
+
+| | coupe (marche) | saison (ne marche pas) |
+|---|---|---|
+| liste des reprenables | `GET tournament/user/list` | `GET season/user` |
+| récupération du blob | **`GET tournament/user/<id>`** | *jamais demandé* |
+
+Pour la coupe, `tournament/user/list` énumère les ids reprenables, le client
+fait un GET par tournoi, le blob revient, l'écran du tableau le consomme. Pour
+la saison, ce GET par saison **n'a jamais lieu** sur aucun journal — le client
+ne va jamais chercher son blob.
+
+Conséquence, et elle clôt une longue fausse piste : le **contenu, l'encodage et
+l'ordre** du blob de saison sont corrects. Le problème n'a jamais été là.
+Servir `data` avant `dataVersion` était juste — les deux lecteurs l'exigent —
+mais insuffisant, parce que le blob correct n'est jamais réclamé.
+
+Ce qui reste à trancher est côté client (ion_fut/Lua, absent de ce dump) :
+qu'est-ce qui, dans la réponse à `season/user`, ferait croire au client qu'une
+saison est en cours et déclencherait la récupération de son blob ? Pour la
+coupe, c'est la liste. Pour la saison, il n'y a pas d'équivalent identifié. La
+prochaine expérience — ciblée, plus une devinette — est sur le fil : faire
+signaler à `season/user` une saison en cours et voir si le client émet enfin un
+GET vers `season/<id>/division/<div>/user`. Elle coûte un aller-console et
+risque un gel (les membres de `season/user` sont connus fragiles), mais elle
+teste une hypothèse précise.
