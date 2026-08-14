@@ -318,3 +318,29 @@ que chaque essai coûte un gel et une relance :
 | `progressdata` | `progressdata` | **gèle**, mesuré |
 | `progressData` | `progressData` | **gèle**, mesuré (ce que le client écrit) |
 | `both` | les deux noms connus | à éviter sauf besoin : deux noms connus dans un seul emplacement est la forme accusée d'un gel antérieur |
+
+### Quatre documents, quatre gels : la piste des noms est épuisée
+
+| membre portant le blob de progression | mesuré |
+|---|---|
+| `progressData` — ce que le client écrit | gel |
+| *(cinq membres, sans `tournamentId`)* | gel |
+| `progressdata` — table, voisinage générique | gel, 16:22:37 |
+| `tournamentProgress` — table, voisinage coupe | gel, 16:30:20 |
+
+À chaque fois : dernière requête de la console sur ce GET, **zéro** après.
+
+Deviner le nom depuis la table ne marche pas, et chaque essai coûte un gel et
+une relance. `cup_resume_mode()` revient donc à `off` par défaut : une coupe
+abandonnée recommence, et la console ne gèle plus.
+
+Ce qui reste à essayer, par ordre d'intérêt :
+
+1. **`FIFA14_CUP_RESUME=round`** — l'id et le round, aucun blob. C'est la seule
+   forme qualitativement différente : si le client accepte un round seul, il
+   reconstruit son tableau lui-même et la reprise est acquise sans jamais lui
+   rendre ses octets. Non testé.
+2. **Tracer le parseur** plutôt que le deviner : poser un point d'arrêt sur la
+   fonction qui consomme cette réponse et lire l'adresse du plantage, au lieu
+   de proposer des noms un par un. C'est ce qu'il fallait faire après le
+   deuxième gel.

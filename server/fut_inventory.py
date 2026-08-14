@@ -3917,7 +3917,7 @@ def cup_resume_mode() -> str:
         noblob   every member, but both blobs empty
     """
     raw = os.environ.get("FIFA14_CUP_RESUME", "").strip().lower()
-    return raw if raw in {"off", "round", "noblob", "full"} else "full"
+    return raw if raw in {"off", "round", "noblob", "full"} else "off"
 
 
 def cup_progress_members() -> tuple[str, ...]:

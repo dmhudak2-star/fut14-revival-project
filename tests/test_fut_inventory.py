@@ -1001,8 +1001,8 @@ def test_a_cup_is_only_active_once_it_has_been_entered(monkeypatch) -> None:
     import fut_inventory as inventory
 
     # The shape of a resumable run, which only goes out under `full`.
-    # `off` is the default because handing one back freezes the title;
-    # see `cup_resume_mode` and the test below.
+    # `off` is the default: four different documents have been served to the
+    # console and all four froze it. See `cup_resume_mode`.
     monkeypatch.setenv("FIFA14_CUP_RESUME", "full")
 
     inventory.TOURNAMENT_PROGRESS.entries.clear()
