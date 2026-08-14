@@ -507,3 +507,38 @@ signaler à `season/user` une saison en cours et voir si le client émet enfin u
 GET vers `season/<id>/division/<div>/user`. Elle coûte un aller-console et
 risque un gel (les membres de `season/user` sont connus fragiles), mais elle
 teste une hypothèse précise.
+
+## Conclusion : la reprise de saison n'est pas atteignable depuis le serveur
+
+L'expérience « signaler une saison en cours » a été résolue hors console, parce
+que le levier qu'elle suppose n'existe pas. Quatre angles, tous concordants :
+
+1. **Lecteur de `season/user`** (`0x891adf88`) : cinq membres — `data`,
+   `dataVersion`, `divisionId`, `round`, `seasonId`. Aucun drapeau d'état. Un
+   membre « en cours » y serait muet.
+2. **Lecteur de `season/list`** (`0x891c3510`) : que des définitions statiques
+   (prix, matches, dates, trophée). Aucun membre de progression par joueur.
+3. **Table des routes** (`0x89027068`) : il n'y a **pas** de `season/user/list`.
+   Les coupes en ont une (`tournament/user/list`) qui énumère les reprenables
+   et pilote le GET du blob par tournoi. Les saisons n'ont pas d'équivalent.
+4. **Historique du fil** : 13 requêtes vers `season/<id>/division/<div>/user`,
+   **toutes en PUT, zéro GET**, sur tous les journaux. Le client n'a jamais été
+   chercher son blob de saison.
+
+Ce que la coupe a et que la saison n'a pas, ce n'est ni la forme du blob ni son
+encodage — les deux objets sont le même code, décodant au même offset. C'est le
+**mécanisme d'énumération** : `tournament/user/list` → GET par id → l'écran
+consomme. Sans lui, le client ne réclame jamais la saison sauvegardée, et aucune
+réponse serveur ne peut l'y forcer.
+
+Donc, pour ce client : la saison se joue match par match dans une session, mais
+**ne se reprend pas après une sortie** de l'écran. Ce n'est pas un défaut du
+serveur, c'est une limite du client — il ne va pas rechercher l'état qu'il a
+lui-même sauvegardé. La reprise resterait possible avec un patch **côté client**
+(faire émettre le GET manquant), ce qui est un autre chantier que celui-ci.
+
+Ce qui reste correct et acquis : `season/user` sert bien `data` avant
+`dataVersion`, l'en-tête (bilan, crédits, round) est exact, et
+`SeasonProgress.current()` choisit la bonne entrée. Rien de tout cela n'est à
+défaire — c'est simplement insuffisant pour contourner une limite qui n'est pas
+de notre côté.
