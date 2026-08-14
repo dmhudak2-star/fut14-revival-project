@@ -5105,8 +5105,29 @@ class ClubSave:
             return True
         return not any(clubs.glob("*.json"))
 
+    def superseded(self) -> bool:
+        """Whether this is the single-club save, after the migration is over.
+
+        The club nobody has proved a claim to must not be a real club. On the
+        machine this was built on it was: an unauthenticated request came back
+        holding 960 million coins, because the default club still loaded
+        `runtime/club-save.json` long after its owner had moved to a
+        per-persona file. That was only fixed by moving the file by hand, which
+        is not a fix anybody else's deployment inherits.
+
+        So the legacy path stops being read as soon as a club of its own exists
+        on disk -- the same "migration is over" test as `adoptable`, applied to
+        the other end of it.
+        """
+        if self.path != SAVE_FILE:
+            return False
+        clubs = SAVE_FILE.parent / "clubs"
+        return clubs.exists() and any(clubs.glob("*.json"))
+
     def load(self, inventory: "ClubInventory", wallet: "Wallet",
              actions: "CardActions", tasks: "ManagerTasks | None" = None) -> bool:
+        if self.superseded():
+            return False
         source = self.path
         if not source.exists() and self.adoptable():
             source = self.fallback
