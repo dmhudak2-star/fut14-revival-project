@@ -2986,3 +2986,18 @@ def test_a_named_club_saves_beside_the_unnamed_one_and_seeds_from_it(tmp_path) -
     save.save(club, wallet, actions)
     assert (tmp_path / "clubs" / "77.json").exists()
     assert json.loads(legacy.read_text())["coins"] == 4242
+
+    # Once somebody has adopted it, nobody else does. Without this every
+    # persona that ever asks inherits the club: asking the live server with a
+    # made-up session id came back holding 960 million coins.
+    later = inventory.ClubSave(tmp_path / "clubs" / "88.json", fallback=legacy)
+    assert later.adoptable() is False
+    fresh_club = inventory.ClubInventory()
+    fresh_wallet = inventory.Wallet()
+    fresh_actions = inventory.CardActions(
+        inventory.PackShop(inventory.CardCatalogue(), fresh_wallet, fresh_club),
+        fresh_wallet,
+        fresh_club,
+    )
+    assert later.load(fresh_club, fresh_wallet, fresh_actions) is False
+    assert fresh_wallet.coins != 4242

@@ -27,24 +27,35 @@
 set -u
 
 REPO=${REPO:-~/Downloads/fifa14-fut-stable/fifa14-fut-offline-revival}
-XBOX=${XBOX:-192.168.1.25}
-# The Mac's address is baked into the title at launch: the client is told to
-# connect to whatever this says, and a stale value is silent -- the title comes
-# up fine and then errors on the first Blaze connect, with nothing in the
-# journal because nothing ever reached us. DHCP moved this address once
-# already, so read the live one instead of trusting a constant.
-lan_address() {
-    local ip
-    for iface in $(route -n get default 2>/dev/null | awk '/interface:/{print $2}') en0 en1; do
-        ip=$(ipconfig getifaddr "$iface" 2>/dev/null) && [[ -n $ip ]] && { print "$ip"; return }
-    done
-    print 192.168.1.36
-}
-MAC=${MAC:-$(lan_address)}
-TITLE=${TITLE:-'Hdd:\Games\FIFA 14'}
 PY="$REPO/.venv/bin/python"
 
 cd "$REPO" || { print -u2 "repo introuvable: $REPO"; exit 1 }
+
+# Where the server is, and which console to drive, come from
+# `fifa14revival.ini` -- see `tools/revival_config.py` for the format and
+# `docs/RELEASE.md` for the other reader it is meant to have: a Dashlaunch
+# plugin on the console, which is what removes this machine from the picture
+# entirely. Settling the format here means it gets exercised on every launch
+# rather than invented later on paper.
+#
+# No file is needed. Every key falls back to what this script used to hardcode.
+#
+# The environment still wins over both: `MAC=... XBOX=... tools/fut.sh` is how
+# every note in this repo says to override, and it keeps working.
+#
+# `server.host` resolves `auto` to this machine's LAN address. That was a zsh
+# function here and is Python now, because the plugin and a self-hosted server
+# on Linux need the same answer -- and because asking the routing table beats
+# walking a list of interface names: the address here lives on en1, not en0.
+config() { "$PY" tools/revival_config.py "$1" 2>/dev/null }
+
+XBOX=${XBOX:-$(config console.address)}
+MAC=${MAC:-$(config server.host)}
+TITLE=${TITLE:-$(config console.title)}
+CORE_PORT=${CORE_PORT:-$(config server.core_port)}
+IDENTITY_PORT=${IDENTITY_PORT:-$(config server.identity_port)}
+
+[[ -n $MAC && -n $XBOX ]] || { print -u2 "configuration illisible -- voir fifa14revival.example.ini"; exit 1 }
 
 step() { print "\n== $1" }
 fail() { print -u2 "\n!! $1"; exit 1 }
@@ -58,7 +69,8 @@ start_server() {
     local journal="runtime/live-easw-$(date +%Y%m%d-%H%M%S).jsonl"
     nohup "$PY" server/fifa14_blaze_server.py \
         --listen 0.0.0.0 --advertise "$MAC" \
-        --ports 10041,42124,42126,42127 \
+        --core-port "$CORE_PORT" --identity-port "$IDENTITY_PORT" \
+        --ports "$CORE_PORT",42124,42126,42127 \
         --journal "$journal" \
         --account-state runtime/local-account.json \
         >> runtime/server.log 2>&1 &
@@ -134,7 +146,8 @@ launch_title() {
     esac
     local out
     out=$("$PY" tools/fifa14_early_local_server.py "$XBOX" \
-        --local-ip "$MAC" --timeout 900 --launch-title "$TITLE" \
+        --local-ip "$MAC" --identity-port "$IDENTITY_PORT" \
+        --timeout 900 --launch-title "$TITLE" \
         --redirector-transport plaintext --redirect-fut-resource 2>&1 | tail -2)
     print "$out" | sed 's/^/   /'
     # Without these the console never reaches this server at all, and the game
@@ -151,6 +164,7 @@ launch_title() {
     # this point, so the patcher polls for it.
     step "endpoints EAS FC"
     "$PY" tools/fifa14_easfc_endpoint_patch.py "$XBOX" --local-ip "$MAC" \
+        --core-port "$CORE_PORT" --identity-port "$IDENTITY_PORT" \
         --timeout 90 2>&1 | sed 's/^/   /'
     return 0
 }

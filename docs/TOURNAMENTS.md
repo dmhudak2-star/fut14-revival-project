@@ -95,3 +95,41 @@ the binary's own names, not that the screen renders.
 Round counts, coin values and the team draw are choices, not findings: the
 binary names the fields, it does not say what a cup should pay. The team ids
 are real EA club ids but were not read out of `fifa_ng_db`.
+
+## Reprendre une coupe *jouée* gèle aussi — 14 août 2026
+
+`TournamentProgress.unplayed` traitait le gel comme un cas particulier : une
+coupe ouverte puis quittée avant le premier match, rendue telle quelle, fige le
+titre. Ce que ce garde-fou disait implicitement, c'est qu'un vrai parcours, lui,
+se reprendrait.
+
+Il ne se reprend pas. Le 14 août à 01:53:30, la coupe 3 était au **round 2** —
+un match gagné, `progressData` de quarante octets, tout sauf vide. Le client a
+demandé `GET /ut/game/fifa14/tournament/user/3`, le serveur a répondu les cinq
+membres qu'il avait lui-même écrits, 1 121 octets, et le titre s'est figé sur
+l'écran des compétitions, la tuile marquée « EN COURS ».
+
+Rien d'autre n'a été demandé ensuite. XBDM répondait toujours et
+`xbeinfo running` donnait encore `default.xex` : façade gelée, pas console
+morte.
+
+Ce que ça élimine :
+
+- **la forme du document** — déjà éliminée deux fois (une réponse identique
+  octet pour octet à ce que le client avait envoyé figeait déjà) ;
+- **le fait que le parcours soit vide** — c'est justement ce que `unplayed`
+  couvrait, et ce parcours-là ne l'était pas.
+
+Ce qui reste : le client **ne sait pas reprendre une coupe depuis ce serveur**,
+quel que soit son contenu. `unplayed` ne corrigeait pas le défaut, il cachait
+le seul cas qu'on avait vu.
+
+La remise en route a consisté à retirer le parcours de la sauvegarde
+(`runtime/club-save.avant-gel-coupe3.json` le conserve) et à relancer. La
+coupe est repartie du round 1 sans broncher : le client a réécrit un parcours
+neuf et notre GET a répondu `{"tournamentId":3}`.
+
+À décider : si aucune coupe ne se reprend, `response` peut ne plus jamais
+rendre de parcours — le gel disparaît, le prix étant qu'une coupe quittée
+recommence. C'est le comportement effectif aujourd'hui, mais par accident,
+pas par choix.

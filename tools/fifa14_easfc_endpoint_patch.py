@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import revival_config  # noqa: E402
 from fifa14_plain_send_hook import Xbdm  # noqa: E402
 
 SESSION = (0x89706250, b"pal.gt.easfc.ea.com:8094")
@@ -86,11 +87,19 @@ def patch(host: str, local: str, core_port: int, identity_port: int) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("host")
-    parser.add_argument("--local-ip", required=True)
-    parser.add_argument("--core-port", type=int, default=10041)
-    parser.add_argument("--identity-port", type=int, default=18080)
+    # Defaults come from fifa14revival.ini; see tools/revival_config.py.
+    parser.add_argument("--local-ip", default=None)
+    parser.add_argument("--core-port", type=int, default=None)
+    parser.add_argument("--identity-port", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=90)
     args = parser.parse_args()
+
+    if args.local_ip is None:
+        args.local_ip = revival_config.server_host()
+    if args.core_port is None:
+        args.core_port = revival_config.port("server.core_port")
+    if args.identity_port is None:
+        args.identity_port = revival_config.port("server.identity_port")
 
     deadline = time.time() + args.timeout
     while time.time() < deadline:

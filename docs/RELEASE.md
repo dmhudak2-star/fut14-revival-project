@@ -83,19 +83,46 @@ chargement, sans sonde, sans course, sans balayage de tas — et le balayage
 complet est justement ce qui a gelé cette console une fois
 (`docs/AUTOMATIC_PATCH.md`, « What actually made it unsafe »).
 
-### La configuration doit sortir du code
+### La configuration est sortie du code — 14 août 2026
 
-Aujourd'hui l'adresse du serveur est un argument (`--local-ip`) compilé dans la
-mémoire du titre au lancement. Pour une release il faut un fichier à côté du
-plugin :
+L'adresse du serveur était un argument (`--local-ip`) que `tools/fut.sh`
+calculait et compilait dans la mémoire du titre au lancement. Elle est
+maintenant dans `fifa14revival.ini`, lu par `tools/revival_config.py` :
 
 ```ini
-; fifa14revival.ini
-server = revival.example.net
-port   = 18080
+[server]
+host = auto            ; ou 192.168.1.40, ou revival.example.net
+core_port = 10041      ; Blaze
+identity_port = 18080  ; HTTP
+
+[console]
+address = 192.168.1.25
+title = Hdd:\Games\FIFA 14
 ```
 
-Sans ça, chaque utilisateur qui veut s'auto-héberger a besoin d'un compilateur.
+C'est **ce fichier-là** que le plugin lira sur le disque de la console. Le
+format est donc réglé ici, où il est exercé à chaque lancement, plutôt
+qu'inventé plus tard sur le papier. La section `[console]` ne sert qu'au
+lanceur de développement : un plugin qui tourne sur la console sait déjà sur
+laquelle il est.
+
+Trois choses à savoir :
+
+- **Aucun fichier n'est nécessaire.** Chaque clé retombe sur ce que le script
+  codait en dur. Ajouter la configuration n'est pas un jour de bascule.
+- **L'environnement gagne toujours** : `MAC=... XBOX=... tools/fut.sh` est ce
+  que dit chaque note de ce dépôt, et ça continue de marcher.
+- **`host = auto`** résout l'adresse LAN de la machine à chaque lancement. Ce
+  n'est pas du confort : le DHCP a déjà déplacé cette adresse une fois, et une
+  valeur périmée est silencieuse — le titre démarre normalement puis échoue au
+  premier connect Blaze, sans rien dans le journal, puisque rien n'a atteint le
+  serveur. La détection est passée de zsh à Python parce qu'un serveur
+  auto-hébergé sous Linux a besoin de la même réponse, et parce qu'interroger
+  la table de routage bat une liste de noms d'interfaces : ici l'adresse est
+  sur en1, pas sur en0.
+
+Le port HTTP était par ailleurs codé en dur à un endroit — l'URL `futBoot.xml`
+armée par le patch de lancement. Il vient de la configuration maintenant.
 
 ### Pourquoi pas le patch statique
 
@@ -217,7 +244,7 @@ jeu, clés console, KV, profils, captures de session. `NOTICE.md` et
 ## Ordre des travaux
 
 1. ~~**Router l'état par persona**~~ — fait le 14 août, voir ci-dessus.
-2. **Externaliser la configuration** — l'adresse du serveur dans un fichier.
+2. ~~**Externaliser la configuration**~~ — fait le 14 août, `fifa14revival.ini`.
 3. **Le plugin Dashlaunch** — le seul vrai obstacle technique restant.
 4. Plus tard, si tu veux supprimer aussi le plugin : le patch statique, qui
    demande de gagner 5 % sur l'encodeur LZX *et* de résoudre la question de la

@@ -4988,11 +4988,28 @@ class ClubSave:
         # this never comes into play.
         self.fallback = fallback
 
+    def adoptable(self) -> bool:
+        """Whether the single-club save is still up for adoption.
+
+        Falling back forever means every persona that ever asks inherits this
+        club. Asking the live server with a made-up session id proved it:
+        `LOCAL-XBOX360-FIFA14-SID-999` came back holding 960 million coins.
+        Harmless on one console, wrong anywhere the point of the change is to
+        reach -- so the fallback is a migration, not a rule, and it is over as
+        soon as one club has a save of its own.
+        """
+        if self.fallback is None or not self.fallback.exists():
+            return False
+        clubs = self.path.parent
+        if not clubs.exists():
+            return True
+        return not any(clubs.glob("*.json"))
+
     def load(self, inventory: "ClubInventory", wallet: "Wallet",
              actions: "CardActions", tasks: "ManagerTasks | None" = None) -> bool:
         source = self.path
-        if not source.exists():
-            source = self.fallback if self.fallback is not None else source
+        if not source.exists() and self.adoptable():
+            source = self.fallback
         if not source.exists():
             return False
         try:
