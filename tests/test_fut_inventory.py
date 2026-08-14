@@ -3037,3 +3037,37 @@ def test_the_season_round_is_counted_here_not_read_from_the_client(monkeypatch) 
     # played.
     assert inventory._season_matches_played({"round": 4}) == 3
     assert inventory._season_matches_played({}) == 0
+
+
+def test_the_unclaimed_club_stops_reading_the_old_save(tmp_path, monkeypatch) -> None:
+    # The club nobody has proved a claim to must not be a real club. On the
+    # machine this was built on it was: an unauthenticated request came back
+    # holding 960 million coins, because the default club still loaded
+    # `runtime/club-save.json` after its owner had moved to a per-persona file.
+    import fut_inventory as inventory
+
+    legacy = tmp_path / "club-save.json"
+    legacy.write_text(json.dumps({"coins": 4242, "acquired": [], "sold": []}))
+    monkeypatch.setattr(inventory, "SAVE_FILE", legacy)
+
+    def fresh():
+        club = inventory.ClubInventory()
+        wallet = inventory.Wallet()
+        actions = inventory.CardActions(
+            inventory.PackShop(inventory.CardCatalogue(), wallet, club), wallet, club
+        )
+        return club, wallet, actions
+
+    # Before anyone has a club of their own, the old save is still the club.
+    save = inventory.ClubSave(legacy)
+    club, wallet, actions = fresh()
+    assert save.load(club, wallet, actions) is True
+    assert wallet.coins == 4242
+
+    # Once one exists, the old save is nobody's and stops being read.
+    (tmp_path / "clubs").mkdir()
+    (tmp_path / "clubs" / "77.json").write_text("{}")
+    assert save.superseded() is True
+    club, wallet, actions = fresh()
+    assert save.load(club, wallet, actions) is False
+    assert wallet.coins != 4242
