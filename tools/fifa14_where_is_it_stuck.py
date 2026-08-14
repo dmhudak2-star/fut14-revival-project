@@ -33,22 +33,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fifa14_plain_send_hook import Xbdm  # noqa: E402
 
-# Where the modules live on the supported build. `default.xex` is documented in
-# README.md ("Supported build"); CardsDLL is only mapped once FUT is entered,
-# which is exactly when this matters.
-MODULES = (
-    ("default.xex", 0x82000000, 0x023EC400),
-    ("CardsDLL", 0x89000000, 0x00700000),
-    ("powdllzf", 0x89700000, 0x00100000),
-)
+# Read from the console rather than written down. Guessing these is how an
+# earlier version of this file reported addresses as `default.xex+...` that
+# were nothing of the kind: README.md's 0x023EC400 is the *original* image
+# size, and the module is loaded at 0x01f20000. The console also names two
+# modules those notes never mention -- FootballCompEngzf at 0x88000000, which
+# is the obvious owner of a tournament bracket, and JRPC2.
+MODULES: list[tuple[str, int, int]] = []
+
+
+def load_modules(client: Xbdm) -> None:
+    MODULES.clear()
+    for line in client.multiline("modules"):
+        fields = dict(
+            part.split("=", 1) for part in line.strip().split() if "=" in part
+        )
+        name = fields.get("name", "").strip('"')
+        try:
+            base = int(fields["base"], 16)
+            size = int(fields["size"], 16)
+        except (KeyError, ValueError):
+            continue
+        if name:
+            MODULES.append((name, base, size))
+    MODULES.sort(key=lambda row: row[1])
 
 
 def module_of(address: int) -> str:
     for name, base, size in MODULES:
         if base <= address < base + size:
             return f"{name}+0x{address - base:06x}"
-    if 0x80000000 <= address < 0x82000000:
-        return "kernel/XAM"
     return "heap or unmapped"
 
 
@@ -138,6 +152,9 @@ def main() -> int:
 
     client = Xbdm(args.host)
     try:
+        load_modules(client)
+        print(", ".join(f"{n} 0x{b:08x}+0x{z:x}" for n, b, z in MODULES
+                        if not n.startswith(("xam", "xboxkrnl"))) + "\n")
         samples = []
         for index in range(max(1, args.repeat)):
             if index:

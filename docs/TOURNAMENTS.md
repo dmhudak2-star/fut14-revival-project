@@ -344,3 +344,81 @@ Ce qui reste à essayer, par ordre d'intérêt :
    fonction qui consomme cette réponse et lire l'adresse du plantage, au lieu
    de proposer des noms un par un. C'est ce qu'il fallait faire après le
    deuxième gel.
+
+## Ce n'est pas un parseur qui plante, c'est un tampon de 3 Go
+
+Tracé le 14 août sur la console gelée, avec `tools/fifa14_where_is_it_stuck.py`.
+
+Le gel est un **blocage**, pas un plantage : XBDM répond, `xbeinfo running`
+nomme toujours FIFA. Donc un thread est coincé, et stock XBDM sait dire où.
+
+### La carte des modules, qu'on devinait faux
+
+`modules` la donne, et elle corrige deux erreurs de nos notes :
+
+```
+default.xex               0x82000000 +0x01f20000   (et non 0x023EC400, qui est l'osize)
+FootballCompEngzf.xex.dll 0x88000000 +0x00120000   ← jamais mentionné jusqu'ici
+CardsDLLzf.xex.dll        0x89000000 +0x002b0000
+powdllzf.xex.dll          0x89700000 +0x00150000
+JRPC2.xex                 0x91900000 +0x0002c000   ← chargé, contrairement à AUTOMATIC_PATCH.md
+```
+
+### Le thread coincé
+
+Sur 56 threads, un seul exécute du code du titre :
+
+```
+thread 4177526852   iar=0x8912d9a0  CardsDLLzf+0x12d9a0
+                    gpr30 = 0xbd2e2eb4 = 3 173 920 436
+```
+
+`0x8912d9a0` est `stbu r10, 1(r11)` suivi de `bdnz` — une boucle de remplissage
+octet par octet, de longueur `r30`.
+
+Deux pièges à connaître pour refaire la mesure :
+
+- XBDM imprime les identifiants de thread **signés** et ne les accepte
+  qu'**non signés** : `threads` répond `-83886068`, et `getcontext` sur cette
+  valeur dit `400- missing thread` là où `4211081228` marche.
+- `getcontext` sur un thread **qui tourne** renvoie `0xffffffff` pour la
+  plupart des registres. Il faut `suspend thread=N` d'abord. `setcontext`, lui,
+  exige un arrêt de débogueur complet (`408- not stopped`) — une suspension ne
+  suffit pas.
+
+### La chaîne d'appels, remontée hors console
+
+Le déroulement de pile ne passe pas : les trames intermédiaires ne sauvegardent
+pas leur LR, et `lr` pointait dans la fonction elle-même — signature du
+prologue `mflr r12` / `bl __savegprlr`. La vraie entrée était donc 0x8912d898,
+pas 0x8912d8a0.
+
+Le reste s'obtient sans console, en balayant `work/cardsdll-text.bin` (2,8 Mo,
+tirés par XBDM) à la recherche des `bl` qui visent chaque cible :
+
+```
+0x8912d898   append(n, caractère)      1 appelant
+0x8912da50   resize(n)                 1 appelant   ← si n > taille, ajoute n-taille zéros
+0x8912dac8   « n octets remis à zéro »  9 appelants  ← resize(n) puis memset(begin, 0, n)
+```
+
+Autrement dit : le client demande un tampon de **3,17 milliards d'octets** et
+le remplit de zéros, sur une console qui a 512 Mo. Le titre ne plante pas, il
+part pour un temps infini.
+
+`0xbd2e2eb4` a la forme d'un **pointeur de tas**, pas d'une longueur. Quelque
+chose passe un pointeur là où un compte est attendu.
+
+### Ce qui reste, et qui ne coûte plus de gel
+
+Les neuf appelants de 0x8912dac8 sont dans le dump :
+
+```
+0x8912dc78  0x8912e0a4  0x8912e224  0x89143888  0x8914972c
+0x8914988c  0x89149d4c  0x891b3e70  0x891c43f0
+```
+
+Il faut trouver lequel est sur le chemin de la reprise de coupe, et d'où sort
+son `n`. Ça se fait entièrement hors console maintenant que
+`work/cardsdll-text.bin` existe — c'est ce qu'il fallait faire au lieu de
+proposer un cinquième nom de membre.
