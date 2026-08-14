@@ -3920,6 +3920,39 @@ def cup_resume_mode() -> str:
     return raw if raw in {"off", "round", "noblob", "full"} else "full"
 
 
+def cup_progress_members() -> tuple[str, ...]:
+    """Which name carries the progress blob back to the client.
+
+    `progressdata` was the first reading and it was not enough: served on 14
+    August at 16:22:37 on a run at round 2, the title froze exactly as it had
+    on the two spellings before it.
+
+    The name table is grouped, and that grouping was the thing to read.
+    `progressdata` at 0x103e0 sits among generic members -- `productId`,
+    `prizeSet`, `progressDataVersion`. The cup's own members are together
+    elsewhere:
+
+        0x0fd34 tournamentProgress
+        0x0fd48 tournamentId
+        0x0fd58 tournamentData
+
+    So the pair a cup is rebuilt from is most likely `tournamentData` and
+    `tournamentProgress`, and `progressdata` belongs to whatever writes
+    `progressDataVersion` beside it.
+
+    Every attempt here costs a freeze and a relaunch, so the name is a setting
+    rather than an edit. `both` sends two names for one blob, which is the one
+    combination to be careful with: two *known* names landing in one slot is
+    the shape that was blamed for an earlier freeze.
+    """
+    raw = os.environ.get("FIFA14_CUP_PROGRESS", "").strip()
+    if raw == "both":
+        return ("tournamentProgress", "progressdata")
+    if raw in {"progressdata", "progressData", "tournamentProgress"}:
+        return (raw,)
+    return ("tournamentProgress",)
+
+
 class TournamentProgress:
     """Where the club stands in each cup, kept across launches.
 
@@ -4019,10 +4052,11 @@ class TournamentProgress:
             document["progressDataVersion"] = entry["progressDataVersion"]
             blank = mode == "noblob"
             document["tournamentData"] = "" if blank else entry["tournamentData"]
-            # `progressdata`, lower case, because that is the only spelling
-            # this client can read. See the docstring: it writes
-            # `progressData` and parses `progressdata`.
-            document["progressdata"] = "" if blank else entry["progressData"]
+            # Never `progressData`: the client writes that spelling and has no
+            # entry for it. Which name it *reads* is still open -- see
+            # `cup_progress_members`.
+            for member in cup_progress_members():
+                document[member] = "" if blank else entry["progressData"]
         return json.dumps(document, separators=(",", ":")).encode()
 
     def advance(self, identifier: int, result: str) -> dict:

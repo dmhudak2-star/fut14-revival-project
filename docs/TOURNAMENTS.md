@@ -287,3 +287,34 @@ La table ne contient pas `data` du tout — entre `dataVersion` (0x10f04) et
 `SeasonProgress.response` épelle donc `seasonData` et `progressdata`. Les deux
 dossiers ouverts — reprendre une coupe, reprendre une saison — avaient la même
 cause.
+
+### `progressdata` ne suffit pas non plus — et ce qu'il fallait lire
+
+Servi le 14 août à 16:22:37, sur le parcours au round 2 : gel, exactement comme
+sur les deux orthographes précédentes. Dernière trace de la console à cette
+seconde-là, rien après.
+
+Ce qui manquait, c'est que **la table est groupée**, et le groupe est
+l'information. `progressdata` (0x103e0) est au milieu de membres génériques —
+`productId`, `prizeSet`, `progressDataVersion`. Les membres de la coupe sont
+ensemble, ailleurs :
+
+```
+0x0fd34 tournamentProgress
+0x0fd48 tournamentId
+0x0fd58 tournamentData
+```
+
+La paire depuis laquelle une coupe se reconstruit est donc probablement
+`tournamentData` + `tournamentProgress`, et `progressdata` appartient à ce qui
+écrit `progressDataVersion` à côté de lui.
+
+`cup_progress_members()` en fait un réglage plutôt qu'une modification, parce
+que chaque essai coûte un gel et une relance :
+
+| `FIFA14_CUP_PROGRESS` | membre servi | état |
+|---|---|---|
+| *(défaut)* | `tournamentProgress` | à tester |
+| `progressdata` | `progressdata` | **gèle**, mesuré |
+| `progressData` | `progressData` | **gèle**, mesuré (ce que le client écrit) |
+| `both` | les deux noms connus | à éviter sauf besoin : deux noms connus dans un seul emplacement est la forme accusée d'un gel antérieur |

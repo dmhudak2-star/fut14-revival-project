@@ -1029,7 +1029,7 @@ def test_a_cup_is_only_active_once_it_has_been_entered(monkeypatch) -> None:
             "dataVersion",
             "tournamentData",
             "progressDataVersion",
-            "progressdata",
+            "tournamentProgress",
         }
         assert saved["tournamentId"] == 3
         # The capital-D spelling is the one the client writes and cannot

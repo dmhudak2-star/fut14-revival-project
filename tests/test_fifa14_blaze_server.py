@@ -813,7 +813,10 @@ class TournamentRouteTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
                 self.assertEqual(body["tournamentData"], "QUJD")
-                self.assertEqual(body["progressdata"], "REVG")
+                # Whichever name carries it -- see `cup_progress_members`.
+                # Never the capital-D spelling the client writes and cannot
+                # read.
+                self.assertEqual(body["tournamentProgress"], "REVG")
                 self.assertNotIn("progressData", body)
                 # Handed back as it was written, under its own id.
                 #
