@@ -3886,6 +3886,40 @@ def tournament_teams_response(count: int = 15, group: int = 0) -> bytes:
     return json.dumps({"teamId": rotated[:count]}, separators=(",", ":")).encode()
 
 
+def cup_resume_mode() -> str:
+    """How much of a saved cup run goes back out, if any.
+
+    Handing a played run back is what freezes this title. Measured twice, on
+    two different runs, with two different documents:
+
+        13-14 août   five members, no `tournamentId`      -> gel
+        14 août 02:56  six members, `tournamentId` present -> gel
+
+    The second was the PC revival's exact shape
+    (`KyroGeorge2/FIFA-14-Local-FUT`, `offline_tournament_user`), on a run at
+    round 2 with a match won, served byte for byte as the client had written
+    it -- verified: the gzip inflates to the 2 798 bytes it announces and the
+    progress blob's length header matches its payload. The response headers
+    match a route on the same screen that works. So the document is faithful
+    and the shape is not the difference; that build resumes and this one does
+    not.
+
+    `off` is therefore the default: a saved run is never returned, and a cup
+    left half-played restarts. That is a real loss, and it is the only setting
+    that does not cost a frozen console.
+
+    The rest exist so the next reading can be tried with a relaunch instead of
+    an edit, because every attempt costs a freeze and a recovery:
+
+        off      `{"tournamentId": id}` -- never resume
+        round    the id and the round, and no blobs at all
+        noblob   every member, but both blobs empty
+        full     everything, which is what froze it
+    """
+    raw = os.environ.get("FIFA14_CUP_RESUME", "").strip().lower()
+    return raw if raw in {"off", "round", "noblob", "full"} else "off"
+
+
 class TournamentProgress:
     """Where the club stands in each cup, kept across launches.
 
@@ -3974,21 +4008,19 @@ class TournamentProgress:
         """
         identifier = int(identifier)
         entry = self.entries.get(identifier)
-        if entry is None or self.unplayed(entry):
+        mode = cup_resume_mode()
+        if entry is None or self.unplayed(entry) or mode == "off":
             return json.dumps(
                 {"tournamentId": identifier}, separators=(",", ":")
             ).encode()
-        return json.dumps(
-            {
-                "tournamentId": identifier,
-                "round": entry["round"],
-                "dataVersion": entry["dataVersion"],
-                "tournamentData": entry["tournamentData"],
-                "progressDataVersion": entry["progressDataVersion"],
-                "progressData": entry["progressData"],
-            },
-            separators=(",", ":"),
-        ).encode()
+        document = {"tournamentId": identifier, "round": entry["round"]}
+        if mode != "round":
+            document["dataVersion"] = entry["dataVersion"]
+            document["progressDataVersion"] = entry["progressDataVersion"]
+            blank = mode == "noblob"
+            document["tournamentData"] = "" if blank else entry["tournamentData"]
+            document["progressData"] = "" if blank else entry["progressData"]
+        return json.dumps(document, separators=(",", ":")).encode()
 
     def advance(self, identifier: int, result: str) -> dict:
         """Move a cup on by its result, and say what it paid.

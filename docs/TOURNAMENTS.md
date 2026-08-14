@@ -178,3 +178,51 @@ build-là, la reprise marche avec l'id présent.
 Frontend différent — PC contre Xbox 360 — donc c'est un indice, pas une preuve.
 C'est en revanche la seule différence concrète entre une réponse qui reprend et
 celle qui a gelé ce titre le 14 août à 01:53:30.
+
+### Testé, et non : `tournamentId` n'était pas la cause
+
+Mesuré le 14 août à 02:56 sur la console, avec un parcours neuf.
+
+| heure | ce qui s'est passé |
+|---|---|
+| 02:55:27 | match de coupe gagné, coupe 3 passée au round 2, 1 244 crédits |
+| 02:55:40 | le client **PUT** son blob de round 2 ; notre écho lui rend le document complet — **rien ne gèle** |
+| 02:56:00 | écran des compétitions redessiné, tuile « EN COURS » — rien ne gèle |
+| 02:56:10 | accueil FUT, fil d'actualité — rien ne gèle |
+| 02:56:21 | **GET** `tournament/user/3` → les six membres, `tournamentId` compris → **gel** |
+
+C'est donc le GET, et lui seul. Le PUT porte le même document dans l'autre
+sens et passe très bien.
+
+Ce que ça élimine en plus :
+
+- **la forme** — la réponse était exactement celle du revival PC,
+  `tournamentId` inclus ;
+- **la corruption** — le blob servi est identique octet pour octet à celui
+  reçu (968 caractères base64), le gzip se décompresse aux 2 798 octets qu'il
+  annonce, et l'entête de longueur de `progressData` correspond à sa charge ;
+- **les en-têtes HTTP** — identiques à ceux d'une route du même écran qui
+  marche, à `Content-Length` près.
+
+Le document est fidèle et la forme est celle d'un serveur où ça marche. Ce
+build ne reprend pas, l'autre si.
+
+`cup_resume_mode()` en tire la conséquence : par défaut (`off`) un parcours
+sauvegardé n'est **jamais** rendu, donc une coupe abandonnée recommence. C'est
+une vraie perte de fonction, et c'est le seul réglage qui ne coûte pas une
+console gelée.
+
+`FIFA14_CUP_RESUME` garde les autres lectures à portée d'un relancement plutôt
+que d'une modification, parce que chaque essai coûte un gel et une
+récupération :
+
+| valeur | ce qui sort | état |
+|---|---|---|
+| `off` | `{"tournamentId": id}` | défaut, ne gèle pas |
+| `round` | l'id et le round, aucun blob | à essayer |
+| `noblob` | tous les membres, blobs vides | à essayer |
+| `full` | tout | **gèle**, mesuré deux fois |
+
+Le prochain essai le plus informatif est `round` : si le client accepte un
+round sans blob, il reconstruit son tableau lui-même et la reprise est acquise
+sans jamais lui rendre ses octets.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
+import os
 import socket
 import sys
 import tempfile
@@ -783,6 +784,11 @@ class TournamentRouteTests(unittest.TestCase):
                 identity.stop()
 
     def test_progress_is_kept_and_read_back(self) -> None:
+        # `full` is the shape under test. The default is `off`, because
+        # handing a played run back freezes this title -- twice measured, with
+        # and without `tournamentId`. See `cup_resume_mode`.
+        previous_mode = os.environ.get("FIFA14_CUP_RESUME")
+        os.environ["FIFA14_CUP_RESUME"] = "full"
         with tempfile.TemporaryDirectory() as temp:
             identity = self._identity(temp)
             try:
@@ -833,6 +839,35 @@ class TournamentRouteTests(unittest.TestCase):
                 status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
                 self.assertEqual((status, body), (200, {"tournamentId": []}))
             finally:
+                identity.stop()
+                if previous_mode is None:
+                    os.environ.pop("FIFA14_CUP_RESUME", None)
+                else:
+                    os.environ["FIFA14_CUP_RESUME"] = previous_mode
+
+    def test_a_cup_run_is_not_offered_back_by_default(self) -> None:
+        # The default has to be the setting that does not freeze the console.
+        # A run is still kept -- the list still names it, and the save still
+        # holds it -- but the document that reopens it never goes out.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            try:
+                port = identity.server.server_address[1]
+                self._get(
+                    port, "/ut/game/fifa14/tournament/user/5", "PUT",
+                    json_module.dumps(
+                        {"round": 2, "dataVersion": 1, "tournamentData": "QUJD",
+                         "progressDataVersion": 1, "progressData": "AAAAAgAB"}
+                    ).encode(),
+                )
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/5")
+                self.assertEqual((status, body), (200, {"tournamentId": 5}))
+                # Kept, not forgotten.
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertIn(5, body["tournamentId"])
+            finally:
+                SERVER.TOURNAMENT_PROGRESS.entries.clear()
                 identity.stop()
 
     def test_a_season_is_saved_under_its_season_and_division(self) -> None:

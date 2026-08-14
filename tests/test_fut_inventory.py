@@ -997,8 +997,13 @@ def test_every_cup_names_a_trophy_the_game_actually_ships() -> None:
         assert inventory.TROPHY_FIRST <= cup["trophyResourceId"] <= inventory.TROPHY_LAST
 
 
-def test_a_cup_is_only_active_once_it_has_been_entered() -> None:
+def test_a_cup_is_only_active_once_it_has_been_entered(monkeypatch) -> None:
     import fut_inventory as inventory
+
+    # The shape of a resumable run, which only goes out under `full`.
+    # `off` is the default because handing one back freezes the title;
+    # see `cup_resume_mode` and the test below.
+    monkeypatch.setenv("FIFA14_CUP_RESUME", "full")
 
     inventory.TOURNAMENT_PROGRESS.entries.clear()
     try:
@@ -1035,7 +1040,7 @@ def test_a_cup_is_only_active_once_it_has_been_entered() -> None:
         inventory.TOURNAMENT_PROGRESS.entries.clear()
 
 
-def test_a_cup_entered_but_never_played_is_not_a_run_to_resume() -> None:
+def test_a_cup_entered_but_never_played_is_not_a_run_to_resume(monkeypatch) -> None:
     # The client saves its draw the moment the bracket is built: the full
     # sixteen-team blob, round one, and a progress blob of four zero bytes.
     # Handing that back froze the title twice -- the second time on a reply
@@ -1044,6 +1049,7 @@ def test_a_cup_entered_but_never_played_is_not_a_run_to_resume() -> None:
     # been played, and the draw is redrawn on the way in.
     import fut_inventory as inventory
 
+    monkeypatch.setenv("FIFA14_CUP_RESUME", "full")
     inventory.TOURNAMENT_PROGRESS.entries.clear()
     try:
         inventory.TOURNAMENT_PROGRESS.apply(
