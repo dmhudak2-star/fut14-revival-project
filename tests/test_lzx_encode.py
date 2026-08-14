@@ -116,3 +116,20 @@ def test_every_aligned_symbol_gets_a_code() -> None:
     # decoder partway through the stream.
     payload = b"".join(bytes([index % 251]) * 5 for index in range(400))
     assert round_trip(payload) == payload
+
+
+def test_a_payload_past_one_frame_is_refused_rather_than_written() -> None:
+    # An LZX frame carries at most 32 KiB of output. The guard used to be the
+    # 16-bit length field instead, so a 54 048-byte resource went out as one
+    # frame claiming 54 048 bytes -- a container nothing can read. One was
+    # written into a patched Title Update 3 and left on the console ready to
+    # install; its helperFunctions record decodes to "Unsupported LZX block
+    # type 0", and the game's own decoder would have hit the same wall.
+    import pytest
+
+    with pytest.raises(ValueError, match="multi-frame"):
+        lzx_encode.encode_container(bytes(lzx_encode.FRAME_SIZE + 1))
+
+    # The largest single frame is still written, and still reads back.
+    payload = bytes((index * 7) % 251 for index in range(lzx_encode.FRAME_SIZE))
+    assert round_trip(payload) == payload

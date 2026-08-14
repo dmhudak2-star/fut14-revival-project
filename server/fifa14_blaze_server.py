@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import re
 import signal
 import socket
 import ssl
@@ -65,7 +66,13 @@ ROOMS = 21
 ASSOCIATION_LISTS = 25
 OSDK_SETTINGS = 2249
 OSDK_ONLINE_PASS = 2268
+# The offline game report a match end submits, and the asynchronous result the
+# post-match screen waits on before it will leave.
+GAME_REPORTING = 28
 
+GAME_REPORTING_SUBMIT_OFFLINE = 2
+USER_SESSIONS_RESUME = 35
+GAME_REPORTING_RESULT_NOTIFICATION = 114
 REDIRECTOR_GET_SERVER_INSTANCE = 1
 UTIL_FETCH_CONFIG = 1
 UTIL_PING = 2
@@ -384,8 +391,8 @@ FUT_ROUTES: dict[str, bytes] = {
     # list.  An empty object leaves the native response at its constructor
     # defaults -- no division, no points, no record invented.
     "/ut/game/fifa14/season/user": b"{}",
-    "/ut/game/fifa14/tournament/list": b'{"tournament":[]}',
-    "/ut/game/fifa14/tournament/user/list": b'{"tournamentId":[]}',
+    # tournament/list, tournament and tournament/user/list are served live
+    # from the catalogue and the saved runs; see the mode table below.
     # A visible-but-invalid single entry keeps the store screen constructible
     # without offering anything purchasable.
     "/ut/game/fifa14/store": b'{"purchase":[],"timestamp":2147483647}',
@@ -403,7 +410,70 @@ FUT_ROUTES: dict[str, bytes] = {
         b'"timestamp":2147483647}'
     ),
     "/ut/v2/game/fifa14/store/transaction": b'{"state":"NOTRANSACTION"}',
+    # Asked for once, on 11 August, and answered 404. What it carries is not
+    # known -- the name suggests several users at once, and this server has
+    # exactly one. An empty object is the answer every other unknown FUT route
+    # here gets, and it is a better one than a 404: nothing has ever been
+    # observed to need a member of it.
+    "/ut/game/fifa14/usermassinfo": b"{}",
 }
+
+# Routes answered by their own handler rather than from the table above, listed
+# here only so the spelling map below covers them too.
+HANDLED_ROUTES = (
+    "/ut/game/fifa14/auctionhouse",
+    "/ut/game/fifa14/club",
+    "/ut/game/fifa14/club/consumables",
+    "/ut/game/fifa14/clubUser",
+    "/ut/game/fifa14/item",
+    "/ut/game/fifa14/phishing",
+    "/ut/game/fifa14/phishing/question",
+    "/ut/game/fifa14/phishing/trusteddevice",
+    "/ut/game/fifa14/phishing/validate",
+    "/ut/game/fifa14/settings",
+    "/ut/game/fifa14/trade",
+    "/ut/game/fifa14/user/accountinfo",
+    "/ut/game/fifa14/user/action",
+    "/ut/game/fifa14/match/end",
+    "/ut/game/fifa14/match/reset",
+    "/ut/game/fifa14/purchased/items",
+    "/ut/game/fifa14/season/list",
+    "/ut/game/fifa14/season/user",
+    "/ut/game/fifa14/season/user/history",
+    "/ut/game/fifa14/squad",
+    "/ut/game/fifa14/squad/active",
+    "/ut/game/fifa14/squad/list",
+    "/ut/game/fifa14/store/purchasegroup/all",
+    "/ut/game/fifa14/tournament",
+    "/ut/game/fifa14/tournament/list",
+    "/ut/game/fifa14/tournament/teams",
+    "/ut/game/fifa14/tournament/user/list",
+    "/ut/game/fifa14/trade/status",
+    "/ut/game/fifa14/tradePile",
+    "/ut/game/fifa14/transfermarket",
+    "/ut/game/fifa14/user/club",
+    "/ut/game/fifa14/user/list",
+    "/ut/game/fifa14/watchlist",
+)
+
+# Lower case to the spelling this server actually registered.
+#
+# The client camel-cases some of these paths and this server spells them
+# however they were first written down. They agreed on `tradePile`, `clubUser`
+# and `userHubData` by luck. They did not agree on `watchList`: the client asks
+# for it with a capital L, this server registered `watchlist`, and every time
+# the watch list was opened it got a 404. Nothing reported it -- a 404 on a FUT
+# route just leaves a screen empty, and an empty watch list looks like an empty
+# watch list.
+#
+# `tradePile` and `tradepile` are both registered and both reach the same
+# handler, so the collision costs nothing; every other route is distinct in
+# lower case, and the only variable segments are numeric ids.
+FUT_ROUTE_SPELLINGS: dict[str, str] = {}
+for _route in (*FUT_ROUTES, *HANDLED_ROUTES):
+    FUT_ROUTE_SPELLINGS.setdefault(_route.lower(), _route)
+del _route
+
 EASW_AUTH_PATH = EASW_AUTH_PATHS[0]
 ICEBREAKER_PACK_LIST = Path(__file__).resolve().parent / "icebreakerpacklist.json"
 
@@ -457,19 +527,29 @@ def with_balance(payload: bytes, coins: int) -> bytes:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fut_inventory import (  # noqa: E402
     GOLD_PACK_ID,
-    CardActions,
-    ClubSave,
-    ManagerTasks,
-    CardCatalogue,
-    ClubInventory,
-    PackShop,
-    Wallet,
+    ConsumableRefused,
+    CLUB_IDENTITY,
+    TENANTS,
+    TOURNAMENT_PROGRESS,
+    TenantView,
+    current_tenant,
+    use_tenant,
+    empty_big_archive,
+    trophy_item_response,
     active_tournaments_response,
+    SEASON_PROGRESS,
+    season_history_response,
     season_user_response,
     seasons_response,
+    tournament_teams_response,
     club_stats_response,
     consumable_stats_response,
+    club_user_response,
     consumables_response,
+    apply_match_items,
+    PERSONA,
+    match_result,
+    match_reward,
     hub_response,
     store_catalogue,
     totw_index_with_squad,
@@ -477,19 +557,34 @@ from fut_inventory import (  # noqa: E402
     tournaments_response,
 )
 
-CLUB_INVENTORY = ClubInventory()
-CARD_CATALOGUE = CardCatalogue()
-WALLET = Wallet()
-PACK_SHOP = PackShop(CARD_CATALOGUE, WALLET, CLUB_INVENTORY)
-CARD_ACTIONS = CardActions(PACK_SHOP, WALLET, CLUB_INVENTORY)
-
+# These used to be the one club this server held. They are now views onto
+# whichever club the request in hand belongs to -- see `Tenant` and
+# `TenantView` in fut_inventory. Every call site below is unchanged, and a
+# thread that never identifies itself gets the default club, which is exactly
+# the single-club behaviour these names had before.
+#
+# Opening a club -- loading its save, or seeding it from the icebreaker packs
+# on a first run -- moved into `Tenant._open` with its reasoning intact. It
+# happens the first time a persona is seen rather than at import.
+CLUB_INVENTORY = TenantView("inventory")
+CARD_CATALOGUE = TenantView("catalogue")
+WALLET = TenantView("wallet")
+PACK_SHOP = TenantView("shop")
+CARD_ACTIONS = TenantView("actions")
+# Applying a contract, a fitness card or a training card. Until this existed
+# the club could hold consumables and show them, and nothing could be done
+# with one.
+CONSUMABLE_RACK = TenantView("rack")
 # Entering FUT needs a relaunch, so without this every session started from the
 # icebreaker packs again: the club counter back to 92, the pack you opened
 # gone, the coins reset.
-MANAGER_TASKS = ManagerTasks()
-CLUB_SAVE = ClubSave()
-CLUB_SAVE.load(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
-CLUB_NAME = "Fondateur FUT"
+MANAGER_TASKS = TenantView("tasks")
+CLUB_SAVE = TenantView("save")
+
+
+def club_name() -> str:
+    """Whatever the player named his club, or nothing until he has."""
+    return CLUB_IDENTITY.name
 
 EASW_TOKEN = "LOCAL-FIFA14-EASW-TOKEN"
 EASW_SESSION = "LOCAL-FIFA14-EASW-SESSION"
@@ -544,6 +639,81 @@ def auth_request_identity(body: bytes) -> tuple[int, str] | None:
     if isinstance(persona, int) and not isinstance(persona, bool) and persona > 0:
         return persona, display_name
     return nucleus, display_name
+
+
+# -- which club a request belongs to ---------------------------------------
+#
+# The obvious candidate is the nucleus id header, and it is the wrong one. On
+# a full session into Saison Joueur Solo it appeared on **one** request out of
+# forty-nine; `X-UT-SID` appeared on forty-six. The session id is the only
+# thing the client puts on requests generally, which is exactly what it is for.
+#
+# It was one constant for everybody -- `LOCAL-XBOX360-FIFA14-SID` -- so every
+# request after the auth was anonymous. Minting it per persona turns the
+# client's own echo into the routing key, with no session table to keep.
+#
+# Derived rather than stored on purpose: `tools/fut.sh` restarts this server
+# on every single launch, and a stored table would strand a client still
+# holding the session id from a minute ago. A derived one still resolves.
+
+UT_SID_BASE = "LOCAL-XBOX360-FIFA14-SID"
+NUCLEUS_HEADER = "Easw-Session-Data-Nucleus-Id"
+
+
+def ut_session_id(persona_id: int | None) -> str:
+    """The FUT session id handed out at ``/ut/auth`` for this persona."""
+    if not persona_id:
+        return UT_SID_BASE
+    return f"{UT_SID_BASE}-{int(persona_id)}"
+
+
+def sid_persona(sid: str | None) -> int:
+    """The persona a session id names, or 0 for the anonymous one.
+
+    The bare base is what an older server handed out, and it still resolves --
+    to the default club, which is where a single-console setup already was.
+    """
+    if not sid or not sid.startswith(UT_SID_BASE):
+        return 0
+    try:
+        return int(sid[len(UT_SID_BASE):].lstrip("-"))
+    except ValueError:
+        return 0
+
+
+def request_persona(headers, body: bytes) -> int:
+    """The nucleus id this request belongs to, or 0 if it does not say.
+
+    Three sources, most specific first. ``/ut/auth`` is the one request that
+    can carry none of the first two -- it is the request that *establishes* the
+    session -- and it names the persona in its body, so even the first request
+    of a session routes to the right club.
+    """
+    if headers is not None:
+        persona = sid_persona(headers.get("X-UT-SID"))
+        if persona:
+            return persona
+        raw = headers.get(NUCLEUS_HEADER)
+        try:
+            if raw and int(raw) > 0:
+                return int(raw)
+        except (TypeError, ValueError):
+            pass
+    presented = auth_request_identity(body)
+    return int(presented[0]) if presented else 0
+
+
+def bind_request_club(headers, body: bytes):
+    """Point this thread at the club this request is about, and return it.
+
+    A request that names nobody -- the redirector, a resource fetch, the
+    localisation files -- gets the default club, which is precisely the single
+    club this server held before. Threads are per connection here, so nothing
+    binds over another console's request.
+    """
+    club = TENANTS.get(request_persona(headers, body))
+    use_tenant(club)
+    return club
 
 
 def find_field(fields: list[Field], label: str) -> Field | None:
@@ -1059,6 +1229,12 @@ class Fifa14Protocol:
         if state.gamertag == ClientState.gamertag and stored_id == state.xuid:
             state.gamertag = stored_name
         self.account_store.save_identity(state.xuid, state.gamertag)
+        # Named, not bound. The Blaze side touches exactly one piece of club
+        # state -- the persona -- so it says which club it means instead of
+        # binding the thread to one. Binding here was the first attempt and it
+        # was wrong: `Fifa14Protocol.handle` is called directly, without a
+        # connection around it, and the binding then outlived the caller.
+        TENANTS.get(state.xuid).persona.adopt(state.xuid)
 
         now = int(time.time())
         persona = [
@@ -1087,6 +1263,24 @@ class Fifa14Protocol:
             ]
         )
 
+        notifications = self.session_notifications(state)
+        self.logger.event(
+            "authentication2_login",
+            connection=state.connection_id,
+            external_id=state.xuid,
+        )
+        return [response_frame(request, login), *notifications]
+
+    def session_notifications(self, state: ClientState) -> list[bytes]:
+        """The three notifications that tell a connection whose it is.
+
+        Sent after a login, and after a session is resumed by key on a
+        second connection -- the EAS FC module opens one of its own and
+        asks to be attached to the session the title already has. Without
+        these it is acknowledged and then never told who it is, which is
+        what "EAS FC non connecté" means from its side.
+        """
+        now = int(time.time())
         user_identification = [
             Field("AID", INTEGER, state.xuid),
             Field("ALOC", INTEGER, 1718765138),
@@ -1094,7 +1288,6 @@ class Fifa14Protocol:
             Field("ID", INTEGER, state.xuid),
             Field("NAME", STRING, state.gamertag),
         ]
-
         # FIFA 14 maps notification 8 to UserAuthenticated, but its payload is
         # the executable's 0x88-byte UserSessionLoginInfo, not the smaller
         # SUBS/BUID shape found in another legacy Blaze schema.  The native
@@ -1170,17 +1363,7 @@ class Fifa14Protocol:
                 ]
             ),
         )
-        self.logger.event(
-            "authentication2_login",
-            connection=state.connection_id,
-            external_id=state.xuid,
-        )
-        return [
-            response_frame(request, login),
-            user_authenticated,
-            user_added,
-            extended_data,
-        ]
+        return [user_authenticated, user_added, extended_data]
 
     def account(self, request: bytes, state: ClientState) -> bytes:
         payload = encode_fields(
@@ -1477,6 +1660,84 @@ class Fifa14Protocol:
             return [self.osdk_settings(request)]
         if route == (OSDK_SETTINGS, OSDK_SETTINGS_FETCH_GROUPS):
             return [self.osdk_setting_groups(request)]
+        if route == (USER_SESSIONS, USER_SESSIONS_RESUME):
+            # A second connection asking to be attached to the session the
+            # title already has. The EAS FC module opens one of its own once
+            # its endpoints point somewhere reachable, and this is the first
+            # thing it says:
+            #
+            #     component 0x7802 command 35   SKEY "offline-901feefe6a599"
+            #
+            # which is the key handed out by the login on the first connection.
+            # It was answered with a fieldless success and nothing else, so the
+            # module was acknowledged and then never told who it was -- and
+            # that is what "EAS FC non connecté" means from its side.
+            #
+            # The three notifications a login sends are what say whose the
+            # connection is, so they are sent here too, against the identity
+            # the key names.
+            key = find_field(decoded["fields"], "SKEY")
+            presented = str(key.value) if key is not None else ""
+            stored_id, stored_name = self.account_store.load_identity()
+            expected = f"offline-{stored_id:x}" if stored_id else ""
+            if not presented or presented != expected:
+                self.logger.event(
+                    "session_resume_refused",
+                    connection=state.connection_id,
+                    presented=presented,
+                    expected=expected,
+                )
+                return [response_frame(request)]
+            state.xuid = stored_id
+            state.gamertag = stored_name or state.gamertag
+            state.authenticated = True
+            self.logger.event(
+                "session_resumed",
+                connection=state.connection_id,
+                key=presented,
+                gamertag=state.gamertag,
+            )
+            return [
+                response_frame(request),
+                *self.session_notifications(state),
+            ]
+        if route == (GAME_REPORTING, GAME_REPORTING_SUBMIT_OFFLINE):
+            # The offline game report, submitted when a match ends. Answering
+            # the RPC is not the end of it: retail follows with an asynchronous
+            # ResultNotification, and the post-match screen waits on that
+            # handshake before it will leave. An independently built revival of
+            # this game sends the same notification for the same reason.
+            #
+            # `GRID` is the report id the client put in its own submission, and
+            # it goes back in both id members so the notification can be
+            # matched to the report that caused it.
+            report = find_field(decoded["fields"], "RPRT")
+            identifier = 0
+            if report is not None and report.type == STRUCT:
+                grid = find_field(report.value, "GRID")
+                if grid is not None and isinstance(grid.value, int):
+                    identifier = max(0, grid.value)
+            self.logger.event(
+                "game_report_submitted",
+                connection=state.connection_id,
+                reportId=identifier,
+                fields=[field.label for field in decoded["fields"]],
+            )
+            return [
+                response_frame(request),
+                notification_frame(
+                    GAME_REPORTING,
+                    GAME_REPORTING_RESULT_NOTIFICATION,
+                    encode_fields(
+                        [
+                            Field("EROR", INTEGER, 0),
+                            Field("FNL", INTEGER, 1),
+                            Field("GHID", INTEGER, identifier),
+                            Field("GRID", INTEGER, identifier),
+                        ]
+                    ),
+                ),
+            ]
         if route == (OSDK_ONLINE_PASS, OSDK_ONLINE_PASS_FETCH_GATES):
             return [
                 response_frame(
@@ -1543,14 +1804,43 @@ class IdentityHttpService:
                     self.wfile.write(body)
 
             def serve_identity(self) -> None:
+                # Bind a club for this request, and give the thread back the
+                # way it was found.
+                #
+                # Connections get their own thread here, so in production the
+                # binding could not outlive the request anyway. But it is
+                # thread-wide, and anything that does reuse a thread inherits
+                # whichever club the previous request was about. The test
+                # suite runs an entire file on one thread and caught this
+                # immediately: a season test cleaned up through the module
+                # view afterwards and cleared the wrong club's table.
+                previous = current_tenant()
+                try:
+                    self._serve_identity()
+                finally:
+                    use_tenant(previous)
+
+            def _serve_identity(self) -> None:
                 parsed = urllib.parse.urlsplit(self.path)
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(content_length) if content_length else b""
+                # Which club this is about, decided once and before anything
+                # reads club state. `club` is also what the cup and season a
+                # match belongs to now hang off: they used to be module
+                # globals, which is the same bug as the club itself -- two
+                # consoles, one in-flight match between them.
+                club = bind_request_club(self.headers, body)
                 owner.journal.event(
                     "identity_http_request",
                     peer=self.client_address[0],
                     method=self.command,
                     path=parsed.path,
+                    # The values, not only the names. Logging the names alone
+                    # left every question about what a screen actually asked
+                    # for -- which `type`, which `level` -- answerable only by
+                    # guessing, and the consumable picker was three guesses
+                    # deep before anyone noticed the journal could not say.
+                    query=parsed.query,
                     query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
                     bytes=len(body),
                     headers={name: value for name, value in self.headers.items()},
@@ -1616,6 +1906,21 @@ class IdentityHttpService:
                     normalized_path = "/ut/auth"
                 elif normalized_path.startswith("/game/fifa14/"):
                     normalized_path = "/ut" + normalized_path
+                # The client camel-cases some of these paths and this server
+                # spells them however they were first written down. They agreed
+                # on `tradePile`, `clubUser` and `userHubData` by luck; they did
+                # not agree on `watchList`, which this server registered as
+                # `watchlist` and therefore answered 404 every time the watch
+                # list was opened. Nothing reported it -- a 404 on a FUT route
+                # just leaves the screen empty.
+                #
+                # Matching case-insensitively kills the whole class rather than
+                # this one instance. It is safe here because every route below
+                # is distinct in lower case, and the only variable segments are
+                # numeric ids.
+                normalized_path = FUT_ROUTE_SPELLINGS.get(
+                    normalized_path.lower(), normalized_path
+                )
                 if normalized_path in EASW_AUTH_PATHS:
                     # The native success parser reads these headers and hands
                     # EASW-Session and EASW-Token to CardsDLL.  Supplying them
@@ -1646,11 +1951,16 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path == "/ut/auth":
-                    sid = "LOCAL-XBOX360-FIFA14-SID"
+                    # The session id the client will echo on every request
+                    # after this one, and therefore what routes them to this
+                    # club. `bind_request_club` above has already read the
+                    # persona out of this request's own body.
+                    sid = ut_session_id(club.persona_id)
                     presented = auth_request_identity(body)
                     if presented is not None:
                         persona_id, persona_name = presented
                         owner.account_store.save_identity(persona_id, persona_name)
+                        PERSONA.adopt(persona_id)
                         owner.journal.event(
                             "fut_auth_identity_adopted",
                             peer=self.client_address[0],
@@ -1698,7 +2008,11 @@ class IdentityHttpService:
                     # until it is observed.
                     self.reply(
                         200,
-                        WALLET.user_info(CLUB_NAME, "FUT") + b"\n",
+                        WALLET.user_info(
+                            club_name(),
+                            CLUB_IDENTITY.abbr,
+                            owner.account_store.load_identity()[0],
+                        ) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -1735,7 +2049,7 @@ class IdentityHttpService:
                     "/ut/game/fifa14/squad/list": CLUB_INVENTORY.squad_summaries,
                     "/ut/game/fifa14/squad/active": (
                         lambda: CLUB_INVENTORY.squad_document(
-                            CLUB_INVENTORY.active_squad_id(), CLUB_NAME
+                            CLUB_INVENTORY.active_squad_id(), club_name()
                         )
                     ),
                     "/ut/game/fifa14/club": CLUB_INVENTORY.club_response,
@@ -1842,6 +2156,208 @@ class IdentityHttpService:
                         },
                     )
                     return
+                # The draw for a cup. The module's template is
+                # `/teams?groupId=%d&count=%d`; count is how many opponents the
+                # tree needs, the club itself taking the remaining slot.
+                if (
+                    normalized_path == "/ut/game/fifa14/tournament/teams"
+                    and self.command == "GET"
+                ):
+                    query = urllib.parse.parse_qs(parsed.query)
+
+                    def number(key: str, fallback: int) -> int:
+                        try:
+                            return int(query.get(key, [str(fallback)])[0])
+                        except ValueError:
+                            return fallback
+
+                    count = number("count", 15)
+                    group = number("groupId", 0)
+                    payload = tournament_teams_response(count, group)
+                    owner.journal.event(
+                        "fut_tournament_teams",
+                        peer=self.client_address[0],
+                        count=count,
+                        group=group,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # A season under way. The URL template table carries
+                # SEASONUSER_ALTER as `ut/%s/season/%s/user`, and reading that
+                # `%s` as the season id was wrong: beside the season
+                # serialiser sits `%d/division/%d`, and what the console
+                # actually sent on starting a Saison Joueur Solo was
+                #
+                #     PUT /ut/game/fifa14/season/1/division/10/user
+                #
+                # which fell through to the blanket 404. A 404 on a FUT route
+                # is a hang with nothing to read, and this one lands exactly
+                # where the screen stops: right after "Voulez-vous vraiment
+                # débuter cette Saison Joueur Solo ?".
+                #
+                # The division in the path is the division's number, not the
+                # position `season/user` reports -- the client reads
+                # `divisionId` out of the record it picked -- so both are kept
+                # and neither is converted into the other.
+                season_alter = re.fullmatch(
+                    r"/ut/game/fifa14/season/(\d+)/division/(-?\d+)/(user|reset)",
+                    normalized_path,
+                )
+                if season_alter:
+                    season_id = int(season_alter.group(1))
+                    division_id = int(season_alter.group(2))
+                    action = season_alter.group(3)
+                    if action == "reset":
+                        SEASON_PROGRESS.reset(season_id, division_id)
+                    elif self.command in ("PUT", "POST"):
+                        try:
+                            document = json.loads(body or b"{}")
+                        except ValueError:
+                            document = {}
+                        SEASON_PROGRESS.apply(season_id, division_id, document)
+                    CLUB_SAVE.save(
+                        CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                    )
+                    payload = SEASON_PROGRESS.response(season_id, division_id)
+                    owner.journal.event(
+                        "fut_season_alter",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        season=season_id,
+                        division=division_id,
+                        action=action,
+                        body=request_body_preview(body),
+                        payload=payload.decode("utf-8", "replace")[:400],
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Seasons already finished. Asked for once per type the
+                # moment a season starts -- `?type=offline`, `?type=online`
+                # and two World Cup spellings, all four in `.rdata` -- and
+                # answered 404 until now.
+                if normalized_path == "/ut/game/fifa14/season/user/history":
+                    kind = (
+                        urllib.parse.parse_qs(parsed.query).get("type")
+                        or ["offline"]
+                    )[0]
+                    payload = season_history_response(kind)
+                    owner.journal.event(
+                        "fut_season_history",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        history_type=kind,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # A single cup's saved run. The client serialises this itself
+                # -- CardsDLL carries the format strings it builds the body
+                # from -- so it arrives with `round`, `dataVersion`, `data`,
+                # `progressDataVersion` and `progressData`, and is echoed back
+                # in the same shape on the next GET.
+                if (
+                    normalized_path.startswith("/ut/game/fifa14/tournament/user/")
+                    and normalized_path.rsplit("/", 1)[-1].isdigit()
+                ):
+                    tournament_id = int(normalized_path.rsplit("/", 1)[-1])
+                    if self.command in ("PUT", "POST"):
+                        try:
+                            document = json.loads(body or b"{}")
+                        except ValueError:
+                            document = {}
+                        entry = TOURNAMENT_PROGRESS.apply(tournament_id, document)
+                        # Which cup a match belongs to is not in the match
+                        # payload. The client says so by saving progress into
+                        # this cup as it enters it, and that is the only place
+                        # it says so at all.
+                        club.active_tournament = tournament_id
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                        owner.journal.event(
+                            "fut_tournament_saved",
+                            peer=self.client_address[0],
+                            tournament=tournament_id,
+                            round=entry["round"],
+                            body=request_body_preview(body),
+                        )
+                    payload = TOURNAMENT_PROGRESS.response(tournament_id)
+                    # Journalled on the way out as well. Resuming a cup froze
+                    # the title on the first GET this route ever received, and
+                    # nothing recorded what was answered -- the reply had to be
+                    # reconstructed from the code rather than read.
+                    owner.journal.event(
+                        "fut_tournament_progress",
+                        peer=self.client_address[0],
+                        method=self.command,
+                        tournament=tournament_id,
+                        entered=tournament_id in TOURNAMENT_PROGRESS.entries,
+                        bytes=len(payload),
+                        payload=payload.decode("utf-8", "replace")[:400],
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Quitting a cup. The template table carries
+                # `ut/delete/%s/tournament/user`, so the run is dropped rather
+                # than left half-played.
+                if (
+                    normalized_path.startswith(
+                        "/ut/delete/game/fifa14/tournament/user"
+                    )
+                    and self.command in ("POST", "PUT", "DELETE")
+                ):
+                    tail = normalized_path.rsplit("/", 1)[-1]
+                    removed = (
+                        TOURNAMENT_PROGRESS.delete(int(tail)) if tail.isdigit() else False
+                    )
+                    if removed:
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                    owner.journal.event(
+                        "fut_tournament_deleted",
+                        peer=self.client_address[0],
+                        tournament=tail,
+                        removed=removed,
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Seasons, cups and Team of the Week. Each of these screens
                 # treats an empty list as an error rather than as "nothing
                 # available" -- the same way fcc_login2 treats an empty squad --
@@ -1849,6 +2365,10 @@ class IdentityHttpService:
                 mode_responses = {
                     "/ut/game/fifa14/season/list": seasons_response,
                     "/ut/game/fifa14/season/user": season_user_response,
+                    # The template table carries `ut/%s/tournament`; the Xbox
+                    # client was journalled asking for `tournament/list`. Both
+                    # get the catalogue.
+                    "/ut/game/fifa14/tournament": tournaments_response,
                     "/ut/game/fifa14/tournament/list": tournaments_response,
                     "/ut/game/fifa14/tournament/user/list": (
                         active_tournaments_response
@@ -1864,8 +2384,24 @@ class IdentityHttpService:
                     # Three shapes were tried here by guesswork and all three
                     # were rejected; this one comes from the table.
                     "/ut/game/fifa14/user/list": CLUB_INVENTORY.squad_summaries,
+                    # The screen fetches this and answers "Il n'y a aucune
+                    # Équipe de la semaine disponible". It asks for nothing
+                    # else -- no challenge route has ever appeared in any
+                    # journal -- so what it is missing is in this document.
+                    #
+                    # A time window was tried first, on the reading that a
+                    # Team of the Week is this week's team: the six members a
+                    # cup carries, all of them in the name table. The message
+                    # did not change, so that was not it.
+                    #
+                    # What goes out now is the *list* of Teams of the Week as
+                    # well as the squad. "Aucune disponible" reads much more
+                    # like an empty list than like a squad it cannot parse,
+                    # and this document was written for exactly that a while
+                    # ago -- `totw_index_with_squad` -- and then never wired
+                    # to a route.
                     "/ut/game/fifa14/clientdata/totw": (
-                        lambda: totw_response(CARD_CATALOGUE)
+                        lambda: totw_index_with_squad(CARD_CATALOGUE)
                     ),
                 }
                 if normalized_path in mode_responses and self.command == "GET":
@@ -1937,6 +2473,19 @@ class IdentityHttpService:
                         coins=WALLET.coins,
                         pack=pack_id,
                         items=len(PACK_SHOP.pending),
+                        # What was actually drawn. Without this a card that
+                        # went missing between the pack screen and the club
+                        # could not be identified afterwards, let alone
+                        # restored -- which is what happened to a TOTS Ruffier.
+                        drawn=[
+                            {
+                                "id": item.get("id"),
+                                "assetId": item.get("assetId"),
+                                "rating": item.get("rating"),
+                                "rarity": item.get("rarity"),
+                            }
+                            for item in PACK_SHOP.pending[-12:]
+                        ],
                     )
                     self.reply(
                         200,
@@ -2023,6 +2572,22 @@ class IdentityHttpService:
                         item = dict(won)
                         item["itemState"] = "new"
                         item["untradeable"] = False
+                        # A card bought on the market can repeat one the club
+                        # already holds exactly as a packed one can, and it was
+                        # going in unmarked -- the pairing existed only on the
+                        # pack path. Marked before it is kept, or it would be
+                        # found to duplicate itself.
+                        pairs = PACK_SHOP._mark_duplicates([item])
+                        if pairs:
+                            try:
+                                document_out = json.loads(payload)
+                            except ValueError:
+                                document_out = None
+                            if isinstance(document_out, dict):
+                                document_out["duplicateItemIdList"] = pairs
+                                payload = json.dumps(
+                                    document_out, separators=(",", ":")
+                                ).encode()
                         PACK_SHOP.pending.append(item)
                         CARD_ACTIONS._keep(dict(item, itemState="free"))
                         CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
@@ -2131,7 +2696,7 @@ class IdentityHttpService:
                     CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
                     self.reply(
                         200,
-                        CLUB_INVENTORY.squad_document(squad_id, CLUB_NAME) + b"\n",
+                        CLUB_INVENTORY.squad_document(squad_id, club_name()) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -2187,6 +2752,101 @@ class IdentityHttpService:
                         {"Content-Type": "application/json; charset=utf-8"},
                     )
                     return
+                # Applying a consumable. The path names the card's resource,
+                # the body names what to apply it to:
+                #
+                #     POST /ut/game/fifa14/item/resource/5001001
+                #     {"apply":[{"id":1600000001}]}
+                #
+                # `apply` is in CardsDLL's member-name table, next to
+                # `applyTo`, so both spellings are accepted. Retail answers
+                # this one by status, so success is an empty document.
+                #
+                # The client addresses the card two ways, and only the first
+                # was handled. `item/<itemId>` names one particular card in the
+                # club rather than the definition, and a real application on
+                # 11 August --
+                #
+                #     POST /ut/game/fifa14/item/1950000106
+                #     {"apply":[{"id":1700000004}]}
+                #
+                # -- was answered 404 and went into the unhandled journal,
+                # where nobody looked. From the player's side the card simply
+                # did nothing.
+                consumable_apply = re.fullmatch(
+                    r"/ut/game/fifa14/item/resource/(\d+)", normalized_path
+                )
+                consumable_by_item = None
+                if consumable_apply is None:
+                    consumable_by_item = re.fullmatch(
+                        r"/ut/game/fifa14/item/(\d+)", normalized_path
+                    )
+                if (
+                    (consumable_apply or consumable_by_item)
+                    and self.command in ("POST", "PUT")
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    rows = document.get("apply", document.get("applyTo", []))
+                    if isinstance(rows, dict):
+                        rows = [rows]
+                    targets: list[int] = []
+                    for row in rows if isinstance(rows, list) else []:
+                        raw = row.get("id", row.get("itemId")) if isinstance(row, dict) else row
+                        try:
+                            targets.append(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+                    resource_id = (
+                        int(consumable_apply.group(1)) if consumable_apply else 0
+                    )
+                    try:
+                        if consumable_by_item is not None:
+                            resource_id = CONSUMABLE_RACK.resource_of(
+                                int(consumable_by_item.group(1))
+                            )
+                        result = CONSUMABLE_RACK.apply(resource_id, targets)
+                    except ConsumableRefused as refusal:
+                        owner.journal.event(
+                            "fut_consumable_refused",
+                            peer=self.client_address[0],
+                            path=parsed.path,
+                            resourceId=resource_id,
+                            targets=targets,
+                            reason=str(refusal),
+                            # The play style and position blocks land here.
+                            # One of these from the console names the family.
+                            unresolved=CONSUMABLE_RACK.refused[-4:],
+                        )
+                        self.reply(
+                            400,
+                            json.dumps(
+                                {"code": "400", "reason": str(refusal)}
+                            ).encode() + b"\n",
+                            {"Content-Type": "application/json; charset=utf-8"},
+                        )
+                        return
+                    CLUB_SAVE.save(CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS)
+                    owner.journal.event(
+                        "fut_consumable_applied",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        resourceId=resource_id,
+                        targets=targets,
+                        effect=result["effect"],
+                        consumedItemId=result["consumedItemId"],
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 # Send to club, list for transfer: each entry has to be
                 # acknowledged. Answering with a club search acknowledges
                 # nothing and the button looks dead.
@@ -2206,6 +2866,10 @@ class IdentityHttpService:
                         path=parsed.path,
                         club=len(CARD_ACTIONS.club),
                         pending=len(PACK_SHOP.pending),
+                        # Ids the client moved that this server never held.
+                        # Each one is a card the player saw and lost, and it
+                        # used to be answered with success.
+                        unmatched=CARD_ACTIONS.unmatched[-24:],
                     )
                     self.reply(
                         200,
@@ -2261,7 +2925,11 @@ class IdentityHttpService:
                     payload = (
                         WALLET.credits_response()
                         if normalized_path.endswith("/credits")
-                        else WALLET.user_info(CLUB_NAME, "FUT")
+                        else WALLET.user_info(
+                            club_name(),
+                            CLUB_IDENTITY.abbr,
+                            owner.account_store.load_identity()[0],
+                        )
                     )
                     self.reply(
                         200,
@@ -2278,7 +2946,15 @@ class IdentityHttpService:
                 if normalized_path in (
                     "/ut/game/fifa14/transfermarket",
                     "/ut/game/fifa14/club",
-                ) and self.command == "GET" and parsed.query:
+                ) and self.command == "GET" and (
+                    parsed.query or normalized_path.endswith("/transfermarket")
+                ):
+                    # The market used to need a query to be answered at all,
+                    # and a bare request fell through to a 404 -- the club has
+                    # its own no-query handler, the market had none. A search
+                    # with no filters is a search: it is the first page of
+                    # everything, which is what the screen shows before you
+                    # type anything.
                     query = {
                         key: values[0]
                         for key, values in urllib.parse.parse_qs(parsed.query).items()
@@ -2347,11 +3023,227 @@ class IdentityHttpService:
                 if normalized_path.startswith(
                     "/ut/game/fifa14/club/consumables"
                 ) and self.command == "GET":
+                    # The picker names a category in the path and asks one at a
+                    # time: /contracts, /fitness, /development. Answering every
+                    # one of them with the whole club's consumables handed it
+                    # 242 cards of every family when it asked for contracts.
+                    category = normalized_path[
+                        len("/ut/game/fifa14/club/consumables"):
+                    ].strip("/")
+                    payload = consumables_response(CLUB_INVENTORY, category)
+                    owner.journal.event(
+                        "fut_club_consumables_request",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        category=category,
+                        bytes=len(payload),
+                    )
                     self.reply(
                         200,
-                        consumables_response(CLUB_INVENTORY) + b"\n",
+                        payload + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # The end of a match. `FutDestroyMatchServerResponse` carries
+                # exactly three members -- myMatchStats, opponentMatchStats and
+                # matchData -- all three of which are in CardsDLL's own name
+                # table. This answered `{}`, which is a document the parser can
+                # read and find nothing in.
+                #
+                # Nothing else goes on the wire. A PC revival of the same game
+                # recovered the same three statically and records that its
+                # client disconnected immediately after parsing an oversized
+                # destroy response, so settlement stays server-side.
+                if (
+                    normalized_path == "/ut/game/fifa14/match/end"
+                    and self.command in ("PUT", "POST")
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    # Settle it. This used to answer three empty members and
+                    # throw the result away: no coins for the match, no
+                    # progress in the cup, nothing on the award screen. A club
+                    # could win a Gold Cup final and finish exactly as poor as
+                    # it started.
+                    result = match_result(document)
+                    reward = match_reward(
+                        document.get("myMatchStats"),
+                        document.get("opponentMatchStats"),
+                        minutes=int(document.get("minutesPlayed") or 90),
+                        completed=result in ("WIN", "DRAW", "LOSS"),
+                    )
+                    # What the match did to the eleven who played. The captured
+                    # body carries a per-player `fitness`, and goals and
+                    # assists for whoever got them; all of it was discarded, so
+                    # nobody ever lost fitness and the whole consumable pile
+                    # had nothing to restore.
+                    played = apply_match_items(
+                        CLUB_INVENTORY, document.get("items") or []
+                    )
+                    cup = {}
+                    if club.active_tournament is not None:
+                        cup = TOURNAMENT_PROGRESS.advance(club.active_tournament, result)
+                    earned = (
+                        reward["totalCoins"]
+                        + int(cup.get("roundCoins") or 0)
+                        + int(cup.get("prize") or 0)
+                    )
+                    if earned:
+                        WALLET.credit(earned)
+                    # The season's own record. Nothing else keeps it: the
+                    # client's progress goes up as an opaque blob and the
+                    # header asks for the numbers separately, which is why it
+                    # read BILAN 0-0-0 over a season won 3-0.
+                    season_record = {}
+                    if club.active_season is not None:
+                        season_record = SEASON_PROGRESS.settle(
+                            club.active_season[0], club.active_season[1], result, earned
+                        )
+                    CLUB_SAVE.save(
+                        CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                    )
+                    # The response stays the three members it has always been.
+                    # The award scalars the PC revival adds here are not sent
+                    # until a real match end from this console has been read:
+                    # that revival records its own client disconnecting on an
+                    # oversized destroy response, and a frontend that hangs
+                    # after a won final is worse than an award screen showing
+                    # zeroes over coins that are really in the wallet.
+                    payload = json.dumps(
+                        {
+                            "myMatchStats": "",
+                            "opponentMatchStats": "",
+                            "matchData": str(document.get("matchData") or ""),
+                        },
+                        separators=(",", ":"),
+                    ).encode()
+                    owner.journal.event(
+                        "fut_match_end",
+                        peer=self.client_address[0],
+                        result=result,
+                        completionAward=reward["completionAward"],
+                        skillAward=reward["skillAward"],
+                        roundCoins=cup.get("roundCoins", 0),
+                        prize=cup.get("prize", 0),
+                        credited=earned,
+                        coins=WALLET.coins,
+                        tournament=cup.get("tournamentId"),
+                        round=cup.get("round"),
+                        season=club.active_season,
+                        seasonRecord=(
+                            f"{season_record.get('won', 0)}-"
+                            f"{season_record.get('draw', 0)}-"
+                            f"{season_record.get('lost', 0)}"
+                            if season_record
+                            else None
+                        ),
+                        fitnessWritten=played["fitness"],
+                        goals=played["goals"],
+                        assists=played["assists"],
+                        unknownPlayers=played["unknown"],
+                        bytes=len(payload),
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Club creation. The screen sends the name and abbreviation it
+                # asked the player for; answering `{}` accepted them and threw
+                # them away, so the club had no name on the next load and every
+                # other route went on reporting an unnamed club.
+                if (
+                    normalized_path == "/ut/game/fifa14/user/club"
+                    and self.command in ("PUT", "POST")
+                ):
+                    try:
+                        document = json.loads(body or b"{}")
+                    except ValueError:
+                        document = {}
+                    adopted = CLUB_IDENTITY.adopt(document)
+                    if adopted:
+                        CLUB_INVENTORY.rename_active_squad(CLUB_IDENTITY.name)
+                        CLUB_SAVE.save(
+                            CLUB_INVENTORY, WALLET, CARD_ACTIONS, MANAGER_TASKS
+                        )
+                    owner.journal.event(
+                        "fut_club_created",
+                        peer=self.client_address[0],
+                        club=CLUB_IDENTITY.name,
+                        abbr=CLUB_IDENTITY.abbr,
+                        adopted=adopted,
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        b"{}\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # A cup's trophy definition, asked for by its
+                # `trophyResourceId`. The blanket empty answer below is what
+                # left the console building
+                # /fut/items/images/trophies/xbl2/.big with no basename.
+                # `-?` because the seasons screen asks for `-1.json`, once per
+                # division, and a digits-only pattern let all ten of them fall
+                # through to the blanket `{"itemData":[]}` this handler exists
+                # to replace. The console then builds
+                # /fut/items/images/trophies/xbl2/.big with no basename, which
+                # is in the journals eighteen times.
+                trophy_item = re.fullmatch(
+                    r"/fut/items/xbl2/(-?\d+)\.json", normalized_path
+                )
+                if trophy_item and self.command == "GET":
+                    resource_id = int(trophy_item.group(1))
+                    payload = trophy_item_response(resource_id)
+                    owner.journal.event(
+                        "fut_trophy_item",
+                        peer=self.client_address[0],
+                        trophy=resource_id,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # BIG archives, not JSON. Answering these from the blanket
+                # itemData reply below handed the console sixteen bytes of
+                # JSON where it asked for a binary container.
+                if (
+                    normalized_path.startswith("/fut/items/images/")
+                    and normalized_path.lower().endswith(".big")
+                    and self.command == "GET"
+                ):
+                    payload = empty_big_archive()
+                    owner.journal.event(
+                        "fut_image_archive",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        payload,
+                        {
+                            "Content-Type": "application/octet-stream",
                             "Cache-Control": "no-store",
                         },
                     )
@@ -2406,15 +3298,77 @@ class IdentityHttpService:
                         },
                     )
                     return
+                if normalized_path == "/ut/game/fifa14/clubUser" and (
+                    self.command == "GET"
+                ):
+                    # The persona is the club's name -- empty until the club is
+                    # created -- and the cards are what the Apply Consumable
+                    # picker binds against. Answering with the persona alone is
+                    # why it offered nothing.
+                    payload = club_user_response(CLUB_INVENTORY, club_name())
+                    owner.journal.event(
+                        "fut_club_user_request",
+                        peer=self.client_address[0],
+                        path=parsed.path,
+                        bytes=len(payload),
+                    )
+                    self.reply(
+                        200,
+                        with_balance(payload, WALLET.coins) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
                 if normalized_path in (
                     "/ut/game/fifa14/hub",
                     "/ut/game/fifa14/eventfeed",
-                    "/ut/game/fifa14/clubUser",
                 ) and self.command == "GET":
+                    fixture = FUT_ROUTES[normalized_path]
                     self.reply(
                         200,
-                        with_balance(FUT_ROUTES[normalized_path], WALLET.coins)
-                        + b"\n",
+                        with_balance(fixture, WALLET.coins) + b"\n",
+                        {
+                            "Content-Type": "application/json; charset=utf-8",
+                            "Cache-Control": "no-store",
+                        },
+                    )
+                    return
+                # Creating a match says which mode it belongs to. A cup match
+                # carries `tournamentId`, a season match carries `seasonId`
+                # and `divisionId` -- and for cups that ownership had to be
+                # inferred from whichever cup saved its progress last, because
+                # nothing else said so. Seasons need no such inference.
+                #
+                # The reply is unchanged: `{}` is what this route has always
+                # answered and the match starts on it.
+                if (
+                    normalized_path == "/ut/game/fifa14/match"
+                    and self.command == "POST"
+                ):
+                    try:
+                        created = json.loads(body or b"{}")
+                    except ValueError:
+                        created = {}
+                    if isinstance(created, dict) and "seasonId" in created:
+                        club.active_season = (
+                            int(created.get("seasonId") or 0),
+                            int(created.get("divisionId") or 0),
+                        )
+                        club.active_tournament = None
+                    elif isinstance(created, dict) and "tournamentId" in created:
+                        club.active_season = None
+                    owner.journal.event(
+                        "fut_match_created",
+                        peer=self.client_address[0],
+                        season=club.active_season,
+                        tournament=club.active_tournament,
+                        body=request_body_preview(body),
+                    )
+                    self.reply(
+                        200,
+                        FUT_ROUTES[normalized_path] + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
                             "Cache-Control": "no-store",
@@ -2621,7 +3575,18 @@ class IdentityHttpService:
                 if lowered_path == "/ut/game/fifa14/user/action":
                     # GetUserActionServerResponse is a collection. A new local
                     # identity has no completed onboarding actions yet.
-                    payload = b'{"userActionList":[]}\n'
+                    #
+                    # The collection is `actions`. `userActionList` appears
+                    # nowhere in CardsDLL's member-name table, while `actions`
+                    # sits directly beside `actionType` in it -- so the name
+                    # served here was one the parser could not read, and an
+                    # unreadable list is not the same as an empty one.
+                    #
+                    # This is the list `FUT_IcebreakerManager` consults through
+                    # `RetrieveUserActions` before `HasUserDoneIB` decides
+                    # whether the captain selection is owed. Both spellings go
+                    # out; an unrecognised sibling is skipped.
+                    payload = b'{"actions":[],"userActionList":[]}\n'
                     owner.journal.event(
                         "fut_user_actions_request",
                         peer=self.client_address[0],
@@ -2754,6 +3719,12 @@ class IdentityHttpService:
                     method=self.command,
                     path=parsed.path,
                     normalized_path=normalized_path,
+                    # The values, not only the names. Logging the names alone
+                    # left every question about what a screen actually asked
+                    # for -- which `type`, which `level` -- answerable only by
+                    # guessing, and the consumable picker was three guesses
+                    # deep before anyone noticed the journal could not say.
+                    query=parsed.query,
                     query_keys=sorted(urllib.parse.parse_qs(parsed.query).keys()),
                     body=request_body_preview(body),
                 )

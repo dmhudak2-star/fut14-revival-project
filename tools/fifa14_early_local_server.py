@@ -50,6 +50,7 @@ from fifa14_xnet_startup_patch import (
 )
 from fifa14_plain_recv_hook import cmpwi, conditional_branch
 from fifa14_plain_send_hook import addi, addis, branch, insn, write_chunks
+import revival_config
 import fifa14_login_callback_trace as login_callback_trace
 import fifa14_ea_login_state_trace as ea_login_state_trace
 import fifa14_postauth_dispatch_trace as postauth_dispatch_trace
@@ -377,7 +378,15 @@ def launch_title_command(directory: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("host", help="Xbox IP address")
-    parser.add_argument("--local-ip", required=True, help="Mac/server IPv4")
+    # Both default to fifa14revival.ini, so this runs on its own the same way
+    # tools/fut.sh runs it. See tools/revival_config.py.
+    parser.add_argument(
+        "--local-ip", default=None, help="server IPv4 (default: config)"
+    )
+    parser.add_argument(
+        "--identity-port", type=int, default=None,
+        help="HTTP port the title is pointed at (default: config)",
+    )
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument(
         "--redirector-transport",
@@ -504,6 +513,10 @@ def main() -> int:
             "--trace-ion-action-pipeline and --trace-ux-lua-errors"
         )
 
+    if args.local_ip is None:
+        args.local_ip = revival_config.server_host()
+    if args.identity_port is None:
+        args.identity_port = revival_config.port("server.identity_port")
     local_ip = str(ipaddress.IPv4Address(args.local_ip))
     connect_stub = build_connect_stub(int(ipaddress.IPv4Address(local_ip)))
 
@@ -669,7 +682,7 @@ def main() -> int:
             if args.redirect_fut_resource:
                 fut_resource_url_trace.arm(
                     control,
-                    f"http://{local_ip}:18080/futBoot.xml",
+                    f"http://{local_ip}:{args.identity_port}/futBoot.xml",
                 )
             if args.trace_provider_publication:
                 provider_publication_trace.arm(control)

@@ -106,6 +106,13 @@ def main() -> int:
             for tier in ("gold", "silver", "bronze"):
                 if tier in row:
                     card[tier] = row[tier]
+            # `fcc_misccards` alone carries a second art id. `cardassetid` is
+            # the family's picture -- 43 for every subtype 232 -- and `assetid`
+            # picks the variant inside it, 1 to 4. Dropping it drew NOT FOUND
+            # on those cards while their names resolved perfectly: the client
+            # knew the card and had no picture for it.
+            if "assetid" in row:
+                card["assetid"] = row["assetid"]
             cards.append(card)
 
     cards.sort(key=lambda card: card["definitionId"])

@@ -1346,7 +1346,8 @@
    "rating": 55,
    "amount": 2,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 1
   },
   {
    "definitionId": 5004008,
@@ -1357,7 +1358,8 @@
    "rating": 65,
    "amount": 4,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 2
   },
   {
    "definitionId": 5004009,
@@ -1368,7 +1370,8 @@
    "rating": 75,
    "amount": 6,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 3
   },
   {
    "definitionId": 5004010,
@@ -1379,7 +1382,8 @@
    "rating": 60,
    "amount": 3,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 2
   },
   {
    "definitionId": 5004011,
@@ -1390,7 +1394,8 @@
    "rating": 70,
    "amount": 5,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 3
   },
   {
    "definitionId": 5004012,
@@ -1401,7 +1406,8 @@
    "rating": 80,
    "amount": 8,
    "rare": false,
-   "table": "fcc_misccards"
+   "table": "fcc_misccards",
+   "assetid": 4
   }
  ]
 }

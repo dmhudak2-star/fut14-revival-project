@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
+import os
 import socket
 import sys
 import tempfile
@@ -612,6 +613,9 @@ class ProtocolTests(unittest.TestCase):
                     "/ut/game/fifa14/hub",
                     # Manager tasks are tracked, not fixed.
                     "/ut/game/fifa14/clientdata/managerquest",
+                    # Carries the club's own cards and the adopted persona.
+                    # The fixture beside it is the shape, not the contents.
+                    "/ut/game/fifa14/clubUser",
                 }
                 for path in sorted(set(SERVER.FUT_ROUTES) - dynamic):
                     client = http.client.HTTPConnection(
@@ -648,6 +652,478 @@ class ProtocolTests(unittest.TestCase):
                     __import__("json").loads(response.read()), {"reset": True}
                 )
                 client.close()
+            finally:
+                identity.stop()
+
+
+class MatchEndTests(unittest.TestCase):
+    def test_the_destroy_response_carries_its_three_members(self) -> None:
+        # FutDestroyMatchServerResponse has exactly myMatchStats,
+        # opponentMatchStats and matchData -- all three in CardsDLL's name
+        # table. This route answered {}, a document the parser can read and
+        # find nothing in. Nothing else goes out: a sibling build records its
+        # client disconnecting after parsing an oversized destroy response.
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService(
+                "127.0.0.1", 0, "127.0.0.1", journal
+            )
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                client.request(
+                    "PUT",
+                    "/ut/game/fifa14/match/end",
+                    __import__("json").dumps({"matchData": "QUJD"}).encode(),
+                )
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                body = __import__("json").loads(response.read())
+                client.close()
+
+                self.assertEqual(
+                    set(body),
+                    {"myMatchStats", "opponentMatchStats", "matchData"},
+                )
+                self.assertEqual(body["matchData"], "QUJD")
+            finally:
+                identity.stop()
+
+
+class TournamentRouteTests(unittest.TestCase):
+    """The cups.
+
+    Every member asserted here is one CardsDLL's own JSON name table carries.
+    The catalogue was served empty because an earlier guessed shape froze the
+    title on Competition Joueur Solo, so the two things that matter are that
+    `rounds` is an array of records and that no invented member goes out.
+    """
+
+    def setUp(self) -> None:
+        SERVER.TOURNAMENT_PROGRESS.entries.clear()
+
+    tearDown = setUp
+
+    def _identity(self, temp: str):
+        journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+        identity = SERVER.IdentityHttpService("127.0.0.1", 0, "127.0.0.1", journal)
+        identity.start()
+        return identity
+
+    def _get(self, port: int, path: str, method: str = "GET", body: bytes | None = None):
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        client.request(method, path, body)
+        response = client.getresponse()
+        payload = __import__("json").loads(response.read())
+        status = response.status
+        client.close()
+        return status, payload
+
+    def test_catalogue_carries_the_native_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                for path in (
+                    "/ut/game/fifa14/tournament",
+                    "/ut/game/fifa14/tournament/list",
+                ):
+                    status, body = self._get(port, path)
+                    self.assertEqual(status, 200, path)
+                    cups = body["tournament"]
+                    self.assertTrue(cups, path)
+                    for cup in cups:
+                        # The freeze: a count where the parser walks records.
+                        self.assertIsInstance(cup["rounds"], list)
+                        self.assertEqual(len(cup["rounds"]), cup["numRounds"])
+                        for entry in cup["rounds"]:
+                            self.assertEqual(
+                                set(entry),
+                                {"id", "difficulty", "rewardMultiplier", "coins"},
+                            )
+                        self.assertEqual(cup["treeType"], "knockout")
+                        self.assertEqual(cup["type"], "offline")
+                        self.assertEqual(cup["lock"], "UNLOCKED")
+                        self.assertEqual(
+                            set(cup["awardSet"]["awards"][0]),
+                            {"awardType", "value", "halid"},
+                        )
+                        # Members the previous attempt invented; none of these
+                        # appear in the module's name table.
+                        for absent in ("name", "level", "entryFee", "active", "won"):
+                            self.assertNotIn(absent, cup)
+            finally:
+                identity.stop()
+
+    def test_teams_draw_is_one_short_of_the_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                status, body = self._get(
+                    port, "/ut/game/fifa14/tournament/teams?count=15"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(set(body), {"teamId"})
+                self.assertEqual(len(body["teamId"]), 15)
+                self.assertTrue(all(isinstance(x, int) for x in body["teamId"]))
+            finally:
+                identity.stop()
+
+    def test_a_cup_never_entered_reports_only_its_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": []}))
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/1")
+                self.assertEqual((status, body), (200, {"tournamentId": 1}))
+            finally:
+                identity.stop()
+
+    def test_progress_is_kept_and_read_back(self) -> None:
+        # `full` is the shape under test. The default is `off`, because
+        # handing a played run back freezes this title -- twice measured, with
+        # and without `tournamentId`. See `cup_resume_mode`.
+        previous_mode = os.environ.get("FIFA14_CUP_RESUME")
+        os.environ["FIFA14_CUP_RESUME"] = "full"
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                # The body the client builds itself, from the format string
+                # that sits among the cup constants in .rdata.
+                sent = __import__("json").dumps(
+                    {
+                        "round": 3,
+                        "dataVersion": 1,
+                        "tournamentData": "QUJD",
+                        "progressDataVersion": 1,
+                        "progressData": "REVG",
+                    }
+                ).encode()
+                status, _ = self._get(
+                    port, "/ut/game/fifa14/tournament/user/2", "PUT", sent
+                )
+                self.assertEqual(status, 200)
+
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/2")
+                self.assertEqual(status, 200)
+                self.assertEqual(body["round"], 3)
+                self.assertEqual(body["tournamentData"], "QUJD")
+                # Exactly the three members the reader at CardsDLLzf+0x1be840
+                # matches, and `tournamentData` **before** `dataVersion`: the
+                # version branch is what decodes, using what the data branch
+                # left behind. See `cup_resume_mode`.
+                self.assertEqual(
+                    list(body), ["tournamentId", "round", "tournamentData", "dataVersion"]
+                )
+                self.assertNotIn("progressData", body)
+                self.assertNotIn("progressdata", body)
+                # Handed back as it was written, under its own id.
+                #
+                # The id was taken out of here once, on the reasoning that the
+                # path already carries it -- a guess, made in the same change
+                # that removed a duplicate lower-case `progressdata`. That
+                # second spelling is in the name table, so it is the same
+                # known field twice rather than a sibling the parser skips,
+                # and it is reason enough for a freeze on its own. Removing
+                # both together proved nothing about either.
+                self.assertEqual(body["tournamentId"], 2)
+                # `data` is the season spelling and does not go out here.
+                self.assertNotIn("data", body)
+
+                # Only the cup actually entered is named.
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": [2]}))
+
+                status, _ = self._get(
+                    port, "/ut/delete/game/fifa14/tournament/user/2", "POST", b"{}"
+                )
+                self.assertEqual(status, 200)
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertEqual((status, body), (200, {"tournamentId": []}))
+            finally:
+                identity.stop()
+                if previous_mode is None:
+                    os.environ.pop("FIFA14_CUP_RESUME", None)
+                else:
+                    os.environ["FIFA14_CUP_RESUME"] = previous_mode
+
+    def test_a_cup_run_can_be_withheld_entirely(self) -> None:
+        # The escape hatch. A frozen console costs a relaunch, so `off`
+        # stays reachable: the run is still kept -- the list names it and
+        # the save holds it -- but the document that reopens it never goes
+        # out, and the cup restarts instead.
+        previous_mode = os.environ.get("FIFA14_CUP_RESUME")
+        os.environ["FIFA14_CUP_RESUME"] = "off"
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            try:
+                port = identity.server.server_address[1]
+                self._get(
+                    port, "/ut/game/fifa14/tournament/user/5", "PUT",
+                    json_module.dumps(
+                        {"round": 2, "dataVersion": 1, "tournamentData": "QUJD",
+                         "progressDataVersion": 1, "progressData": "AAAAAgAB"}
+                    ).encode(),
+                )
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/5")
+                self.assertEqual((status, body), (200, {"tournamentId": 5}))
+                # Kept, not forgotten.
+                status, body = self._get(port, "/ut/game/fifa14/tournament/user/list")
+                self.assertIn(5, body["tournamentId"])
+            finally:
+                SERVER.TOURNAMENT_PROGRESS.entries.clear()
+                identity.stop()
+                if previous_mode is None:
+                    os.environ.pop("FIFA14_CUP_RESUME", None)
+                else:
+                    os.environ["FIFA14_CUP_RESUME"] = previous_mode
+
+    def test_a_season_is_saved_under_its_season_and_division(self) -> None:
+        # The route the console actually sent on starting a Saison Joueur
+        # Solo. `ut/%s/season/%s/user` in the URL template table reads as one
+        # id; the format string beside the season serialiser is
+        # `%d/division/%d`, and the wire agrees with the second reading.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                path = "/ut/game/fifa14/season/1/division/10/user"
+                # Round one with an empty progress blob is a season with no
+                # first match behind it -- the same shape that froze the cups
+                # when it was handed back. It is answered as no season at all.
+                started = __import__("json").dumps(
+                    {
+                        "round": 1,
+                        "dataVersion": 1,
+                        "data": "AAAAEAUAAAABAAAAAAAAAAAAAAA=",
+                        "progressDataVersion": 1,
+                        "progressData": "AAAAAA==",
+                    }
+                ).encode()
+                status, body = self._get(port, path, "PUT", started)
+                self.assertEqual((status, body), (200, {}))
+
+                # A season actually under way comes back the way it went up,
+                # spelled `data` -- the seasons' word, not the cups'.
+                played = __import__("json").dumps(
+                    {
+                        "round": 3,
+                        "dataVersion": 1,
+                        "data": "QUJD",
+                        "progressDataVersion": 1,
+                        "progressData": "REVG",
+                    }
+                ).encode()
+                status, _ = self._get(port, path, "PUT", played)
+                self.assertEqual(status, 200)
+                status, body = self._get(port, path, "GET")
+                self.assertEqual(status, 200)
+                self.assertEqual(body["round"], 3)
+                # The blob before the version that decodes it, same rule as a
+                # cup.
+                self.assertEqual(list(body), ["round", "seasonData", "dataVersion"])
+                self.assertNotIn("data", body)
+                self.assertNotIn("progressData", body)
+                self.assertNotIn("tournamentData", body)
+                self.assertNotIn("seasonId", body)
+
+                # Another division is another season, not the same one.
+                status, body = self._get(
+                    port, "/ut/game/fifa14/season/1/division/9/user", "GET"
+                )
+                self.assertEqual((status, body), (200, {}))
+
+                status, _ = self._get(
+                    port, "/ut/game/fifa14/season/1/division/10/reset", "PUT", b"{}"
+                )
+                self.assertEqual(status, 200)
+                status, body = self._get(port, path, "GET")
+                self.assertEqual((status, body), (200, {}))
+            finally:
+                identity.stop()
+
+    def test_a_season_match_settles_into_the_season_it_was_created_in(self) -> None:
+        # The whole chain, in the order the console walks it. Which mode owns
+        # a result had to be inferred for cups, from whichever cup saved its
+        # progress last; a season match says so itself, in the body that
+        # creates it.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            previous = SERVER.TENANTS.default().active_season
+            coins_before = SERVER.WALLET.coins
+            try:
+                port = identity.server.server_address[1]
+                SERVER.SEASON_PROGRESS.entries.clear()
+
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match",
+                    "POST",
+                    json_module.dumps(
+                        {
+                            "squadId": 4,
+                            "type": "OFFLINE",
+                            "seasonId": 1,
+                            "divisionId": 10,
+                        }
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(SERVER.TENANTS.default().active_season, (1, 10))
+
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match/end",
+                    "PUT",
+                    json_module.dumps(
+                        {"endReason": "WIN", "items": [], "matchData": "ab"}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+
+                entry = SERVER.SEASON_PROGRESS.entries[(1, 10)]
+                self.assertEqual(entry["won"], 1)
+                self.assertEqual(entry["lost"], 0)
+                # Whatever the match paid went to the wallet and to the
+                # season's own total, which are two different numbers on two
+                # different screens.
+                self.assertEqual(entry["coins"], SERVER.WALLET.coins - coins_before)
+
+                # A cup match afterwards must not settle into the season.
+                status, _ = self._get(
+                    port,
+                    "/ut/game/fifa14/match",
+                    "POST",
+                    json_module.dumps(
+                        {"squadId": 4, "type": "OFFLINE", "tournamentId": 3}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                self.assertIsNone(SERVER.TENANTS.default().active_season)
+            finally:
+                SERVER.TENANTS.default().active_season = previous
+                SERVER.SEASON_PROGRESS.entries.clear()
+                identity.stop()
+
+    def _sid_get(self, port: int, path: str, method: str, body: bytes | None,
+                 sid: str | None = None, nucleus: int | None = None):
+        """Like `_get`, but says who is asking."""
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        headers = {}
+        if sid is not None:
+            headers["X-UT-SID"] = sid
+        if nucleus is not None:
+            headers["Easw-Session-Data-Nucleus-Id"] = str(nucleus)
+        client.request(method, path, body, headers)
+        response = client.getresponse()
+        payload = __import__("json").loads(response.read())
+        status = response.status
+        client.close()
+        return status, payload
+
+    def test_two_consoles_do_not_share_a_club(self) -> None:
+        # The routing key is the FUT session id, not the nucleus header. On a
+        # full session into Saison Joueur Solo the nucleus header appeared on
+        # one request out of forty-nine and `X-UT-SID` on forty-six -- so the
+        # session id is the only thing that can route a request generally,
+        # which is what it is for.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            json_module = __import__("json")
+            try:
+                port = identity.server.server_address[1]
+
+                # `/ut/auth` mints the session id, derived from the persona
+                # the request itself presents. Derived rather than stored: the
+                # launcher restarts this server on every run, and a stored
+                # table would strand a client still holding the last one.
+                status, body = self._sid_get(
+                    port, "/ut/auth", "POST",
+                    json_module.dumps(
+                        {"nuc": 111, "nucleusPersonaId": 111,
+                         "nucleusPersonaDisplayName": "Un"}
+                    ).encode(),
+                )
+                self.assertEqual(status, 200)
+                first = body["sid"]
+                self.assertEqual(SERVER.sid_persona(first), 111)
+                self.assertNotEqual(first, SERVER.UT_SID_BASE)
+
+                status, body = self._sid_get(
+                    port, "/ut/auth", "POST",
+                    json_module.dumps(
+                        {"nuc": 222, "nucleusPersonaId": 222,
+                         "nucleusPersonaDisplayName": "Deux"}
+                    ).encode(),
+                )
+                second = body["sid"]
+                self.assertNotEqual(first, second)
+
+                # Both clubs seeded from the suite's scratch save, which by
+                # now carries whatever an earlier test left in it. What is
+                # under test is where a result *lands*, so start both from a
+                # clean season table.
+                for persona in (111, 222):
+                    SERVER.TENANTS.get(persona).seasons.entries.clear()
+
+                # Each console starts a season, and each one keeps its own.
+                for sid, season in ((first, 1), (second, 7)):
+                    status, _ = self._sid_get(
+                        port, "/ut/game/fifa14/match", "POST",
+                        json_module.dumps(
+                            {"squadId": 4, "type": "OFFLINE",
+                             "seasonId": season, "divisionId": 10}
+                        ).encode(),
+                        sid=sid,
+                    )
+                    self.assertEqual(status, 200)
+
+                self.assertEqual(SERVER.TENANTS.get(111).active_season, (1, 10))
+                self.assertEqual(SERVER.TENANTS.get(222).active_season, (7, 10))
+
+                # And a win settles into the club that created the match, not
+                # into whichever one the server saw last.
+                status, _ = self._sid_get(
+                    port, "/ut/game/fifa14/match/end", "PUT",
+                    json_module.dumps(
+                        {"endReason": "WIN", "items": [], "matchData": "ab"}
+                    ).encode(),
+                    sid=first,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    SERVER.TENANTS.get(111).seasons.entries[(1, 10)]["won"], 1
+                )
+                self.assertEqual(SERVER.TENANTS.get(222).seasons.entries, {})
+
+                # A session id from an older server still resolves -- to the
+                # default club, which is where a single console already was.
+                self.assertEqual(SERVER.sid_persona(SERVER.UT_SID_BASE), 0)
+            finally:
+                SERVER.TENANTS.forget(111)
+                SERVER.TENANTS.forget(222)
+                identity.stop()
+
+    def test_the_season_history_is_answered_empty_rather_than_404ed(self) -> None:
+        # Asked for once per type the moment a season starts. A 404 here is a
+        # hang with nothing to read, and no season has ever been finished, so
+        # there is nothing to invent either.
+        with tempfile.TemporaryDirectory() as temp:
+            identity = self._identity(temp)
+            try:
+                port = identity.server.server_address[1]
+                for kind in ("offline", "online", "WC_TOURNAMENT_OFFINE"):
+                    status, body = self._get(
+                        port, f"/ut/game/fifa14/season/user/history?type={kind}"
+                    )
+                    self.assertEqual((kind, status, body), (kind, 200, {}))
             finally:
                 identity.stop()
 
@@ -965,7 +1441,14 @@ class TcpServerTests(unittest.TestCase):
                 status, _, actions = request_json(
                     "GET", "/ut/game/fifa14/user/action"
                 )
-                self.assertEqual((status, actions), (200, {"userActionList": []}))
+                # The collection CardsDLL reads is `actions` -- `userActionList`
+                # is in no member-name table, so it was a list the parser could
+                # not see. Both spellings go out; the unrecognised one is
+                # skipped. This is the list FUT_IcebreakerManager consults
+                # before deciding whether the captain selection is owed.
+                self.assertEqual(status, 200)
+                self.assertEqual(actions["actions"], [])
+                self.assertEqual(actions["userActionList"], [])
 
                 status, _, updated = request_json(
                     "PUT", "/ut/game/fifa14/user/action/firstUse", b"{}"
@@ -1025,3 +1508,361 @@ class TcpServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RouteSpellingTests(unittest.TestCase):
+    """The client's spelling of a path and this server's have to agree."""
+
+    def test_the_client_spelling_of_the_watch_list_is_answered(self) -> None:
+        import fifa14_blaze_server as server
+
+        # The client asks for `watchList`; this server registered `watchlist`,
+        # and every time the watch list was opened it got a 404. Nothing
+        # reported it -- an empty watch list looks like an empty watch list.
+        self.assertEqual(
+            server.FUT_ROUTE_SPELLINGS["/ut/game/fifa14/watchlist"],
+            "/ut/game/fifa14/watchlist",
+        )
+        for spelling in (
+            "/ut/game/fifa14/watchList",
+            "/ut/game/fifa14/WATCHLIST",
+            "/ut/game/fifa14/tradepile",
+            "/ut/game/fifa14/clubuser",
+        ):
+            self.assertIn(
+                spelling.lower(), server.FUT_ROUTE_SPELLINGS,
+                f"{spelling} does not resolve to a registered route",
+            )
+
+    def test_every_route_the_server_names_can_be_reached_in_any_case(self) -> None:
+        # The map is built from two lists and the handlers are written by hand,
+        # so it drifts unless something checks. Every `/ut/game/fifa14/...`
+        # literal in the module has to be in it.
+        import re
+        from pathlib import Path
+
+        import fifa14_blaze_server as server
+
+        source = Path(server.__file__).read_text()
+        literals = set(re.findall(r'"(/ut/game/fifa14/[a-zA-Z0-9/_-]*)"', source))
+        # Prefixes used with startswith, not whole routes.
+        literals = {route for route in literals if not route.endswith("/")}
+        missing = sorted(
+            route for route in literals
+            if route.lower() not in server.FUT_ROUTE_SPELLINGS
+        )
+        self.assertEqual(missing, [], f"routes missing from the spelling map: {missing}")
+
+
+class GameReportingTests(unittest.TestCase):
+    """The offline game report the console really submits, component 28/2."""
+
+    # Both captured off this console. The first is what a FUT match submits
+    # (`gameType21`), the second a longer report carrying a club record
+    # (`gameType85`). Each one used to take the Blaze connection down with it:
+    # the TDF decoder had no case for type 7 and raised on `PRVT` at offset 5.
+    GAME_TYPE_21 = bytes.fromhex(
+        "004A001C000200000000003F9AECE80000C32DB40700CB0CB4039E1B650701"
+        "9FC2908E179E1B65038F4CB9010100C2CA640000CE3BF2009C76CEBB270001"
+        "00009F2A6400009F4E70010B67616D655479706532310000"
+    )
+    GAME_TYPE_85 = bytes.fromhex(
+        "00AF001C000200000000007D9AECE80000C32DB40700CB0CB4039E1B650701"
+        "9BFDB5C50F9E1B65038E7CB407009E1B7203872A6400008E7CB40701"
+        "9DD5DD9F1D8E7CB4038ED9F203CB6B2D0000DEEC2B000000B64A6600020000"
+        "8F4A6400009F2A6400009F4A6D00AE57A73A6D0000B27A640000CA1BAB0000"
+        "CAFA640000CE5A640000CF4D730000D39C25010B67616D655479706538350000"
+        "A66C320700D21B72070000009F2A6400009F4E70010B67616D65547970653835"
+        "0000"
+    )
+
+    def test_the_offline_game_report_decodes_and_re_encodes_unchanged(self) -> None:
+        for name, frame in (("21", self.GAME_TYPE_21), ("85", self.GAME_TYPE_85)):
+            with self.subTest(game_type=name):
+                decoded = decode_frame(frame)
+                self.assertEqual(decoded["component"], 28)
+                self.assertEqual(decoded["command"], 2)
+                labels = [field.label for field in decoded["fields"]]
+                self.assertEqual(labels, ["FNSH", "PRVT", "RPRT"])
+                # Re-encoding byte for byte is what says the shape was read
+                # rather than guessed: there is no slack for a wrong rule to
+                # hide in.
+                self.assertEqual(encode_fields(decoded["fields"]), frame[12:])
+
+    def test_the_report_carries_a_variable_tdf_holding_the_game(self) -> None:
+        decoded = decode_frame(self.GAME_TYPE_21)
+        report = SERVER.find_field(decoded["fields"], "RPRT")
+        self.assertEqual(report.type, STRUCT)
+        # PRVT is an unset variable; GAME is a set one, carrying the 32-bit id
+        # of the class whose fields follow.
+        private = SERVER.find_field(decoded["fields"], "PRVT")
+        self.assertEqual(private.type, 7)
+        self.assertIsNone(private.value)
+        game = SERVER.find_field(report.value, "GAME")
+        self.assertEqual(game.type, 7)
+        tdf_id, fields = game.value
+        self.assertEqual(tdf_id, 0xB8E2109F)
+        inner = SERVER.find_field(fields, "GAME")
+        self.assertEqual(SERVER.find_field(inner.value, "SCOR").value, 7580)
+
+    def test_submitting_a_report_is_answered_rather_than_dropped(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, journal)
+        state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
+        replies = protocol.handle(self.GAME_TYPE_21, state)
+        # Two: the RPC answer, and the asynchronous ResultNotification the
+        # post-match screen waits on before it will leave. Answering the RPC
+        # alone is not the end of the handshake.
+        self.assertEqual(len(replies), 2)
+        answer = decode_frame(replies[0])
+        self.assertEqual(answer["message_type"], 1)
+        self.assertEqual(answer["error"], 0)
+
+        notification = decode_frame(replies[1])
+        self.assertEqual(notification["component"], 28)
+        self.assertEqual(notification["command"], 114)
+        self.assertEqual(notification["message_type"], 2)
+        labels = {field.label: field.value for field in notification["fields"]}
+        self.assertEqual(labels["EROR"], 0)
+        self.assertEqual(labels["FNL"], 1)
+        # GRID travels back in both id members so the notification can be
+        # matched to the report that caused it.
+        self.assertEqual(labels["GRID"], labels["GHID"])
+
+
+class TrophyItemTests(unittest.TestCase):
+    def test_a_negative_trophy_id_is_answered_like_any_other(self) -> None:
+        # The seasons screen asks for /fut/items/xbl2/-1.json, once per
+        # division. A digits-only pattern let all ten fall through to the
+        # blanket `{"itemData":[]}` that this route exists to replace, and the
+        # console then built /fut/items/images/trophies/xbl2/.big with no
+        # basename -- eighteen of those are in the journals.
+        import json
+        import re
+
+        pattern = r"/fut/items/xbl2/(-?\d+)\.json"
+        self.assertIsNotNone(re.fullmatch(pattern, "/fut/items/xbl2/-1.json"))
+        self.assertIsNotNone(re.fullmatch(pattern, "/fut/items/xbl2/1102.json"))
+
+        document = json.loads(SERVER.trophy_item_response(-1))
+        entry = document["itemData"][0]
+        self.assertEqual(entry["resourceId"], -1)
+        # The basename is what the console builds the archive path from, so
+        # the only thing that matters is that there is one.
+        self.assertTrue(entry["assetName"])
+        self.assertEqual(entry["assetName"], entry["image"])
+
+
+class ConsumableByItemIdTests(unittest.TestCase):
+    def test_a_consumable_can_be_applied_by_its_own_item_id(self) -> None:
+        # The client addresses a consumable two ways: `item/resource/<id>`
+        # names the definition, `item/<id>` names one particular card in the
+        # club. Only the first was handled, so this real request on 11 August
+        #
+        #     POST /ut/game/fifa14/item/1950000106
+        #     {"apply":[{"id":1700000004}]}
+        #
+        # was answered 404 and went into the unhandled journal, where nobody
+        # looked. From the player's side the card simply did nothing.
+        import fut_inventory as inventory
+
+        club = inventory.ClubInventory()
+        rack = inventory.ConsumableRack(club)
+        consumable = next(
+            item for item in club.items
+            if item.get("itemType") in inventory.CONSUMABLE_TYPES
+            and item.get("resourceId")
+        )
+        self.assertEqual(
+            rack.resource_of(consumable["id"]), consumable["resourceId"]
+        )
+
+        player = next(i for i in club.items if i.get("itemType") == "player")
+        with self.assertRaises(inventory.ConsumableRefused):
+            rack.resource_of(player["id"])
+        with self.assertRaises(inventory.ConsumableRefused):
+            rack.resource_of(-999)
+
+
+class EveryRouteAnswersTests(unittest.TestCase):
+    """A GET on every registered FUT route comes back 200 and parseable.
+
+    The watch list was a 404 for as long as it has existed, because the client
+    spells it `watchList` and this server registered `watchlist`. Nothing
+    noticed, because a 404 on a FUT route just leaves a screen empty. This
+    walks the whole surface so the next one is noticed by a test rather than by
+    a player wondering why a screen is blank.
+
+    Routes taking an id, and the two that are not JSON, are named below rather
+    than skipped silently -- a skip list nobody reads is how the last one got
+    through.
+    """
+
+    # Prefixes, not whole routes: they need an id or a body to mean anything.
+    NEEDS_MORE = (
+        "/ut/game/fifa14/trade",
+        "/ut/game/fifa14/user/action",
+        "/ut/game/fifa14/phishing",
+        "/ut/game/fifa14/item",
+        "/ut/game/fifa14/auctionhouse",
+        "/ut/game/fifa14/squad",
+        "/ut/game/fifa14/tournament/user",
+        "/ut/game/fifa14/store",
+    )
+
+    def test_every_registered_route_answers_a_get(self) -> None:
+        import http.client
+        import json as jsonlib
+
+        with tempfile.TemporaryDirectory() as temp:
+            journal = SERVER.Journal(Path(temp) / "journal.jsonl")
+            identity = SERVER.IdentityHttpService("127.0.0.1", 0, "127.0.0.1", journal)
+            identity.start()
+            try:
+                port = identity.server.server_address[1]
+                routes = sorted(
+                    set(SERVER.FUT_ROUTES) | set(SERVER.HANDLED_ROUTES)
+                )
+                checked = 0
+                for route in routes:
+                    if route in self.NEEDS_MORE:
+                        continue
+                    for spelling in (route, route.lower()):
+                        client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                        client.request("GET", spelling)
+                        response = client.getresponse()
+                        payload = response.read()
+                        status = response.status
+                        client.close()
+                        self.assertEqual(status, 200, f"{spelling} answered {status}")
+                        if payload.strip():
+                            jsonlib.loads(payload)
+                    checked += 1
+                # If this ever drops to nothing the loop has stopped testing.
+                self.assertGreater(checked, 30)
+            finally:
+                identity.stop()
+
+
+class JournalReplayTests(unittest.TestCase):
+    def test_the_most_recent_recorded_session_still_answers(self) -> None:
+        # The journals are a regression suite nobody was running. Two of
+        # tonight's fixes came out of reading them by hand -- the watch list
+        # 404ing on a capital L, and a consumable applied by its own item id
+        # falling through unhandled -- and both had been failing for days in a
+        # screen that merely looked empty.
+        import importlib.util
+
+        journals = sorted((ROOT / "runtime").glob("live-easw-*.jsonl"))
+        if not journals:
+            self.skipTest("no recorded session in runtime/")
+
+        spec = importlib.util.spec_from_file_location(
+            "replay_journal", ROOT / "tools" / "replay_journal.py"
+        )
+        replay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(replay)
+
+        # The newest session with enough in it to be worth replaying.
+        substantial = [
+            path for path in journals
+            if sum(1 for _ in replay.requests_in(path)) >= 20
+        ]
+        if not substantial:
+            self.skipTest("no recorded session with requests in it")
+        self.assertEqual(replay.replay(substantial[-1:], quiet=True), 0)
+
+
+class SessionResumeTests(unittest.TestCase):
+    def test_a_second_connection_is_told_whose_it_is(self) -> None:
+        # The EAS FC module opens a Blaze connection of its own once its
+        # endpoints point somewhere reachable, and the first thing it says is
+        #
+        #     component 0x7802 command 35   SKEY "offline-901feefe6a599"
+        #
+        # which is the key the login handed out on the first connection. It was
+        # answered with a fieldless success and nothing else, so the module was
+        # acknowledged and then never told who it was.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        protocol = SERVER.Fifa14Protocol(
+            "192.0.2.35", 10041, journal, account_store=store
+        )
+        xuid = 0x901FEEFE6A599
+        store.save_identity(xuid, "Imskobogota6z")
+
+        state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
+        replies = protocol.handle(
+            request(0x7802, 35, [Field("SKEY", STRING, f"offline-{xuid:x}")]),
+            state,
+        )
+        self.assertEqual(len(replies), 4)
+        self.assertEqual(decode_frame(replies[0])["message_type"], 1)
+        self.assertTrue(state.authenticated)
+        self.assertEqual(state.xuid, xuid)
+
+        sent = [decode_frame(frame) for frame in replies[1:]]
+        self.assertEqual([frame["command"] for frame in sent], [8, 2, 1])
+        for frame in sent:
+            self.assertEqual(frame["component"], 0x7802)
+            self.assertEqual(frame["message_type"], 2)
+        authenticated = {f.label: f.value for f in sent[0]["fields"]}
+        self.assertEqual(authenticated["DSNM"], "Imskobogota6z")
+        self.assertEqual(authenticated["BUID"], xuid)
+
+    def test_a_key_that_names_nobody_is_refused_quietly(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
+        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        protocol = SERVER.Fifa14Protocol(
+            "192.0.2.35", 10041, journal, account_store=store
+        )
+        store.save_identity(1234, "Someone")
+        state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
+        replies = protocol.handle(
+            request(0x7802, 35, [Field("SKEY", STRING, "offline-deadbeef")]),
+            state,
+        )
+        # Answered, but nobody is claimed on the strength of a key that names
+        # a session this server never handed out.
+        self.assertEqual(len(replies), 1)
+        self.assertFalse(state.authenticated)
+
+
+class IdentityChannelTests(unittest.TestCase):
+    def test_the_user_document_carries_the_persona_the_headers_do(self) -> None:
+        # FUT tells a client who it is through four channels and they have to
+        # agree: the /user body's personaId, /eaid/personas, and the
+        # EASW-Nucleus-Persona and EASW-Userid headers. Ours carried the
+        # console's real nucleus id in both headers and a flat 0 in the body.
+        import json
+
+        import fut_inventory as inventory
+
+        wallet = inventory.Wallet()
+        persona = 2535469248587161
+        document = json.loads(wallet.user_info("Fondateur FUT", "FUT", persona))
+        self.assertEqual(document["personaId"], persona)
+
+        # And every other document that carries one carries the same. Aligning
+        # /user alone is worse than leaving them all wrong: the squad screen
+        # came back with eleven blank cards, because a client will not show a
+        # squad that belongs to somebody else.
+        inventory.PERSONA.adopt(persona)
+        try:
+            club = inventory.ClubInventory()
+            squad = json.loads(club.squad_document(club.active_squad_id(), "bpl"))
+            self.assertEqual(squad["personaId"], persona)
+            self.assertEqual(
+                json.loads(club.active_squad_response("bpl"))["personaId"], persona
+            )
+            self.assertEqual(
+                json.loads(wallet.user_info("bpl", "FUT"))["personaId"], persona
+            )
+        finally:
+            inventory.PERSONA.id = 0

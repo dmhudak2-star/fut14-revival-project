@@ -150,6 +150,29 @@ class Decoder:
                 for _ in range(count)
             ]
             value = (key_type, value_type, pairs)
+        elif field_type == VARIABLE:
+            # A variable TDF: a flag, and when it is set, the 32-bit id of the
+            # class that follows and then that class's fields.
+            #
+            #     <u8 set>  [ <varint tdfId>  <fields...>  0x00 ]
+            #
+            # Every offline game report FIFA has ever submitted here carries
+            # three of these -- `PRVT` unset, `GAME` holding the report class,
+            # `CGRT` holding the club record -- and this decoder had no case
+            # for type 7 at all. It raised, the exception took the Blaze
+            # connection down with it, and the report was lost. Sixteen
+            # connection_error lines in the journals say so, all of them
+            # component 28 command 2, all of them "Unsupported TDF type 7 for
+            # PRVT at offset 0x5".
+            #
+            # The shape was read off those captures rather than assumed: it is
+            # the only rule under which all 74 bytes of one frame and all 175
+            # of the other decode to the end with nothing left over.
+            if self.byte() == 0:
+                value = None
+            else:
+                tdf_id = self.integer()
+                value = (tdf_id, self.struct())
         elif field_type == UNION:
             active = self.byte()
             value = (active, None if active == 0x7F else self.field())
@@ -220,6 +243,15 @@ def encode_field(field: Field) -> bytes:
         for key, value in pairs:
             output += encode_item(key_type, key)
             output += encode_item(value_type, value)
+    elif field.type == VARIABLE:
+        if field.value is None:
+            output.append(0)
+        else:
+            tdf_id, fields = field.value
+            output.append(1)
+            output += encode_integer(tdf_id)
+            output += encode_fields(fields)
+            output.append(0)
     elif field.type == UNION:
         active, nested = field.value
         output.append(active)

@@ -52,3 +52,29 @@ in `default.xex`.
 It is worth remembering that this is cosmetic for playing: FUT logs in, the club
 loads, the market works and packs open with the banner reading disconnected
 throughout.
+
+## FUT needs an Xbox Live profile, and says so badly
+
+Measured 2026-08-10 by switching profiles on the same console, same launch
+patches, same server:
+
+```text
+louaY           local profile, never on Xbox Live
+                -> "Vous devez etre connecte a Xbox Live et aux serveurs EA"
+                -> ZERO requests reach the server
+
+Imskobogota6z   Xbox Live profile
+                -> authentication2_login, POST /authentication360,
+                   futBoot.xml, user/accountinfo
+```
+
+The launch patches read back `PATCHE` in both cases, so this is not them. The
+title checks the profile type locally and refuses before opening a socket,
+which is why the journal is empty rather than showing a failed attempt.
+
+Worth knowing because the message names Xbox Live *and* the EA servers, and the
+project has spent time treating that wording as a server-side problem. With a
+local profile it is neither: nothing was ever asked of any server.
+
+The profile selector marks the difference -- `Imskobogota6z` carries an
+XBOX LIVE badge, `louaY` and `Player1` do not.
