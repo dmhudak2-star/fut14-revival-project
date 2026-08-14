@@ -133,3 +133,48 @@ neuf et notre GET a répondu `{"tournamentId":3}`.
 rendre de parcours — le gel disparaît, le prix étant qu'une coupe quittée
 recommence. C'est le comportement effectif aujourd'hui, mais par accident,
 pas par choix.
+
+### Ce que le revival PC fait, et que nous ne faisions pas
+
+`KyroGeorge2/FIFA-14-Local-FUT` (build PC, serveur Python) répond à la même
+route. Sa règle de « parcours reprenable » est la nôtre, aux quatre octets nuls
+près :
+
+```python
+# server/beta_identity.py
+def _tournament_progress_is_resumable(round_value, tournament_data, progress_data):
+    if int(round_value) > 1:
+        return True
+    ...
+    return bool(decoded and any(byte != 0 for byte in decoded))
+```
+
+La seule différence de fond est dans la réponse :
+
+```python
+def offline_tournament_user(self, tournament_id):
+    ...
+    return {
+        "tournamentId": tournament_id, "round": int(row["round_value"]),
+        ...
+    }
+```
+
+Il envoie **`tournamentId`**. Nous l'avions retiré, en raisonnant que l'id est
+déjà dans le chemin.
+
+Ce raisonnement ne tenait pas debout, et l'expérience qui était censée le
+valider non plus. Elle avait retiré `tournamentId` **et** un doublon
+`progressdata` en même temps — or cette seconde orthographe est dans la table
+des noms, donc c'est le même champ connu deux fois, décodé deux fois dans le
+même emplacement, ce qui suffit à faire tomber le titre à soi seul. Retirer les
+deux ensemble ne prouve rien sur l'un ou sur l'autre. Et l'essai portait sur un
+parcours **non joué**, le cas qu'il faut refuser quelle que soit la forme.
+
+`tournamentId` est donc revenu. Le README du projet PC demande au testeur de
+rouvrir une coupe et de vérifier que le round 2 est actif, donc sur ce
+build-là, la reprise marche avec l'id présent.
+
+Frontend différent — PC contre Xbox 360 — donc c'est un indice, pas une preuve.
+C'est en revanche la seule différence concrète entre une réponse qui reprend et
+celle qui a gelé ce titre le 14 août à 01:53:30.

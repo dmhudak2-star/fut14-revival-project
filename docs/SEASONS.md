@@ -305,3 +305,33 @@ progression aussi, et ce qu'il faut lui rendre est ce qu'il a lui-même
 sauvegardé — le blob de `season/<id>/division/<div>/user`, qu'il ne redemande
 pourtant jamais à la réouverture. C'est là qu'il faut chercher, pas dans
 `season/user`.
+
+## Le round d'une saison se compte ici — 14 août 2026
+
+`season/user` déduisait le round du blob que le client sauvegarde. Le client
+réécrit ce blob en entrant dans le mode et y remet `round` 1 : le 14 août à
+01:53, une saison avec un match déjà gagné est revenue à 1. Un round tiré de là
+annonce « dix matchs restants » indéfiniment.
+
+Le compte existait déjà de notre côté : `SeasonProgress.settle` enregistre
+chaque résultat. `_season_matches_played` s'en sert, et ne retombe sur le blob
+que pour une saison restaurée d'une sauvegarde antérieure au bilan.
+
+C'est ce que fait le revival PC (`KyroGeorge2/FIFA-14-Local-FUT`,
+`offline_season_user`) : une colonne `matches_played` à lui, et
+`round = matches_played + 1`.
+
+Deux choses relevées au passage dans ce projet, non appliquées :
+
+- sa table de divisions est ordonnée **décroissante**, Division 10 en premier,
+  et il sert `seasonId: 1` — l'index 0. La nôtre est croissante et sert
+  `seasonId: 10`. Les deux désignent la Division 10 dans leur propre ordre,
+  donc les deux sont cohérents ; c'est ce qui explique la clé `10:10` là où le
+  13 août donnait `1:10`.
+- il **omet délibérément** les membres de bilan (`Unknown guessed progression
+  members are intentionally omitted`). On les envoie ; on a déjà observé qu'ils
+  ne sont pas lus, donc c'est sans effet, mais ce n'est pas nous qui avons
+  raison.
+
+Non vérifié à l'écran : le round servi n'a jamais fait bouger la liste des
+rencontres jusqu'ici.

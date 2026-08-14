@@ -1008,17 +1008,26 @@ def test_a_cup_is_only_active_once_it_has_been_entered() -> None:
         saved = json.loads(inventory.TOURNAMENT_PROGRESS.response(3))
         assert saved["round"] == 2
         assert saved["tournamentData"] == "QQ=="
-        # Exactly the five members the client itself writes, and no others.
-        # A duplicate `progressdata` beside `progressData` is the same known
-        # field twice, not a sibling the parser skips; resuming a saved cup
-        # froze the title on the first GET this route ever answered.
+        # `tournamentId` plus the five members the client itself writes, and
+        # nothing else. What must never come back is a duplicate
+        # `progressdata` beside `progressData`: that spelling is in the name
+        # table, so it is the same known field twice rather than a sibling the
+        # parser skips.
+        #
+        # The id was taken out of here once, on the reasoning that the path
+        # already carries it. That was a guess. The PC revival
+        # (KyroGeorge2/FIFA-14-Local-FUT, `offline_tournament_user`) sends it,
+        # with the same resumability rule otherwise, and resumes cups.
         assert set(saved) == {
+            "tournamentId",
             "round",
             "dataVersion",
             "tournamentData",
             "progressDataVersion",
             "progressData",
         }
+        assert saved["tournamentId"] == 3
+        assert "progressdata" not in saved
         # The season spelling is still accepted on the way in.
         inventory.TOURNAMENT_PROGRESS.apply(3, {"round": 3, "data": "Ug=="})
         assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3))["tournamentData"] == "Ug=="
@@ -3001,3 +3010,25 @@ def test_a_named_club_saves_beside_the_unnamed_one_and_seeds_from_it(tmp_path) -
     )
     assert later.load(fresh_club, fresh_wallet, fresh_actions) is False
     assert fresh_wallet.coins != 4242
+
+
+def test_the_season_round_is_counted_here_not_read_from_the_client(monkeypatch) -> None:
+    # The client rewrites its season save on entering the mode and sends
+    # `round` 1 with it -- a season with a match already won came back at
+    # round 1 on 14 August. A round derived from that blob says "ten matches
+    # remaining" for ever.
+    #
+    # The count is kept here anyway: every settled result goes through
+    # `SeasonProgress.settle`. The PC revival reads its own `matches_played`
+    # column for the same reason.
+    import fut_inventory as inventory
+
+    assert inventory._season_matches_played({"round": 1, "won": 1}) == 1
+    assert inventory._season_matches_played({"round": 1, "won": 2, "lost": 1}) == 3
+    assert inventory._season_matches_played({"round": 1, "draw": 1, "lost": 2}) == 3
+
+    # No record at all -- a season restored from a save written before any was
+    # kept -- still falls back to the blob rather than claiming nothing was
+    # played.
+    assert inventory._season_matches_played({"round": 4}) == 3
+    assert inventory._season_matches_played({}) == 0

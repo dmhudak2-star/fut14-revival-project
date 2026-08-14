@@ -808,12 +808,16 @@ class TournamentRouteTests(unittest.TestCase):
                 self.assertEqual(body["round"], 3)
                 self.assertEqual(body["tournamentData"], "QUJD")
                 self.assertEqual(body["progressData"], "REVG")
-                # Handed back exactly as it was written, and nothing besides.
-                # `tournamentId` is already in the path, and the lower-case
-                # `progressdata` is the same known field a second time rather
-                # than a sibling the parser skips -- resuming a saved cup
-                # froze the title on the first GET this route ever answered.
-                self.assertNotIn("tournamentId", body)
+                # Handed back as it was written, under its own id.
+                #
+                # The id was taken out of here once, on the reasoning that the
+                # path already carries it -- a guess, made in the same change
+                # that removed a duplicate lower-case `progressdata`. That
+                # second spelling is in the name table, so it is the same
+                # known field twice rather than a sibling the parser skips,
+                # and it is reason enough for a freeze on its own. Removing
+                # both together proved nothing about either.
+                self.assertEqual(body["tournamentId"], 2)
                 self.assertNotIn("progressdata", body)
                 # `data` is the season spelling and does not go out here.
                 self.assertNotIn("data", body)

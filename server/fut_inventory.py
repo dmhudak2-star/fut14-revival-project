@@ -3635,6 +3635,29 @@ def seasons_response() -> bytes:
     return json.dumps({"seasons": records}, separators=(",", ":")).encode()
 
 
+def _season_matches_played(entry: dict) -> int:
+    """How many matches of this season have actually been played.
+
+    Counted here rather than read out of the client's blob. The client
+    rewrites its season save on entering the mode and sends `round` 1 with it
+    -- that is what came up on 14 August at 01:53, a season with a match
+    already won saved back at round 1 -- so a round derived from the blob says
+    "ten matches remaining" for ever.
+
+    The count exists already: `SeasonProgress.settle` records every result as
+    it is settled. The PC revival keeps a `matches_played` column and sends
+    `round = matches_played + 1` for the same reason
+    (KyroGeorge2/FIFA-14-Local-FUT, `offline_season_user`).
+
+    The blob stays as the fallback, for a season restored from a save written
+    before any record was kept.
+    """
+    played = sum(int(entry.get(key) or 0) for key in ("won", "draw", "lost"))
+    if played:
+        return played
+    return max(0, int(entry.get("round") or 1) - 1)
+
+
 def season_user_response(division: int = 10, played: int = 0) -> bytes:
     """Where the club currently stands, and nothing more.
 
@@ -3695,7 +3718,7 @@ def season_user_response(division: int = 10, played: int = 0) -> bytes:
         _season, saved_division = saved
         entry = SEASON_PROGRESS.entries.get(saved) or {}
         division = saved_division
-        played = max(0, int(entry.get("round") or 1) - 1)
+        played = _season_matches_played(entry)
     index = next(
         (
             position
@@ -3919,22 +3942,35 @@ class TournamentProgress:
         empty data blob for a cup that was never entered would put the screen
         into a tournament that does not exist.
 
-        For a cup that *was* entered the reply is the five members the client
-        itself serialised -- `round`, `dataVersion`, `tournamentData`,
-        `progressDataVersion`, `progressData` -- and nothing besides. This
-        reply had never been exercised: every earlier journal line for
-        `tournament/user/<id>` is a PUT, and the first GET ever made of it,
-        resuming a cup already under way, froze the title on the spot.
+        A resumable run is answered with `tournamentId` and the five members
+        the client itself serialised. The id is in the path already, and this
+        file used to argue from that it had no business in the body -- which
+        was a guess, and the wrong one.
 
-        Two things were added here that the client never sends. A leading
-        `tournamentId`, which the id is already in the path for; and a second
-        copy of the progress blob spelled `progressdata`. That spelling is in
-        the name table, so it is *not* an unrecognised sibling the parser
-        skips -- it is the same known field arriving twice, decoded twice into
-        one slot. Removing both made the reply byte-identical to the client's
-        own PUT -- and the title still froze on it. So the shape was never
-        what killed it, and an entered-but-unplayed run is answered as no run
-        at all; see `unplayed` below.
+        Two things had been added here at once: the leading `tournamentId`,
+        and a second copy of the progress blob spelled `progressdata`. That
+        second spelling is in the name table, so it is not an unrecognised
+        sibling the parser skips -- it is the same known field arriving twice,
+        decoded twice into one slot, which is a good enough reason on its own
+        for a freeze. Both were removed together, the title still froze, and
+        that was read as "the shape is not what kills it".
+
+        The experiment could not support that. It was run against an
+        *unplayed* run -- the case that has to be refused whatever the shape --
+        and it changed two things at once, so `tournamentId` was never tested
+        on its own.
+
+        KyroGeorge2/FIFA-14-Local-FUT, the PC revival, keeps `tournamentId`
+        here (`offline_tournament_user` in `server/beta_identity.py`) and its
+        resumability rule is otherwise the same as `unplayed` below, down to
+        the four zero bytes. Its README asks the tester to reopen a cup and
+        find round 2 active, so on that build resume works with the id
+        present.
+
+        Different frontend -- that is the PC build, this is Xbox 360 -- so
+        this is evidence rather than proof. It is still the only concrete
+        difference between a reply that resumes and one that froze this title
+        on 14 August at 01:53:30, on a run at round 2 with a match won.
         """
         identifier = int(identifier)
         entry = self.entries.get(identifier)
@@ -3944,6 +3980,7 @@ class TournamentProgress:
             ).encode()
         return json.dumps(
             {
+                "tournamentId": identifier,
                 "round": entry["round"],
                 "dataVersion": entry["dataVersion"],
                 "tournamentData": entry["tournamentData"],
