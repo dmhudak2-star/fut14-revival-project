@@ -498,3 +498,33 @@ L'ordre des membres nous appartient. La réponse envoie `tournamentData`
 
 La saison suit la même règle, par prudence : son sérialiseur (0xa35c) a le même
 ordre, et son lecteur n'a pas encore été lu.
+
+### Vérifié sur la console — 14 août 2026, 18:02
+
+La coupe 3 s'est rouverte au round 2, sans geler. La séquence du journal est
+celle d'une vraie reprise :
+
+```
+18:02:40  GET  /ut/game/fifa14/tournament/user/3   -> le document réordonné
+18:02:40  GET  /fut/items/xbl2/1102.json           -> le trophée de la coupe
+18:02:40  GET  /fut/items/images/trophies/…/.big
+18:02:41  PUT  /ut/game/fifa14/tournament/user/3   -> le tableau reconstruit, réécrit
+```
+
+Le PUT est la preuve : le client a décodé le blob, rebâti son tableau et l'a
+resauvegardé — le nouveau `tournamentData` diffère de celui qu'on lui avait
+rendu.
+
+À l'écran, **TABLEAU COMPÉTITION** dessine le bracket complet : Fondateur FUT a
+passé son huitième contre Tottenham et attend Manchester City en quart, avec
+« A Jouer prochain match » en pied de page.
+
+Deux confirmations au passage :
+
+- `progressData` n'est **pas** envoyé du tout, et le tableau connaît quand même
+  l'adversaire battu. Les trois membres du lecteur suffisent, comme la table
+  d'identifiants le disait.
+- `544f54` — « TOT » — était bien dans le `progressData` que le client avait
+  écrit : Tottenham, l'équipe éliminée au premier tour.
+
+Le dossier ouvert depuis le 13 août est clos.
