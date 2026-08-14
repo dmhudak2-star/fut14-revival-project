@@ -1029,10 +1029,12 @@ def test_a_cup_is_only_active_once_it_has_been_entered(monkeypatch) -> None:
             "dataVersion",
             "tournamentData",
             "progressDataVersion",
-            "progressData",
+            "progressdata",
         }
         assert saved["tournamentId"] == 3
-        assert "progressdata" not in saved
+        # The capital-D spelling is the one the client writes and cannot
+        # read: there is no `progressData` in its name table.
+        assert "progressData" not in saved
         # The season spelling is still accepted on the way in.
         inventory.TOURNAMENT_PROGRESS.apply(3, {"round": 3, "data": "Ug=="})
         assert json.loads(inventory.TOURNAMENT_PROGRESS.response(3))["tournamentData"] == "Ug=="

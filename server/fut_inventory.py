@@ -3887,37 +3887,37 @@ def tournament_teams_response(count: int = 15, group: int = 0) -> bytes:
 
 
 def cup_resume_mode() -> str:
-    """How much of a saved cup run goes back out, if any.
+    """How much of a saved cup run goes back out.
 
-    Handing a played run back is what freezes this title. Measured twice, on
-    two different runs, with two different documents:
+    Handing one back froze this title twice -- once on the five members the
+    client's own serialiser writes, once on the PC revival's six. Both replies
+    were faithful: the blob went back byte for byte, its gzip inflated to the
+    2 798 bytes it announced, the headers matched a working route.
 
-        13-14 août   five members, no `tournamentId`      -> gel
-        14 août 02:56  six members, `tournamentId` present -> gel
+    The reason is in the binary, not on the wire. **This client does not read
+    what it writes.** Its serialiser, at `.rdata` 0xa1c4, emits
+    `"progressData"` with a capital D. Its JSON name table -- reverse
+    alphabetical, and complete -- holds `progressDataVersion` at 0x103cc and
+    then `progressdata`, all lower case, at 0x103e0. There is no `progressData`
+    entry anywhere. Every other member we sent is in that table: `round`
+    0xb5c0, `dataVersion` 0x10f04, `tournamentData` 0xfd58, `tournamentId`
+    0xfd48.
 
-    The second was the PC revival's exact shape
-    (`KyroGeorge2/FIFA-14-Local-FUT`, `offline_tournament_user`), on a run at
-    round 2 with a match won, served byte for byte as the client had written
-    it -- verified: the gzip inflates to the 2 798 bytes it announces and the
-    progress blob's length header matches its payload. The response headers
-    match a route on the same screen that works. So the document is faithful
-    and the shape is not the difference; that build resumes and this one does
-    not.
+    So the one member the bracket rebuild actually needs was the one name the
+    parser could not resolve. It skipped it, kept whatever the progress slot
+    already held, and walked into it. That is also why the PUT never froze
+    anything: on the way up this server does the parsing, and it is not fussy.
 
-    `off` is therefore the default: a saved run is never returned, and a cup
-    left half-played restarts. That is a real loss, and it is the only setting
-    that does not cost a frozen console.
+    `full` is the default again on the strength of that. `off` stays as the
+    escape hatch, because a frozen console costs a relaunch:
 
-    The rest exist so the next reading can be tried with a relaunch instead of
-    an edit, because every attempt costs a freeze and a recovery:
-
-        off      `{"tournamentId": id}` -- never resume
+        full     everything, with `progressdata` spelled the way it is read
+        off      `{"tournamentId": id}` -- never resume, never freeze
         round    the id and the round, and no blobs at all
         noblob   every member, but both blobs empty
-        full     everything, which is what froze it
     """
     raw = os.environ.get("FIFA14_CUP_RESUME", "").strip().lower()
-    return raw if raw in {"off", "round", "noblob", "full"} else "off"
+    return raw if raw in {"off", "round", "noblob", "full"} else "full"
 
 
 class TournamentProgress:
@@ -4019,7 +4019,10 @@ class TournamentProgress:
             document["progressDataVersion"] = entry["progressDataVersion"]
             blank = mode == "noblob"
             document["tournamentData"] = "" if blank else entry["tournamentData"]
-            document["progressData"] = "" if blank else entry["progressData"]
+            # `progressdata`, lower case, because that is the only spelling
+            # this client can read. See the docstring: it writes
+            # `progressData` and parses `progressdata`.
+            document["progressdata"] = "" if blank else entry["progressData"]
         return json.dumps(document, separators=(",", ":")).encode()
 
     def advance(self, identifier: int, result: str) -> dict:
@@ -4228,9 +4231,17 @@ class SeasonProgress:
             {
                 "round": entry["round"],
                 "dataVersion": entry["dataVersion"],
-                "data": entry["data"],
+                # `seasonData` and `progressdata`, not the spellings the client
+                # writes. It does not read what it writes -- see
+                # `TournamentProgress.response`. Its name table holds
+                # `seasonData` (0x101d0) and `progressdata` (0x103e0); there is
+                # no `data` entry at all, and no `progressData` with a capital
+                # D. The client's own serialiser emits both of those, so
+                # echoing it back hands the parser two names it cannot resolve
+                # and leaves the season's blobs unset.
+                "seasonData": entry["data"],
                 "progressDataVersion": entry["progressDataVersion"],
-                "progressData": entry["progressData"],
+                "progressdata": entry["progressData"],
             },
             separators=(",", ":"),
         ).encode()

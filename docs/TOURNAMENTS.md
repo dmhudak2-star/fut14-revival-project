@@ -226,3 +226,64 @@ récupération :
 Le prochain essai le plus informatif est `round` : si le client accepte un
 round sans blob, il reconstruit son tableau lui-même et la reprise est acquise
 sans jamais lui rendre ses octets.
+
+### La cause : le client ne relit pas ce qu'il écrit
+
+Le blob était fidèle, la forme était celle d'un serveur où ça marche, les
+en-têtes étaient bons. La cause n'était pas sur le fil, elle est dans le
+binaire.
+
+Son sérialiseur, `.rdata` 0xa1c4, écrit **`"progressData"`**, D majuscule :
+
+```
+0x0a1c4  ","progressDataVersion":%d,"progressData":"
+```
+
+Sa table de noms JSON — anti-alphabétique, et complète — contient
+`progressDataVersion` à 0x103cc, puis **`progressdata`**, tout en minuscules, à
+0x103e0 :
+
+```
+0x103cc progressDataVersion
+0x103e0 progressdata
+0x103f0 productId
+```
+
+Il n'y a **aucune** entrée `progressData` avec une majuscule. Tous les autres
+membres qu'on envoyait sont bien dans la table : `round` 0xb5c0, `dataVersion`
+0x10f04, `tournamentData` 0xfd58, `tournamentId` 0xfd48.
+
+Autrement dit, le seul membre dont la reconstruction du tableau a besoin était
+le seul nom que le parseur ne savait pas résoudre. Il l'ignore, garde ce que
+l'emplacement de progression contenait déjà, et marche dedans.
+
+C'est aussi pour ça que le PUT n'a jamais rien gelé : à la montée, c'est ce
+serveur qui parse, et lui n'est pas regardant.
+
+La réponse épelle donc `progressdata`. `FIFA14_CUP_RESUME=off` reste la sortie
+de secours.
+
+### Les saisons ont exactement la même faute
+
+Le sérialiseur de saison, 0xa35a, écrit `"data"` :
+
+```
+0x0a35a  {"round":%d,"dataVersion":%d,"data":"
+```
+
+La table ne contient pas `data` du tout — entre `dataVersion` (0x10f04) et
+`customData1`, il n'y a rien. Ce qu'elle contient, c'est **`seasonData`** à
+0x101d0, au milieu des autres membres de saison :
+
+```
+0x101a4 seasonGamesDraw
+0x101b4 seasonId
+0x101c0 seasonEndResult
+0x101d0 seasonData
+0x101dc seasonCompleted
+0x101ec seasonCoins
+```
+
+`SeasonProgress.response` épelle donc `seasonData` et `progressdata`. Les deux
+dossiers ouverts — reprendre une coupe, reprendre une saison — avaient la même
+cause.

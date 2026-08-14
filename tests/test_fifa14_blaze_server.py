@@ -813,7 +813,8 @@ class TournamentRouteTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
                 self.assertEqual(body["tournamentData"], "QUJD")
-                self.assertEqual(body["progressData"], "REVG")
+                self.assertEqual(body["progressdata"], "REVG")
+                self.assertNotIn("progressData", body)
                 # Handed back as it was written, under its own id.
                 #
                 # The id was taken out of here once, on the reasoning that the
@@ -824,7 +825,6 @@ class TournamentRouteTests(unittest.TestCase):
                 # and it is reason enough for a freeze on its own. Removing
                 # both together proved nothing about either.
                 self.assertEqual(body["tournamentId"], 2)
-                self.assertNotIn("progressdata", body)
                 # `data` is the season spelling and does not go out here.
                 self.assertNotIn("data", body)
 
@@ -845,10 +845,13 @@ class TournamentRouteTests(unittest.TestCase):
                 else:
                     os.environ["FIFA14_CUP_RESUME"] = previous_mode
 
-    def test_a_cup_run_is_not_offered_back_by_default(self) -> None:
-        # The default has to be the setting that does not freeze the console.
-        # A run is still kept -- the list still names it, and the save still
-        # holds it -- but the document that reopens it never goes out.
+    def test_a_cup_run_can_be_withheld_entirely(self) -> None:
+        # The escape hatch. A frozen console costs a relaunch, so `off`
+        # stays reachable: the run is still kept -- the list names it and
+        # the save holds it -- but the document that reopens it never goes
+        # out, and the cup restarts instead.
+        previous_mode = os.environ.get("FIFA14_CUP_RESUME")
+        os.environ["FIFA14_CUP_RESUME"] = "off"
         with tempfile.TemporaryDirectory() as temp:
             identity = self._identity(temp)
             json_module = __import__("json")
@@ -869,6 +872,10 @@ class TournamentRouteTests(unittest.TestCase):
             finally:
                 SERVER.TOURNAMENT_PROGRESS.entries.clear()
                 identity.stop()
+                if previous_mode is None:
+                    os.environ.pop("FIFA14_CUP_RESUME", None)
+                else:
+                    os.environ["FIFA14_CUP_RESUME"] = previous_mode
 
     def test_a_season_is_saved_under_its_season_and_division(self) -> None:
         # The route the console actually sent on starting a Saison Joueur
@@ -911,8 +918,13 @@ class TournamentRouteTests(unittest.TestCase):
                 status, body = self._get(port, path, "GET")
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
-                self.assertEqual(body["data"], "QUJD")
-                self.assertEqual(body["progressData"], "REVG")
+                # The names the client can *read*, which are not the ones
+                # it writes: its table has `seasonData` and `progressdata`
+                # and no `data` or `progressData` at all.
+                self.assertEqual(body["seasonData"], "QUJD")
+                self.assertEqual(body["progressdata"], "REVG")
+                self.assertNotIn("data", body)
+                self.assertNotIn("progressData", body)
                 self.assertNotIn("tournamentData", body)
                 self.assertNotIn("seasonId", body)
 
