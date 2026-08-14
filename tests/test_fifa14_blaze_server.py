@@ -813,11 +813,15 @@ class TournamentRouteTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
                 self.assertEqual(body["tournamentData"], "QUJD")
-                # Whichever name carries it -- see `cup_progress_members`.
-                # Never the capital-D spelling the client writes and cannot
-                # read.
-                self.assertEqual(body["tournamentProgress"], "REVG")
+                # Exactly the three members the reader at CardsDLLzf+0x1be840
+                # matches, and `tournamentData` **before** `dataVersion`: the
+                # version branch is what decodes, using what the data branch
+                # left behind. See `cup_resume_mode`.
+                self.assertEqual(
+                    list(body), ["tournamentId", "round", "tournamentData", "dataVersion"]
+                )
                 self.assertNotIn("progressData", body)
+                self.assertNotIn("progressdata", body)
                 # Handed back as it was written, under its own id.
                 #
                 # The id was taken out of here once, on the reasoning that the
@@ -921,11 +925,9 @@ class TournamentRouteTests(unittest.TestCase):
                 status, body = self._get(port, path, "GET")
                 self.assertEqual(status, 200)
                 self.assertEqual(body["round"], 3)
-                # The names the client can *read*, which are not the ones
-                # it writes: its table has `seasonData` and `progressdata`
-                # and no `data` or `progressData` at all.
-                self.assertEqual(body["seasonData"], "QUJD")
-                self.assertEqual(body["progressdata"], "REVG")
+                # The blob before the version that decodes it, same rule as a
+                # cup.
+                self.assertEqual(list(body), ["round", "seasonData", "dataVersion"])
                 self.assertNotIn("data", body)
                 self.assertNotIn("progressData", body)
                 self.assertNotIn("tournamentData", body)

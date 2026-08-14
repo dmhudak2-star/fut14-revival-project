@@ -3889,68 +3889,47 @@ def tournament_teams_response(count: int = 15, group: int = 0) -> bytes:
 def cup_resume_mode() -> str:
     """How much of a saved cup run goes back out.
 
-    Handing one back froze this title twice -- once on the five members the
-    client's own serialiser writes, once on the PC revival's six. Both replies
-    were faithful: the blob went back byte for byte, its gzip inflated to the
-    2 798 bytes it announced, the headers matched a working route.
+    Four documents were served to the console and all four froze it. None of
+    them was wrong in the way they were guessed to be. Tracing the hung title
+    (`tools/fifa14_where_is_it_stuck.py`) and then reading CardsDLL offline
+    (`tools/ppc_xref.py` over `work/cardsdll-text.bin`) gave the actual reason,
+    and it is an ordering bug **in the game**.
 
-    The reason is in the binary, not on the wire. **This client does not read
-    what it writes.** Its serialiser, at `.rdata` 0xa1c4, emits
-    `"progressData"` with a capital D. Its JSON name table -- reverse
-    alphabetical, and complete -- holds `progressDataVersion` at 0x103cc and
-    then `progressdata`, all lower case, at 0x103e0. There is no `progressData`
-    entry anywhere. Every other member we sent is in that table: `round`
-    0xb5c0, `dataVersion` 0x10f04, `tournamentData` 0xfd58, `tournamentId`
-    0xfd48.
+    The reader is a streaming dispatcher at CardsDLLzf+0x1be840 that matches
+    members by numeric id against the table at 0x8921E498, and it knows exactly
+    three of them:
 
-    So the one member the bracket rebuild actually needs was the one name the
-    parser could not resolve. It skipped it, kept whatever the progress slot
-    already held, and walked into it. That is also why the PUT never froze
-    anything: on the way up this server does the parsing, and it is not fussy.
+        id 134  dataVersion
+        id 429  round
+        id 535  tournamentData
 
-    `full` is the default again on the strength of that. `off` stays as the
-    escape hatch, because a frozen console costs a relaunch:
+    No progress member at all -- `progressdata` (395) and `progressDataVersion`
+    (396) are never compared, so a cup restores from its bracket and its round.
 
-        full     everything, with `progressdata` spelled the way it is read
-        off      `{"tournamentId": id}` -- never resume, never freeze
-        round    the id and the round, and no blobs at all
-        noblob   every member, but both blobs empty
+    The fatal part is which branch does the work. The `tournamentData` branch
+    fills two registers, a buffer and its length. The `dataVersion` branch
+    parses the number and, when it is 1, **decodes using those two registers**.
+    And the client's own serialiser, at `.rdata` 0xb9ec, writes
+
+        {"round":%d,"dataVersion":%d,"tournamentData":"...
+
+    with `dataVersion` **before** `tournamentData`. So the decode runs on
+    registers nothing has written yet. What it read on 14 August was
+    0xbd2e2eb4, a heap pointer, taken as a length: CardsDLL then asked for a
+    3.17 GB zeroed buffer and filled it a byte at a time, on a console with 512
+    MB. That is the freeze -- not a parse failure, and not something any member
+    name could fix. The game cannot read back what it writes.
+
+    The reply therefore puts `tournamentData` **before** `dataVersion`. Member
+    order is ours to choose; the client's own is what it cannot survive.
+
+        full     the id, the round, the blob, then the version -- in that order
+        off      `{"tournamentId": id}` -- never resume
+        round    the id and the round, no blob
+        noblob   every member, blob empty
     """
     raw = os.environ.get("FIFA14_CUP_RESUME", "").strip().lower()
-    return raw if raw in {"off", "round", "noblob", "full"} else "off"
-
-
-def cup_progress_members() -> tuple[str, ...]:
-    """Which name carries the progress blob back to the client.
-
-    `progressdata` was the first reading and it was not enough: served on 14
-    August at 16:22:37 on a run at round 2, the title froze exactly as it had
-    on the two spellings before it.
-
-    The name table is grouped, and that grouping was the thing to read.
-    `progressdata` at 0x103e0 sits among generic members -- `productId`,
-    `prizeSet`, `progressDataVersion`. The cup's own members are together
-    elsewhere:
-
-        0x0fd34 tournamentProgress
-        0x0fd48 tournamentId
-        0x0fd58 tournamentData
-
-    So the pair a cup is rebuilt from is most likely `tournamentData` and
-    `tournamentProgress`, and `progressdata` belongs to whatever writes
-    `progressDataVersion` beside it.
-
-    Every attempt here costs a freeze and a relaunch, so the name is a setting
-    rather than an edit. `both` sends two names for one blob, which is the one
-    combination to be careful with: two *known* names landing in one slot is
-    the shape that was blamed for an earlier freeze.
-    """
-    raw = os.environ.get("FIFA14_CUP_PROGRESS", "").strip()
-    if raw == "both":
-        return ("tournamentProgress", "progressdata")
-    if raw in {"progressdata", "progressData", "tournamentProgress"}:
-        return (raw,)
-    return ("tournamentProgress",)
+    return raw if raw in {"off", "round", "noblob", "full"} else "full"
 
 
 class TournamentProgress:
@@ -4048,15 +4027,12 @@ class TournamentProgress:
             ).encode()
         document = {"tournamentId": identifier, "round": entry["round"]}
         if mode != "round":
-            document["dataVersion"] = entry["dataVersion"]
-            document["progressDataVersion"] = entry["progressDataVersion"]
+            # The blob first, the version last. `dataVersion` is the branch
+            # that triggers the decode, and it decodes whatever the
+            # `tournamentData` branch left behind -- so the order is the fix.
             blank = mode == "noblob"
             document["tournamentData"] = "" if blank else entry["tournamentData"]
-            # Never `progressData`: the client writes that spelling and has no
-            # entry for it. Which name it *reads* is still open -- see
-            # `cup_progress_members`.
-            for member in cup_progress_members():
-                document[member] = "" if blank else entry["progressData"]
+            document["dataVersion"] = entry["dataVersion"]
         return json.dumps(document, separators=(",", ":")).encode()
 
     def advance(self, identifier: int, result: str) -> dict:
@@ -4261,21 +4237,20 @@ class SeasonProgress:
             {"round": entry["round"], "progressData": entry["progressData"]}
         ):
             return b"{}"
+        # Same ordering rule as a cup, for the same reason: see
+        # `cup_resume_mode`. The blob goes out before the version that decodes
+        # it, because the client's own serialiser puts them the other way round
+        # and cannot then read its own document back.
+        #
+        # `seasonData` rather than the `data` the client writes: the id table
+        # at 0x8921E498 carries `seasonData` at 443 and `data` at 133, and the
+        # season reader has not been read out yet -- so the name that groups
+        # with the other season members is the better guess of the two.
         return json.dumps(
             {
                 "round": entry["round"],
-                "dataVersion": entry["dataVersion"],
-                # `seasonData` and `progressdata`, not the spellings the client
-                # writes. It does not read what it writes -- see
-                # `TournamentProgress.response`. Its name table holds
-                # `seasonData` (0x101d0) and `progressdata` (0x103e0); there is
-                # no `data` entry at all, and no `progressData` with a capital
-                # D. The client's own serialiser emits both of those, so
-                # echoing it back hands the parser two names it cannot resolve
-                # and leaves the season's blobs unset.
                 "seasonData": entry["data"],
-                "progressDataVersion": entry["progressDataVersion"],
-                "progressdata": entry["progressData"],
+                "dataVersion": entry["dataVersion"],
             },
             separators=(",", ":"),
         ).encode()

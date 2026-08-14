@@ -1023,14 +1023,11 @@ def test_a_cup_is_only_active_once_it_has_been_entered(monkeypatch) -> None:
         # already carries it. That was a guess. The PC revival
         # (KyroGeorge2/FIFA-14-Local-FUT, `offline_tournament_user`) sends it,
         # with the same resumability rule otherwise, and resumes cups.
-        assert set(saved) == {
-            "tournamentId",
-            "round",
-            "dataVersion",
-            "tournamentData",
-            "progressDataVersion",
-            "tournamentProgress",
-        }
+        # Order matters and is asserted as a list: the `dataVersion` branch
+        # decodes whatever the `tournamentData` branch left in two registers,
+        # so the blob has to arrive first. The client's own serialiser gets
+        # this backwards, which is why it cannot reopen its own saves.
+        assert list(saved) == ["tournamentId", "round", "tournamentData", "dataVersion"]
         assert saved["tournamentId"] == 3
         # The capital-D spelling is the one the client writes and cannot
         # read: there is no `progressData` in its name table.

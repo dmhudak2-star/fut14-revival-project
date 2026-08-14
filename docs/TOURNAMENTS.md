@@ -422,3 +422,79 @@ Il faut trouver lequel est sur le chemin de la reprise de coupe, et d'où sort
 son `n`. Ça se fait entièrement hors console maintenant que
 `work/cardsdll-text.bin` existe — c'est ce qu'il fallait faire au lieu de
 proposer un cinquième nom de membre.
+
+## La cause, enfin : le jeu ne sait pas relire ce qu'il écrit
+
+Trouvé hors console, en désassemblant `work/cardsdll-text.bin` avec
+`tools/ppc_xref.py`.
+
+### La chaîne, de la boucle jusqu'au dispatcher
+
+```
+0x8912d898  append(n, caractère)        1 appelant
+0x8912da50  resize(n)                   1 appelant
+0x8912dac8  « n octets remis à zéro »   9 appelants
+0x891b3dd0  décodeur de blob            4 appelants
+0x891be840  lecteur de coupe
+```
+
+Le décodeur lit les **quatre premiers octets** du blob comme longueur, alloue
+autant, puis décompresse dedans :
+
+```
+0x891b3e64  bl 0x89063fe8     ; memcpy(&local, source, 4)
+0x891b3e6c  lwz r4, 0x50(r1)  ; ces quatre octets = le compte
+0x891b3e70  bl 0x8912dac8     ; alloue et met à zéro
+0x891b3e90  bl 0x891afdc0     ; décompresse
+```
+
+### Les membres que le lecteur connaît
+
+Le lecteur compare des **identifiants numériques**, pas des noms. La table
+d'identifiants est à `0x8921E498`, 613 entrées, indexée directement
+(`0x891d9c78` : `lwzx r3, id*4, 0x8921E498`). Trois identifiants seulement sont
+comparés :
+
+| id | nom |
+|---|---|
+| 134 | `dataVersion` |
+| 429 | `round` |
+| 535 | `tournamentData` |
+
+**Aucun membre de progression.** `progressdata` (395) et `progressDataVersion`
+(396) ne sont jamais comparés. Une coupe se reprend depuis son tableau et son
+round, c'est tout. Toute la recherche sur l'orthographe du blob de progression
+portait sur un membre que ce lecteur ne lit pas.
+
+### Le défaut
+
+- la branche `tournamentData` remplit deux registres : un tampon et sa longueur
+- la branche `dataVersion` parse le nombre et, s'il vaut 1, **décode en
+  utilisant ces deux registres**
+
+Or le sérialiseur du client (`.rdata` 0xb9ec) écrit :
+
+```
+{"round":%d,"dataVersion":%d,"tournamentData":"
+```
+
+`dataVersion` **avant** `tournamentData`. Au moment du décodage, les registres
+n'ont jamais été écrits. Le 14 août ils contenaient 0xbd2e2eb4 — un pointeur de
+tas — pris pour une longueur : CardsDLL a demandé 3,17 Go remis à zéro, octet
+par octet, sur une console qui a 512 Mo.
+
+Ce n'est pas un échec de parsing et aucun nom de membre ne pouvait le corriger.
+**Le jeu ne sait pas relire sa propre sauvegarde.** Nos quatre tentatives
+reproduisaient toutes son ordre.
+
+### Le correctif
+
+L'ordre des membres nous appartient. La réponse envoie `tournamentData`
+**avant** `dataVersion`, et rien d'autre que ce que le lecteur consomme :
+
+```json
+{"tournamentId":3,"round":2,"tournamentData":"AAAK7h+LCAAA…","dataVersion":1}
+```
+
+La saison suit la même règle, par prudence : son sérialiseur (0xa35c) a le même
+ordre, et son lecteur n'a pas encore été lu.
