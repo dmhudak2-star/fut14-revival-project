@@ -335,3 +335,35 @@ Deux choses relevées au passage dans ce projet, non appliquées :
 
 Non vérifié à l'écran : le round servi n'a jamais fait bouger la liste des
 rencontres jusqu'ici.
+
+
+## Le lecteur de saison, désassemblé — 14 août 2026
+
+Rectification : j'avais écrit ici que la table ne connaissait pas `data` et que
+le nom lu était `seasonData`. Faux. La table contient bien les deux (`data` à
+133, `seasonData` à 443), et c'est **`data`** que le lecteur compare.
+
+Le lecteur est `CardsDLLzf+0x1adf28` — le jumeau de celui des coupes. Même
+répartition sur des identifiants numériques contre la table `0x8921E498` :
+
+| id | membre | ce qu'il en fait |
+|---|---|---|
+| 133 | `data` | alloue, et remplit les registres tampon + longueur |
+| 134 | `dataVersion` | entier ; **s'il vaut 1, décode** avec ces registres |
+| 148 | `divisionId` | entier, demi-mot en 0x30 |
+| 429 | `round` | entier **moins un**, demi-mot en 0x38 |
+| 445 | `seasonId` | entier, mot en 0x34 |
+
+Deux choses en tombent :
+
+- **Le même piège d'ordre que pour les coupes.** Le sérialiseur de saison
+  (0xa35c) écrit `{"round":…,"dataVersion":…,"data":"…"}`, donc `dataVersion`
+  avant `data`, donc le décodage part sur des registres jamais écrits. La
+  réponse envoie maintenant `data` **avant** `dataVersion`.
+- **`round` est stocké moins un**, ce qui confirme la lecture qu'on avait :
+  round 1 sur le fil est la première rencontre, et 0 deviendrait le sentinelle
+  invalide du client.
+
+`seasonId` et `divisionId` sont acceptés mais pas envoyés : le client les a
+déjà dans le chemin de la requête, et rien de non vérifié ne part sur une route
+dont chaque essai coûte une console gelée.
