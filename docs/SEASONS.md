@@ -367,3 +367,63 @@ Deux choses en tombent :
 `seasonId` et `divisionId` sont acceptés mais pas envoyés : le client les a
 déjà dans le chemin de la requête, et rien de non vérifié ne part sur une route
 dont chaque essai coûte une console gelée.
+
+## Le blob dans `season/user` ne suffit pas non plus — 15 août 2026
+
+Testé pour de vrai cette fois, ce qui n'avait jamais été le cas.
+
+### Pourquoi les essais précédents ne prouvaient rien
+
+Le journal du 13 août montre que le client **sauvegarde bien** sa progression :
+
+```
+14:20:08  PUT round=1  data=AAAAEAUAAAAB…   16 octets — saison neuve
+14:38:57  match gagné
+14:38:58  PUT round=2  data=AAACQB+LCAAA…   576 octets — la vraie progression
+15:32:22  PUT round=1  data=AAAAEAUAAAAB…   retour à la saison vide
+```
+
+À chaque fois la saison avait ensuite été **redémarrée** — le « Oui » au modal —
+et le client réécrivait son blob vide par-dessus. On lui rendait donc
+fidèlement une saison sans progression. Le mécanisme était en place, les
+données étaient vides.
+
+### Le vrai test
+
+Le 15 août à 00:49:48, forfait de match : le client a écrit `round=2` avec un
+blob de 135 octets compressés, 576 annoncés. Le serveur l'a rendu tel quel dans
+`season/user`, `data` avant `dataVersion` :
+
+```
+membres : seasonId, divisionId, round, data, dataVersion,
+          seasonGamesWon, seasonGamesDraw, seasonGamesLost, seasonCoins
+round = 2   blob = 135 octets (annoncé 576)
+```
+
+Le client ne l'applique pas. La liste des rencontres n'affiche aucun score, et
+le modal « Voulez-vous vraiment débuter cette Saison Joueur Solo ? » revient.
+
+### Ce que ça élimine
+
+- **la progression manquante** — elle est là, réelle et compressée ;
+- **l'ordre des membres** — `data` précède `dataVersion`, la règle qui a réglé
+  les coupes ;
+- **le round** — servi à 2, déjà éliminé le 13 août.
+
+### Ce qui reste, et l'hypothèse à vérifier
+
+L'hypothèse jamais prouvée est que `season/user` soit lu par
+`CardsDLLzf+0x1adf28`, le lecteur à cinq membres. Elle tient debout — c'est le
+seul lecteur qui connaît `data`, `dataVersion`, `divisionId`, `round` et
+`seasonId` ensemble — mais rien ne la démontre.
+
+La table des routes, à `0x89027088`, ne la tranche pas : ce ne sont que des
+paires `{gabarit, nom}`, sans pointeur de handler. Les gabarits ne sont pas non
+plus référencés par `lis`/`addi`, donc l'aiguillage se fait par nom ailleurs.
+
+Le pas suivant qui ne serait pas une devinette : `0x891adf28` écrit son état
+dans une structure — `round` en `+0x38`, `divisionId` en `+0x30`, `seasonId` en
+`+0x34`, le blob décodé en `+0x20`. Retrouver cette structure en mémoire pendant
+que l'écran est ouvert, et lire son `round`, dit en une mesure si notre document
+a été appliqué ou ignoré. Contrairement aux coupes il n'y a pas de gel à
+attraper, donc il faut chercher la structure plutôt que le thread.
