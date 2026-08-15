@@ -70,6 +70,15 @@ journal du 14 août, où l'écriture à `0x89706250` a trouvé
 `b'http://\x00artAssets/matchd'` et n'a rien écrit : le module n'était pas dans
 l'état attendu au moment du sondage.
 
+Ces deux chaînes se réécrivent **sur place**, et le patcheur refuse tout
+remplacement plus long que l'original. Le budget est plus large qu'il n'y
+paraît : le catalogue va jusqu'à 28 caractères (`http://` + hôte + `:` + port),
+la session jusqu'à 24. **Une IPv4, même maximale, rentre toujours** —
+`http://255.255.255.255:18080` fait exactement 28, `255.255.255.255:10041` en
+fait 21. C'est un nom d'hôte qui ne rentre pas ; le plugin doit donc résoudre
+l'adresse et écrire l'IP, pas le nom. `tools/extract_patch_manifest.py` vérifie
+ce budget et prévient sur stderr s'il est dépassé.
+
 **Étage 3, avant l'entrée dans Ultimate Team** — le patch `helperFunctions`
 (trois branches de continuation TU3), source
 `tools/fifa14_tu3_helperfunctions_runtime_patch.py`.
