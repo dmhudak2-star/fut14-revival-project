@@ -1,0 +1,32 @@
+# Unité systemd pour le serveur du revival, sur un VPS.
+#
+#   sudo cp fifa14-revival.service /etc/systemd/system/
+#   (adapter User et le chemin d'installation ci-dessous)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fifa14-revival
+#   journalctl -u fifa14-revival -f
+#
+# Redémarre tout seul s'il tombe. L'état (clubs, sessions) vit dans runtime/,
+# qui doit rester inscriptible par User.
+
+[Unit]
+Description=FIFA 14 FUT revival server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fifa14
+WorkingDirectory=/opt/fifa14-revival
+ExecStart=/opt/fifa14-revival/run.sh
+Restart=on-failure
+RestartSec=3
+# Durcissement : le serveur n'écrit que dans runtime/, rien d'autre.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fifa14-revival/runtime
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

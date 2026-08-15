@@ -60,3 +60,6 @@ work/
 
 # La configuration locale porte une adresse de LAN ; le modèle est versionné.
 fifa14revival.ini
+
+# Paquet serveur assemblé pour un déploiement
+fifa14-revival-server.tgz
