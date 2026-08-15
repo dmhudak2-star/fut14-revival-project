@@ -37,11 +37,12 @@ def test_the_ip_actually_changes_the_manifest() -> None:
     a = M.build("192.168.1.40", 10041, 18080)
     b = M.build("10.20.30.40", 10041, 18080)
 
-    def redirect(man):
+    def connect_stub(man):
+        # The connect stub is the cave that carries the IP.
         return next(c["bytes"] for c in man["stage1_launch"]["caves"]
-                    if c["name"] == "connect_redirect_stub")
+                    if c.get("carries_ip"))
 
-    assert redirect(a) != redirect(b)
+    assert connect_stub(a) != connect_stub(b)
     # And the EAS FC strings carry it too.
     assert a["stage2_easfc"]["strings"] != b["stage2_easfc"]["strings"]
 

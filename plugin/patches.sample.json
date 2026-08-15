@@ -1,0 +1,141 @@
+{
+  "build": {
+    "title": "FIFA 14 Xbox 360",
+    "default_xex_timestamp": "0x534C8977",
+    "runtime_base": "0x82000000",
+    "note": "every address here is specific to this build"
+  },
+  "server": {
+    "ip": "203.0.113.10",
+    "core_port": 10041,
+    "identity_port": 18080
+  },
+  "stage1_launch": {
+    "complete": false,
+    "caves": [
+      {
+        "name": "connect_stub",
+        "address": 2210981376,
+        "bytes": "A1440002280A273941820024280AA48C4182001C280AA48E41820014280AA48F4182000C280A46A0408200B43D40CB00394A710A914400043D8083C9398CE700816C0000396B0001916C0000906C000490AC000893EC002081440000914C001081440004914C001481440008914C00188144000C914C001C7C0802A69001FFF89421FF70906100209081002490A100287FE3FB783D6083C9396BE7807D6903A64E800421806100208081002480A100283D60824D396BA4507D6903A64E8004213D8083C9398CE700906C000C382100908001FFF87C0803A64E8000203D60824D396BA4507D6903A64E800420",
+        "carries_ip": true
+      },
+      {
+        "name": "connect_log",
+        "address": 2210981632,
+        "bytes": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "name": "ticket_stub",
+        "address": 2210978688,
+        "bytes": "3D6083C9396BDA8039400001914B0020906B0024908B002890AB002C2C040000408200182C050000408200103C8083C93884DBC038A000257D8802A64B2B1148"
+      },
+      {
+        "name": "auth2_config_stub",
+        "address": 2210978304,
+        "bytes": "3D8083C9398CDA80816C0000396B0001916C0000906C0004908C000890AC000C7D8802A64B2B2798000000000000000000000000000000000000000000000000"
+      },
+      {
+        "name": "connect_result_stub",
+        "address": 2210982016,
+        "bytes": "7C0802A69001FFF89421FF90906100203D608174396BFE707D6903A64E8004213D8083C9398CE700906C003880610020906C000C382100708001FFF87C0803A64E800020"
+      },
+      {
+        "name": "socket_security_stub",
+        "address": 2210981760,
+        "bytes": "7C0802A69001FFF89421FF9090610020386000003D608174396BFE787D6903A64E800421806100203C80786960846E7338A0000138C0000038E000003D6082D7396BA3707D6903A64E8004213D8083C9398CE700906C00288121002089490042914C002C3D608174396BFE707D6903A64E8004213D8083C9398CE700906C0030382100708001FFF87C0803A64E800020"
+      }
+    ],
+    "sites": [
+      {
+        "name": "connect_hook",
+        "address": 2195103324,
+        "expect": "4B7605F5",
+        "write": "48F247A5",
+        "note": "redirect only Blaze connects to the local server"
+      },
+      {
+        "name": "ticket_hook",
+        "address": 2197024000,
+        "expect": "7D8802A6",
+        "write": "48D4EE80",
+        "note": "branch to the offline-ticket stub"
+      },
+      {
+        "name": "auth2_config_hook",
+        "address": 2197029304,
+        "expect": "7D8802A6",
+        "write": "48D4D848",
+        "note": "branch to the auth2 config stub"
+      },
+      {
+        "name": "xnet_nosecure",
+        "address": 2195119100,
+        "expect": "41820014",
+        "write": "60000000",
+        "note": "take the nosecure path"
+      },
+      {
+        "name": "xnet_bypass",
+        "address": 2195119360,
+        "expect": "409A0008",
+        "write": "60000000",
+        "note": "skip the secure-XNet gate"
+      }
+    ],
+    "pointer": {
+      "name": "redirector_profile",
+      "address": 2211381020,
+      "write_word": 2182300528,
+      "note": "point the redirector at the plaintext-friendly profile"
+    }
+  },
+  "stage2_easfc": {
+    "note": "in powdllzf, in place; refuses a replacement longer than the original, so the server address has a hard length budget",
+    "strings": [
+      {
+        "name": "easfc_session",
+        "address": 2305843792,
+        "expect": "pal.gt.easfc.ea.com:8094",
+        "budget": 24,
+        "write": "203.0.113.10:10041",
+        "fits": true
+      },
+      {
+        "name": "easfc_catalogue",
+        "address": 2305843632,
+        "expect": "content.lt.easfc.ea.com:8080",
+        "budget": 28,
+        "write": "http://203.0.113.10:18080",
+        "fits": true
+      }
+    ]
+  },
+  "stage3_tu3": {
+    "note": "the APT is located by SIGNATURE, not a fixed address, because the title loads helperFunctions more than once; a plugin hooks the load instead of scanning",
+    "signature": "735AB901B297B901AF0DAFA959B901AF46A2475249129D0000000028A301F11CA301F21CB901AF0DAFA9B901AF48AF49",
+    "signature_to_apt": -11376,
+    "branches": [
+      {
+        "apt_offset": 11398,
+        "expect": "9D0000000028",
+        "write": "990000000064",
+        "context_before": "B901AF0DAFA959B901AF46A247524912",
+        "context_after": "A301F11CA301F21CB901AF0DAFA9B901"
+      },
+      {
+        "apt_offset": 11666,
+        "expect": "9D000000000C",
+        "write": "9D0000000000",
+        "context_before": "4EA301FA52870000000217B902734912",
+        "context_after": "59B901A301FB5D990000001FA301FC26"
+      },
+      {
+        "apt_offset": 12266,
+        "expect": "9D00000000B0",
+        "write": "9900000000B0",
+        "context_before": "A302122659B901AF2CA302135212",
+        "context_after": "59A20240870000000000000217B902A2"
+      }
+    ]
+  }
+}
