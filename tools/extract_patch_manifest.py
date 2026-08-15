@@ -48,8 +48,11 @@ def stage_launch(ip_int: int) -> dict:
     import fifa14_redirector_profile_patch as RP
     import fifa14_xnet_startup_patch as XN
 
-    redirect_stub = CR.build_stub(ip_int)
-    connect_stub = CB.build_stub()
+    # The cave at CONNECT_STUB (0x83C8E600) receives the 236-byte,
+    # IP-carrying stub -- CR.build_stub(ip), the same object the launcher
+    # writes there at fifa14_early_local_server.py:623. CB.build_stub() is a
+    # different, shorter variant that is not the one installed; do not use it.
+    connect_stub = CR.build_stub(ip_int)
 
     # Guarded writes: each names the exact original bytes the plugin must see
     # before it writes, so it refuses a wrong build instead of corrupting one.
@@ -92,8 +95,10 @@ def stage_launch(ip_int: int) -> dict:
     ]
 
     # Code caves: written first, so the hooks above have something to branch to.
+    # connect_stub carries the server IP -- rebuild it when the address changes.
     caves = [
-        {"name": "connect_stub", "address": CB.CONNECT_STUB, "bytes": _hex(connect_stub)},
+        {"name": "connect_stub", "address": CB.CONNECT_STUB,
+         "bytes": _hex(connect_stub), "carries_ip": True},
         {"name": "connect_log", "address": CB.CONNECT_LOG, "bytes": _hex(bytes(0x3C))},
         {"name": "ticket_stub", "address": E.TICKET_STUB, "bytes": _hex(E.TICKET_STUB_BYTES)},
         {"name": "auth2_config_stub", "address": E.AUTH2_CONFIG_STUB,
@@ -102,9 +107,6 @@ def stage_launch(ip_int: int) -> dict:
          "bytes": _hex(CR.CONNECT_RESULT_STUB_BYTES)},
         {"name": "socket_security_stub", "address": CR.SOCKET_SECURITY_STUB,
          "bytes": _hex(CR.SOCKET_SECURITY_STUB_BYTES)},
-        {"name": "connect_redirect_stub", "address": CR.CONNECT_RESULT_STUB,
-         "bytes": _hex(redirect_stub),
-         "note": "carries the server IP; rebuild when the address changes"},
     ]
 
     pointer = {
@@ -114,7 +116,23 @@ def stage_launch(ip_int: int) -> dict:
         "note": "point the redirector at the plaintext-friendly profile",
     }
 
-    return {"caves": caves, "sites": sites, "pointer": pointer}
+    return {
+        # Honesty marker. This is the functional core of the launch patch --
+        # the connect hook and its stub, the offline ticket, the auth2 config,
+        # the two XNet gates, and the redirector profile. The working launcher
+        # (fifa14_early_local_server.py, lines ~195-360) *also* installs a set
+        # of trace/journal stubs (postauth_dispatch, login_callback,
+        # useradded, connection_result, connected_owner). Several are
+        # diagnostics; at least connection_result also patches a site. Which of
+        # them a minimal plugin actually needs has not been separated from
+        # which are observation-only, and that separation needs a live launch
+        # to settle -- so a plugin built from this alone should be validated
+        # against a full patched launch before it is trusted. See docs/PLUGIN.md.
+        "complete": False,
+        "caves": caves,
+        "sites": sites,
+        "pointer": pointer,
+    }
 
 
 def stage_easfc(ip: str, core_port: int, identity_port: int) -> dict:
