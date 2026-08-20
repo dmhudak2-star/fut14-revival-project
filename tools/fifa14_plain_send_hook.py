@@ -422,12 +422,31 @@ class Xbdm:
             raise RuntimeError(f"Short memory read at 0x{address:08X}")
         return data
 
+    # XBDM parses a command line into a fixed buffer, and `setmem` spends two
+    # hex characters per byte, so a long enough write is rejected outright --
+    # `446-`, with no hint that length is the problem.
+    #
+    # This bit on 20 August: the connect stub grew from 236 bytes to 252 when
+    # two ports were added to its filter, the whole launch patch failed, and
+    # what it looked like was a bad address or a wrong build. The limit had
+    # been sitting eight bytes away the entire time.
+    #
+    # So the splitting lives here rather than in a helper a caller has to
+    # remember. A write of 128 bytes or less is one setmem exactly as before;
+    # only longer ones split, and every caller that had a longer one either
+    # already called `write_chunks` or was one edit from this failure. The
+    # caves are written before anything branches into them, so a cave that is
+    # briefly half-written is never a cave that is executing.
+    CHUNK = 0x80
+
     def write(self, address: int, data: bytes) -> None:
-        status = self.command(
-            f"setmem addr=0x{address:08X} data={data.hex().upper()}"
-        )
-        if not status.startswith("200"):
-            raise RuntimeError(f"setmem at 0x{address:08X}: {status}")
+        for offset in range(0, max(len(data), 1), self.CHUNK):
+            piece = data[offset : offset + self.CHUNK]
+            status = self.command(
+                f"setmem addr=0x{address + offset:08X} data={piece.hex().upper()}"
+            )
+            if not status.startswith("200"):
+                raise RuntimeError(f"setmem at 0x{address + offset:08X}: {status}")
 
 
 def verify_module(client: Xbdm) -> None:
@@ -464,9 +483,8 @@ def site_state(
 
 
 def write_chunks(client: Xbdm, address: int, data: bytes) -> None:
-    """Keep XBDM setmem command lines below the console's parser limit."""
-    for offset in range(0, len(data), 0x80):
-        client.write(address + offset, data[offset : offset + 0x80])
+    """Kept for its callers; `Xbdm.write` splits by itself now."""
+    client.write(address, data)
 
 
 def main() -> int:
