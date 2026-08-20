@@ -1,12 +1,18 @@
 /* FIFA 14 FUT revival -- Dashlaunch title plugin (SKELETON)
  * ==========================================================
  *
- * HONESTY, READ FIRST. This file was written without a PowerPC toolchain and
- * WITHOUT ONCE BEING COMPILED OR RUN. Everything else in this repository was
- * verified on the console or in the test suite; this is the first code that was
- * not. Treat it as a structured starting point for someone with the Xbox 360
- * build environment, not as a working plugin. Every place that needs the real
- * kernel / Dashlaunch API is marked `TODO(sdk)`.
+ * HONESTY, READ FIRST. This file has NEVER RUN. It is compiled -- as C, by the
+ * host compiler, in tests/test_plugin_compiles.py, so a syntax or type error
+ * cannot sit here unnoticed the way it did before -- but it has never been
+ * built for PowerPC and never loaded on a console. A host compile proves the
+ * code is well formed. It proves nothing about whether it works. Treat this as
+ * a structured starting point for someone with the Xbox 360 build environment,
+ * not as a working plugin. Every place that needs the real kernel / Dashlaunch
+ * API is marked `TODO(sdk)`.
+ *
+ * The stage functions are deliberately unreferenced: they are called from the
+ * module-load hooks, and registering those needs the SDK. That is the one
+ * warning the compile test tolerates.
  *
  * One caveat before you build on it: patches.h is generated for a FIXED server
  * IP. Runtime hostname resolution (see resolve_and_rewrite) is a TODO; until it
@@ -50,7 +56,7 @@ extern void   HvxKeSweepDcacheRange(void *addr, DWORD len); /* i-cache coherency
  * below goes through this, so a wrong build is refused rather than corrupted --
  * the same contract the Python patchers enforce with control.read() first. */
 static BOOL mem_equals(DWORD address, const BYTE *expect, DWORD len) {
-    const volatile BYTE *p = (const volatile BYTE *)address;
+    const volatile BYTE *p = (const volatile BYTE *)(uintptr_t)address;
     for (DWORD i = 0; i < len; i++) {
         if (p[i] != expect[i]) return 0;
     }
@@ -58,13 +64,13 @@ static BOOL mem_equals(DWORD address, const BYTE *expect, DWORD len) {
 }
 
 static void mem_write(DWORD address, const BYTE *bytes, DWORD len) {
-    volatile BYTE *p = (volatile BYTE *)address;
+    volatile BYTE *p = (volatile BYTE *)(uintptr_t)address;
     for (DWORD i = 0; i < len; i++) {
         p[i] = bytes[i];
     }
     /* Code was written; the instruction cache must be made coherent or the CPU
      * may execute the old bytes. TODO(sdk): confirm the right flush call. */
-    HvxKeSweepDcacheRange((void *)address, len);
+    HvxKeSweepDcacheRange((void *)(uintptr_t)address, len);
 }
 
 /* ---- title identification ---------------------------------------------- */
@@ -98,7 +104,7 @@ static void apply_stage1(void) {
         }
         mem_write(h->address, h->write, h->write_len);
     }
-    *(volatile DWORD *)STAGE1_PROFILE_POINTER = STAGE1_PROFILE_VALUE;
+    *(volatile DWORD *)(uintptr_t)STAGE1_PROFILE_POINTER = STAGE1_PROFILE_VALUE;
 }
 
 /* ---- stage 2: EAS FC endpoints (powdllzf) ------------------------------ */
@@ -111,12 +117,12 @@ static void apply_stage2(void) {
     /* Length is not re-checked here because the generator guaranteed fit; a
      * plugin that resolves a hostname at runtime must re-check after rewrite. */
     const char *s = easfc_session_write;
-    volatile char *d = (volatile char *)PATCH_EASFC_SESSION_ADDR;
+    volatile char *d = (volatile char *)(uintptr_t)PATCH_EASFC_SESSION_ADDR;
     while (*s) { *d++ = *s++; }
     *d = 0;
 
     s = easfc_catalogue_write;
-    d = (volatile char *)PATCH_EASFC_CATALOGUE_ADDR;
+    d = (volatile char *)(uintptr_t)PATCH_EASFC_CATALOGUE_ADDR;
     while (*s) { *d++ = *s++; }
     *d = 0;
 }
