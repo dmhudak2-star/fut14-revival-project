@@ -40,11 +40,12 @@ def _hex(b: bytes) -> str:
     return b.hex().upper()
 
 
-def stage_launch(ip_int: int) -> dict:
+def stage_launch(ip_int: int, ip: str, identity_port: int) -> dict:
     import fifa14_connect_bypass as CB
     import fifa14_connect_journal as CJ
     import fifa14_connect_redirect as CR
     import fifa14_early_local_server as E
+    import fifa14_fut_resource_url_trace as FR
     import fifa14_redirector_profile_patch as RP
     import fifa14_xnet_startup_patch as XN
 
@@ -53,6 +54,11 @@ def stage_launch(ip_int: int) -> dict:
     # writes there at fifa14_early_local_server.py:623. CB.build_stub() is a
     # different, shorter variant that is not the one installed; do not use it.
     connect_stub = CR.build_stub(ip_int)
+
+    # The launcher arms this under --redirect-fut-resource, which tools/fut.sh
+    # passes on every single run. It carries the address a second time.
+    fut_url = f"http://{ip}:{identity_port}/futBoot.xml"
+    fut_stub = FR.build_stub(fut_url)
 
     # Guarded writes: each names the exact original bytes the plugin must see
     # before it writes, so it refuses a wrong build instead of corrupting one.
@@ -72,13 +78,6 @@ def stage_launch(ip_int: int) -> dict:
             "note": "branch to the offline-ticket stub",
         },
         {
-            "name": "auth2_config_hook",
-            "address": E.AUTH2_CONFIG_SITE,
-            "expect": _hex(E.AUTH2_CONFIG_ORIGINAL),
-            "write": _hex(E.AUTH2_CONFIG_PATCH),
-            "note": "branch to the auth2 config stub",
-        },
-        {
             "name": "xnet_nosecure",
             "address": XN.NOSECURE_MODE_BRANCH,
             "expect": _hex(XN.NOSECURE_MODE_ORIGINAL),
@@ -92,6 +91,19 @@ def stage_launch(ip_int: int) -> dict:
             "write": _hex(XN.XNET_BYPASS_PATCHED),
             "note": "skip the secure-XNet gate",
         },
+        {
+            # The cards and their art are read off the console's own disk
+            # rather than sent by the server, and this is the patch that makes
+            # that true: the native FUT downloader's futBoot.xml URL is
+            # rewritten to the local HTTP service. Without it a plugin comes up
+            # with NOT FOUND art on every card -- the failure looks like a
+            # server problem and is not one.
+            "name": "fut_resource_hook",
+            "address": FR.SITE,
+            "expect": _hex(FR.ORIGINAL),
+            "write": _hex(FR.PATCH),
+            "note": "route native futBoot.xml loading to the local service",
+        },
     ]
 
     # Code caves: written first, so the hooks above have something to branch to.
@@ -101,12 +113,25 @@ def stage_launch(ip_int: int) -> dict:
          "bytes": _hex(connect_stub), "carries_ip": True},
         {"name": "connect_log", "address": CB.CONNECT_LOG, "bytes": _hex(bytes(0x3C))},
         {"name": "ticket_stub", "address": E.TICKET_STUB, "bytes": _hex(E.TICKET_STUB_BYTES)},
-        {"name": "auth2_config_stub", "address": E.AUTH2_CONFIG_STUB,
-         "bytes": _hex(E.AUTH2_CONFIG_STUB_BYTES)},
+        # The ticket stub loads r4 from here. It is a separate cave, not the
+        # tail of the stub's own, and a plugin that writes the code without the
+        # data hands the title a pointer into whatever was there.
+        {"name": "ticket_dummy", "address": E.TICKET_DUMMY,
+         "bytes": _hex(E.TICKET_DUMMY_BYTES)},
         {"name": "connect_result_stub", "address": CR.CONNECT_RESULT_STUB,
          "bytes": _hex(CR.CONNECT_RESULT_STUB_BYTES)},
         {"name": "socket_security_stub", "address": CR.SOCKET_SECURITY_STUB,
          "bytes": _hex(CR.SOCKET_SECURITY_STUB_BYTES)},
+        {"name": "fut_resource_journal", "address": FR.JOURNAL,
+         "bytes": _hex(bytes(FR.JOURNAL_SIZE))},
+        # Second place the server address is baked in: the replacement URL sits
+        # inside this cave, at `url_offset`, so a plugin that resolves a name
+        # at boot rewrites it there rather than rebuilding the stub.
+        {"name": "fut_resource_stub", "address": FR.STUB,
+         "bytes": _hex(fut_stub), "carries_ip": True,
+         "url_offset": FR.REDIRECT_URL - FR.STUB,
+         "url_capacity": FR.STUB_END - FR.REDIRECT_URL,
+         "url": fut_url},
     ]
 
     pointer = {
@@ -117,18 +142,35 @@ def stage_launch(ip_int: int) -> dict:
     }
 
     return {
-        # Honesty marker. This is the functional core of the launch patch --
-        # the connect hook and its stub, the offline ticket, the auth2 config,
-        # the two XNet gates, and the redirector profile. The working launcher
-        # (fifa14_early_local_server.py, lines ~195-360) *also* installs a set
-        # of trace/journal stubs (postauth_dispatch, login_callback,
-        # useradded, connection_result, connected_owner). Several are
-        # diagnostics; at least connection_result also patches a site. Which of
-        # them a minimal plugin actually needs has not been separated from
-        # which are observation-only, and that separation needs a live launch
-        # to settle -- so a plugin built from this alone should be validated
-        # against a full patched launch before it is trusted. See docs/PLUGIN.md.
-        "complete": False,
+        # This is now the whole launch patch, and it was settled by reading the
+        # launcher rather than by another launch.
+        #
+        # The trace stubs that made this uncertain -- postauth_dispatch,
+        # login_callback, useradded, connection_result, and the auth2 config
+        # pair -- all live inside `arm_login_flow_traces`, which the launcher
+        # calls only under `--trace-login-flow`. That flag is `store_true`, and
+        # `tools/fut.sh` does not pass it. So not one of them is applied in the
+        # configuration that actually works, and a plugin that writes them is
+        # patching sites the working console does not have patched.
+        #
+        # The same reading found the table short in the other direction, which
+        # is the half that would have cost a build:
+        #
+        #   * `ticket_dummy` -- the data cave the ticket stub points r4 at,
+        #     written unconditionally beside the code cave, and absent here;
+        #   * the native FUT-resource redirect -- `--redirect-fut-resource`,
+        #     which fut.sh passes on every run. It is what makes the cards and
+        #     their art load from the console's own disk, and it carries the
+        #     server address a second time. A plugin without it draws NOT FOUND
+        #     on every card, which reads as a server fault and is not one.
+        #
+        # What is in this table is exactly what fut.sh writes, no more and no
+        # less. What still needs a console is whether the plugin's hook fires
+        # at the same instant XBDM's modload notification does -- a question
+        # about timing, not about which bytes.
+        "complete": True,
+        "settled_by": "tools/fifa14_early_local_server.py + the flags "
+                      "tools/fut.sh passes; --trace-login-flow is not one",
         "caves": caves,
         "sites": sites,
         "pointer": pointer,
@@ -202,7 +244,7 @@ def build(ip: str, core_port: int, identity_port: int) -> dict:
             "note": "every address here is specific to this build",
         },
         "server": {"ip": ip, "core_port": core_port, "identity_port": identity_port},
-        "stage1_launch": stage_launch(ip_int),
+        "stage1_launch": stage_launch(ip_int, ip, identity_port),
         "stage2_easfc": stage_easfc(ip, core_port, identity_port),
         "stage3_tu3": stage_tu3(),
     }

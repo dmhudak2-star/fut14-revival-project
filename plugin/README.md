@@ -12,19 +12,19 @@ tests ; ce fichier, non. C'est un point de départ structuré pour quelqu'un qui
 a l'environnement de build Xbox 360, pas un plugin qui marche. Chaque endroit
 qui a besoin de la vraie API kernel / Dashlaunch porte un `TODO(sdk)`.
 
-Deux limites supplémentaires, importantes :
+Une limite qui reste : **`patches.h` est généré pour une IP fixe.** La
+résolution de nom au démarrage (`resolve_and_rewrite` dans `plugin.c`) est un
+TODO ; tant qu'elle n'existe pas, le plugin ne parle qu'à l'adresse pour
+laquelle le header a été généré. Et elle doit réécrire **quatre** endroits : le
+cave connect, l'URL `futBoot.xml` dans `cave_fut_resource_stub`, et les deux
+chaînes EAS FC.
 
-1. **La table de correctifs de lancement (étage 1) est le cœur fonctionnel,
-   pas l'ensemble complet.** Le vrai lanceur
-   (`tools/fifa14_early_local_server.py`, ~lignes 195-360) installe aussi des
-   stubs de trace/journal dont on n'a pas séparé le nécessaire du
-   diagnostique. Le manifeste le marque : `"complete": false`. Un plugin
-   construit à partir de ça seul doit être validé contre un lancement patché
-   complet avant d'être cru.
-2. **`patches.h` est généré pour une IP fixe.** La résolution de nom au
-   démarrage (`resolve_and_rewrite` dans `plugin.c`) est un TODO ; tant qu'elle
-   n'existe pas, le plugin ne parle qu'à l'adresse pour laquelle le header a
-   été généré.
+Une limite qui a sauté (20 août) : la table de l'étage 1 était marquée « cœur
+fonctionnel seulement ». Elle est complète maintenant, et ça s'est réglé en
+lisant les drapeaux du lanceur plutôt qu'en relançant la console — les stubs de
+trace sont derrière `--trace-login-flow`, que `fut.sh` ne passe pas, et la
+table manquait `ticket_dummy` et toute la redirection FUT-resource. Voir
+`docs/PLUGIN.md`.
 
 Ce qui est solide : la **forme**. Trois accroches de chargement dans l'ordre,
 des écritures gardées qui vérifient les octets d'origine, un APT localisé par
@@ -69,9 +69,8 @@ les régénère pour sa propre adresse.
 1. **Remplir les `TODO(sdk)` de `plugin.c`** : les vraies en-têtes (XDK
    `<xtl.h>` ou libxenon), la lecture du timestamp XEX, les notifications de
    chargement de module, le flush de cache instruction.
-2. **Compléter l'étage 1** : instrumenter un lancement patché réel, comparer
-   avec `patches.json`, et décider quels stubs de trace sont nécessaires. Tant
-   que `"complete": false`, cette étape n'est pas faite.
+2. ~~**Compléter l'étage 1**~~ — fait le 20 août, en lisant les drapeaux du
+   lanceur. `"complete": true`, et le manifeste dit par quoi (`settled_by`).
 3. **La résolution de nom** (`resolve_and_rewrite`) : lire `fifa14revival.ini`,
    résoudre l'hôte, réécrire l'IP dans le cave `connect_stub` (offsets connus
    du manifeste) et dans les deux chaînes EAS FC.

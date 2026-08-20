@@ -60,6 +60,18 @@ def emit(manifest: dict, out) -> None:
     w("};\n")
     w(f"#define STAGE1_CAVE_COUNT {len(caves)}\n\n")
 
+    # Where the server address sits inside the caves, so a plugin that resolves
+    # a hostname at boot can rewrite it in place instead of rebuilding a stub
+    # it has no assembler for. Two caves carry it, and the FUT-resource one
+    # carries it as a plain URL string at a known offset.
+    for cave in caves:
+        if cave.get("url_offset") is None:
+            continue
+        w(f"#define PATCH_{cave['name'].upper()}_URL_ADDR "
+          f"0x{cave['address'] + cave['url_offset']:08X}\n")
+        w(f"#define PATCH_{cave['name'].upper()}_URL_CAPACITY "
+          f"{cave['url_capacity']}\n\n")
+
     # Stage 1 hooks
     sites = manifest["stage1_launch"]["sites"]
     w("static const patch_site_t STAGE1_HOOKS[] = {\n")

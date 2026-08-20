@@ -8,16 +8,18 @@
  * build environment, not as a working plugin. Every place that needs the real
  * kernel / Dashlaunch API is marked `TODO(sdk)`.
  *
- * Two more caveats before you build on it:
+ * One caveat before you build on it: patches.h is generated for a FIXED server
+ * IP. Runtime hostname resolution (see resolve_and_rewrite) is a TODO; until it
+ * is done, the plugin only talks to the address the header was generated for.
  *
- *   1. The launch-stage patch table (patches.h, stage 1) is the FUNCTIONAL
- *      CORE only. The working launcher installs additional trace/journal stubs
- *      whose necessity has not been separated from diagnostics -- see
- *      `"complete": false` in the manifest and docs/PLUGIN.md. Validate a built
- *      plugin against a full patched launch before trusting it.
- *   2. patches.h is generated for a FIXED server IP. Runtime hostname
- *      resolution (see resolve_and_rewrite) is a TODO; until it is done, the
- *      plugin only talks to the address the header was generated for.
+ * The launch table itself is no longer in doubt. It used to be marked
+ * "functional core only", because the launcher installs trace stubs and nobody
+ * had separated necessity from diagnostics. The flags settle it: every one of
+ * those stubs lives inside `arm_login_flow_traces`, which runs only under
+ * `--trace-login-flow`, which `tools/fut.sh` does not pass. Reading it that way
+ * also found the table SHORT by two things that do matter -- the ticket data
+ * cave, and the native FUT-resource redirect that makes the cards and their art
+ * load off the console's own disk. Both are in patches.h now.
  *
  * What IS solid here: the shape. Three module-load hooks in order, guarded
  * writes that check original bytes first, and a pattern-located APT. The bytes
@@ -158,10 +160,22 @@ static void apply_stage3(DWORD apt_base) {
 
 /* The server address comes from fifa14revival.ini on the console's disk, not
  * from the compiled header. If host is a name, resolve it once and rewrite the
- * address into the connect stub cave and the two EAS FC strings -- the only
- * places it is baked in. TODO(sdk): file read + gethostbyname equivalent, then
- * patch cave_connect_stub at the IP offsets (the manifest records them) and the
- * two PATCH_EASFC_* strings. Until this exists, the header's fixed IP is used. */
+ * address everywhere it is baked in. FOUR places, not two:
+ *
+ *   1. cave_connect_stub          -- the IP, as immediates in the stub's code
+ *   2. cave_fut_resource_stub     -- the futBoot.xml URL, a plain string at
+ *                                    PATCH_FUT_RESOURCE_STUB_URL_ADDR, which is
+ *                                    why the generator emits that address: a
+ *                                    plugin has no assembler to rebuild a stub
+ *                                    with, but it can overwrite a string
+ *   3. easfc_session_write        -- "<ip>:<core_port>"
+ *   4. easfc_catalogue_write      -- "http://<ip>:<identity_port>"
+ *
+ * Miss (2) and the game reaches the server perfectly and draws NOT FOUND on
+ * every card, which sends you looking at the wrong half of the system.
+ *
+ * TODO(sdk): file read + gethostbyname equivalent, then rewrite those four.
+ * Until this exists, the header's fixed IP is used. */
 static void resolve_and_rewrite(void) {
     /* TODO(sdk): implement. No-op for now -- header IP stands. */
 }

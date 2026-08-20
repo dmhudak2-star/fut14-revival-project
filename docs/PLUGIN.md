@@ -25,9 +25,10 @@ avec, et la différence se voit au moment de la génération plutôt que comme u
 plugin silencieusement cassé. C'est ce qui rend vraie la phrase de RELEASE.md :
 « le plugin est une transcription, pas une redécouverte ».
 
-Le manifeste est paramétré par l'adresse du serveur, parce que deux endroits
-l'embarquent : le stub de redirection connect et les chaînes EAS FC. Tout le
-reste est fixe pour le build supporté (`default.xex` timestamp `0x534C8977`,
+Le manifeste est paramétré par l'adresse du serveur, parce que **quatre**
+endroits l'embarquent : le stub de redirection connect, l'URL `futBoot.xml`
+dans le stub FUT-resource, et les deux chaînes EAS FC. Tout le reste est fixe
+pour le build supporté (`default.xex` timestamp `0x534C8977`,
 base `0x82000000`).
 
 ## Identification du titre, et refus de tout le reste
@@ -52,18 +53,59 @@ Dashlaunch expose déjà pour les plugins de titre).
 doivent exister avant. Enfin le **pointeur de profil**
 (`stage1_launch.pointer`) — un simple mot à écrire.
 
-Sept caves, cinq hooks, un pointeur. Le manifeste les nomme :
+Huit caves, cinq hooks, un pointeur :
 
-- `connect_stub` / `connect_hook` — détourne les seuls connects Blaze
+- `connect_stub` / `connect_hook` — détourne les seuls connects Blaze ;
+  **porte l'IP du serveur**
+- `connect_log`, `connect_result_stub`, `socket_security_stub` — sockets locales
 - `ticket_stub` / `ticket_hook` — jeton hors-ligne
-- `auth2_config_stub` / `auth2_config_hook` — configuration auth2
-- `connect_redirect_stub` — **porte l'IP du serveur** ; à régénérer si l'adresse change
-- `connect_result_stub`, `socket_security_stub` — sockets locales
-- `xnet_nosecure` / `xnet_bypass` — deux branches à neutraliser (`60000000`, un `nop`)
+- `ticket_dummy` — la **donnée** que le stub charge dans r4
+- `fut_resource_stub` / `fut_resource_journal` / `fut_resource_hook` — la
+  redirection native de `futBoot.xml` ; **porte l'adresse une seconde fois**
+- `xnet_nosecure` / `xnet_bypass` — deux branches à neutraliser
 - `redirector_profile` — pointe le redirector sur le profil en clair
 
-Les hôtes EA d'origine sont **conservés**. Le résolveur du titre suit son chemin
-normal ; c'est le connect qui est détourné. Ne pas toucher aux hôtes.
+Les hôtes EA d'origine sont **conservés**. Le résolveur du titre suit son
+chemin normal ; c'est le connect qui est détourné. Ne pas toucher aux hôtes.
+
+### Cette table était fausse dans les deux sens — 20 août 2026
+
+Le manifeste portait `"complete": false` : le lanceur installe aussi des stubs
+de trace, et personne n'avait séparé le nécessaire du diagnostique. On disait
+qu'il faudrait un lancement de plus pour trancher. Il n'en fallait pas : **les
+drapeaux tranchent**.
+
+Tous ces stubs — `postauth_dispatch`, `login_callback`, `useradded`,
+`connection_result`, et la paire `auth2_config` — vivent dans
+`arm_login_flow_traces`, que le lanceur n'appelle que sous
+`--trace-login-flow`. C'est un `store_true`, et `tools/fut.sh` ne le passe pas.
+Donc **aucun d'eux n'est appliqué** sur la console qui marche, et un plugin qui
+les écrit patche des sites que la console qui marche laisse tranquilles. Ils
+sortent de la table.
+
+La même lecture l'a trouvée **courte** de deux choses, et c'est la moitié qui
+aurait coûté un build :
+
+- **`ticket_dummy`** (`0x83C8DBC0`, 0x40 octets) — le stub de jeton charge r4
+  depuis là. Écrire le code sans la donnée donne au titre un pointeur vers ce
+  qui traînait.
+- **la redirection FUT-resource** — `--redirect-fut-resource`, que `fut.sh`
+  passe à *chaque* lancement. C'est elle qui fait lire les cartes et leurs
+  images sur le disque de la console. Sans elle, le jeu atteint le serveur
+  parfaitement et dessine NOT FOUND sur chaque carte — une panne qui ressemble
+  au serveur et n'en est pas une.
+
+L'URL de remplacement est une **chaîne dans le cave**, à
+`PATCH_FUT_RESOURCE_STUB_URL_ADDR` (`0x83C86180`, 128 octets de budget). C'est
+pour ça que le générateur l'émet : un plugin n'a pas d'assembleur pour
+reconstruire un stub, mais il sait écraser une chaîne. La résolution de nom au
+démarrage doit donc réécrire **quatre** endroits, pas deux : le cave connect,
+cette URL, et les deux chaînes EAS FC.
+
+Ce qui demande encore la console, c'est de savoir si l'accroche du plugin tombe
+au même instant que la notification `modload` de XBDM — une question de timing,
+plus une question d'octets.
+
 
 ### 2. Au chargement de `powdllzf`
 
@@ -114,8 +156,9 @@ identity_port = 18080
 **`host` peut être un nom, et c'est même recommandé.** Une IP de VPS gravée dans
 des milliers d'installations devient un point de rupture le jour où elle change.
 Le plugin résout le nom **au démarrage**, une fois, et écrit l'IP résolue dans
-le stub de redirection connect et dans les deux chaînes EAS FC — exactement là
-où le manifeste marque l'adresse comme variable. La console a un résolveur ; ce
+les quatre endroits que le manifeste marque comme variables : le stub de
+redirection connect, l'URL `futBoot.xml` (une simple chaîne, à
+`PATCH_FUT_RESOURCE_STUB_URL_ADDR`), et les deux chaînes EAS FC. La console a un résolveur ; ce
 travail est du ressort du plugin, pas de la configuration.
 
 Si la résolution échoue (pas de réseau, nom mort), le plugin n'applique pas les
