@@ -140,6 +140,64 @@ fois que l'APT est chargé**. Le titre le recharge plusieurs fois
 (`docs/AUTOMATIC_PATCH.md`) ; un patch posé une seule fois se fait écraser. Une
 accroche au chargement, elle, ne peut pas être en retard.
 
+## Ce que la console dit — 20 août 2026
+
+Une partie de cette spécification était de la déduction. Elle ne l'est plus :
+la console porte la réponse, et il a suffi de la lire par XBDM.
+
+### Les plugins marchent, et c'est prouvé par cette conversation
+
+`Hdd:\Dash_launch_v3.21` — Dashlaunch v3.21 installé. Deux `launch.ini`
+existent, et c'est **celui de l'USB qui est en vigueur** :
+
+```
+Hdd:\launch.ini    plugin1..3 = (vides)
+Usb0:\launch.ini   plugin1 = Usb:\xbdm.xex
+                   plugin2 = Usb:\Cipher\Cipher.xex
+                   plugin3 = Usb:\JRPC2.xex
+                   plugin4 =            <- libre
+                   plugin5 =            <- libre
+```
+
+La preuve n'est pas une inspection : **XBDM tourne sur cette console parce que
+`plugin1` le charge**, et tout ce dépôt lui parle par XBDM. Le mécanisme de
+plugin est donc vérifié de la seule façon qui compte, et il reste deux
+emplacements libres. Le nôtre est `plugin4`.
+
+Attention au piège : éditer `Hdd:\launch.ini` ne ferait **rien**. C'est
+l'USB qui est lu.
+
+Noter aussi la syntaxe des chemins : `Usb:\...`, pas `Usb0:\...`.
+
+### L'API est sur le disque, pas à deviner
+
+`Hdd:\Dash_launch_v3.21\launch_sysdll_exports_examples.c` est la
+documentation de Dashlaunch elle-même. Ce qu'elle règle :
+
+* **Comment un plugin appelle Dashlaunch** : `XexGetModuleHandle("launch.xex")`
+  puis `XexGetProcedureAddress(handle, ordinal, &proc)`. Ce sont exactement les
+  deux imports que `plugin.c` avait déclarés en `TODO(sdk)` — la forme était
+  bonne.
+* **Ordinal 14, `dlaunchPluginPath`** → une structure `PLUGIN_LOAD_PATH`
+  (`magic` `'PLPA'`, `devicePath`, `iniPath`) qui dit au plugin **d'où il a été
+  chargé**. C'est la réponse à « comment le plugin trouve
+  `fifa14revival.ini` » : à côté de lui, sans chemin en dur. Le readme précise
+  que c'est volatile et qu'il faut le copier dans `Main()`.
+* Le reste des ordinaux (options par nom, liste des lecteurs, démarrage d'un
+  module système) n'est pas nécessaire ici, mais existe.
+
+### Ce que Dashlaunch ne donne pas
+
+**Aucune notification de chargement de titre.** Les plugins sont chargés **au
+boot**, comme modules système, et restent résidents à travers les lancements —
+c'est ainsi que `xbdm.xex` et `JRPC2.xex` survivent d'un jeu à l'autre.
+
+Donc les trois accroches décrites plus haut sont à notre charge. Attendre que
+`default.xex` soit mappé est du ressort du plugin, pas de Dashlaunch, et c'est
+la question qui reste ouverte : est-ce qu'un fil système qui guette le module
+attrape le titre aussi tôt que la notification `modload` de XBDM. C'est du
+timing, et ça se mesure sur la console.
+
 ## La configuration vient du disque de la console
 
 L'adresse du serveur ne doit pas être compilée dans le plugin. Elle vient de
