@@ -60,6 +60,14 @@ IDENTITY_PORT=${IDENTITY_PORT:-$(config server.identity_port)}
 step() { print "\n== $1" }
 fail() { print -u2 "\n!! $1"; exit 1 }
 
+# 8094 is EAS FC's Blaze session port, and 8080 (the identity service's own
+# extra listener, on by default) its catalogue. The connect hook redirects both
+# by *port* now rather than relying on the endpoint strings being rewritten in
+# time -- on 20 August those strings were read back from a running title,
+# perfectly in place, while the server had still never seen one connection from
+# that module. Redirecting by port does not depend on which endpoint the module
+# kept. If nothing ever arrives on either, the module does not call connect at
+# all, which is worth knowing for certain.
 start_server() {
     step "serveur"
     print '{}' > runtime/local-account.json
@@ -70,7 +78,7 @@ start_server() {
     nohup "$PY" server/fifa14_blaze_server.py \
         --listen 0.0.0.0 --advertise "$MAC" \
         --core-port "$CORE_PORT" --identity-port "$IDENTITY_PORT" \
-        --ports "$CORE_PORT",42124,42126,42127 \
+        --ports "$CORE_PORT",42124,42126,42127,8094 \
         --journal "$journal" \
         --account-state runtime/local-account.json \
         >> runtime/server.log 2>&1 &

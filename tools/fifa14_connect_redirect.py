@@ -38,7 +38,29 @@ DEFAULT_LOCAL_IP = "192.0.2.35"
 BLAZE_PORT = 10041
 REDIRECTOR_PORTS = (42124, 42126, 42127)
 IDENTITY_HTTP_PORT = 18080
-LOCAL_PLAINTEXT_PORTS = (BLAZE_PORT, *REDIRECTOR_PORTS, IDENTITY_HTTP_PORT)
+# EAS FC's own two endpoints, and why they are in this list.
+#
+# `powdllzf` holds them as strings -- pal.gt.easfc.ea.com:8094 for the Blaze
+# session, content.lt.easfc.ea.com:8080 for the catalogue -- and
+# `fifa14_easfc_endpoint_patch.py` rewrites both to point here. On 20 August
+# that rewrite was read back from a *running* title and was perfectly in
+# place, and the server had still never seen a single connection from that
+# module. So the rewrite is not the mechanism: either the module reads its
+# endpoint before we can write, or it does not connect at all.
+#
+# Redirecting by port answers that without depending on the string. Whichever
+# endpoint the module kept, a connect to 8094 or 8080 now lands here -- and if
+# nothing arrives on either, the module never calls connect, which is the other
+# half of the question and worth knowing for certain.
+EASFC_SESSION_PORT = 8094
+EASFC_CATALOGUE_PORT = 8080
+LOCAL_PLAINTEXT_PORTS = (
+    BLAZE_PORT,
+    *REDIRECTOR_PORTS,
+    IDENTITY_HTTP_PORT,
+    EASFC_SESSION_PORT,
+    EASFC_CATALOGUE_PORT,
+)
 XINS_TAG_HIGH = 0x7869
 XINS_TAG_LOW = 0x6E73
 

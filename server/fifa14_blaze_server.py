@@ -4144,6 +4144,16 @@ def main() -> int:
         help="comma-separated Blaze TCP listener ports",
     )
     parser.add_argument(
+        "--identity-extra-ports",
+        type=parse_ports,
+        default=parse_ports("8080"),
+        help=(
+            "additional HTTP listener ports. 8080 is EAS FC's catalogue port: "
+            "the connect hook redirects it here by port, so something has to "
+            "be listening or the redirect lands on a closed door"
+        ),
+    )
+    parser.add_argument(
         "--journal",
         type=Path,
         default=REPOSITORY / "runtime" / "blaze-server.jsonl",
@@ -4217,6 +4227,17 @@ def main() -> int:
         journal,
         account_store,
     )
+    # Same service, more doors. EAS FC's catalogue is redirected here by port
+    # rather than by hostname, so it arrives on 8080 and must be answered
+    # there; `advertise` still names the real identity port, because that is
+    # what any URL this server hands out has to say.
+    extra_identity = [
+        IdentityHttpService(
+            args.listen, port, args.advertise, journal, account_store
+        )
+        for port in args.identity_extra_ports
+        if port != args.identity_port
+    ]
 
     def stop(_signum: int, _frame: object) -> None:
         service.stop_event.set()
@@ -4225,6 +4246,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     service.start()
     identity.start()
+    for extra in extra_identity:
+        extra.start()
     journal.event(
         "ready",
         advertise=args.advertise,
@@ -4238,6 +4261,8 @@ def main() -> int:
         while not service.stop_event.wait(0.5):
             pass
     finally:
+        for extra in extra_identity:
+            extra.stop()
         identity.stop()
         service.stop()
     return 0

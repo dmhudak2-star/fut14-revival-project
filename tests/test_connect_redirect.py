@@ -51,9 +51,18 @@ class ConnectRedirectCodegenTests(unittest.TestCase):
             | redirect.IDENTITY_HTTP_PORT
         ).to_bytes(4, "big")
         self.assertIn(identity_compare, secured)
+        # The list is pinned because the redirect is meant to be *narrow*:
+        # every port here is one the title's traffic gets pulled off the
+        # internet for, so adding one is a decision, not a detail.
+        #
+        # 8094 and 8080 are EAS FC's session and catalogue. They were added on
+        # 20 August after the endpoint strings were read back from a running
+        # title -- correctly rewritten, still in place -- with the server never
+        # having seen a single connection from that module. Redirecting by port
+        # does not care which endpoint the module kept.
         self.assertEqual(
             redirect.LOCAL_PLAINTEXT_PORTS,
-            (10041, 42124, 42126, 42127, 18080),
+            (10041, 42124, 42126, 42127, 18080, 8094, 8080),
         )
 
 
