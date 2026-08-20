@@ -259,3 +259,40 @@ détail — qui nomme la carte, « Contrats joueur », « Style » — est ce qu
 - Les cartes servies en `playStyle` sont des **modificateurs de poste**.
 
 Le reste de la table attend une console rallumée.
+
+
+## La table, mesurée — 21 août 2026
+
+Sept sondes, une carte par bloc, toutes visibles d'un coup pour n'avoir à
+naviguer nulle part (c'est le parcours au pad qui a gelé la console la veille).
+
+| bloc | famille | force de la preuve |
+|---|---|---|
+| `201/202` | contrats | **certain** — « Contrats joueur », `+8 +2 +1 Matchs` |
+| `51-57` | entraînement joueur | **certain** — onglet `ENTRAINEMENT` |
+| `91-110` | **modificateur de poste** | **certain** — 3 sondes, 3 cartes de poste (`AVD >> AD`, `DLG >> DG`) |
+| `250-273` | **styles de jeu** | **fort** — « Style joueur », badges `DE BASE` et `MOT`, onglets `De base` et `Milieu` ; 24 subtypes pour les 24 styles de FIFA 14 |
+| `121-136` | styles gardien | hypothèse — 16 subtypes, rien ne s'affiche sur un joueur de champ |
+| `232` | ni poste, ni style | retiré — la console la dessine « DÉBLOQUER / Capacité +8 moral » et l'écran d'application ne l'affiche pas |
+
+Les deux erreurs qu'elle corrige sont symétriques, et toutes les deux venaient
+de la même supposition :
+
+- `91-110` était servi comme `playStyle`. C'est le bloc des **postes**. D'où
+  « le modificateur de poste marche pas » : le jeu lisait la carte dans sa
+  propre base, voyait un poste, et refusait — pendant que le serveur écrivait
+  un style.
+- `250-273`, les **vrais** styles, n'étaient **pas servis du tout** : le bloc
+  dormait dans la pile des cartes de manager qu'on ne savait pas nommer.
+
+### Et le serveur ne brûle plus une carte qu'il ne sait pas appliquer
+
+Un modificateur de poste change un joueur d'un poste vers un autre, et la paire
+n'est **pas** dans la base — le titre la dessine depuis sa propre copie et
+l'impose. Ce serveur ne peut pas vérifier ça, donc appliquer la carte la
+dépense pour rien.
+
+C'est ce qu'il a fait le 20 août : `playStyle: 105` écrit sur un MDC à
+l'instant même où l'écran disait « cet élément ne peut être appliqué ». Ces
+cartes sont refusées et enregistrées, jusqu'à ce que les paires de postes
+soient connues.

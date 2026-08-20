@@ -44,9 +44,23 @@ FAMILIES: list[tuple[range, str, str]] = [
     (range(220, 221), "fitness", "consumablesFitnessTeam"),
     (range(51, 58), "training", "consumablesTrainingPlayer"),
     (range(61, 68), "training", "consumablesTrainingGk"),
-    (range(91, 111), "playStyle", "consumablesTrainingPlayerPlayStyle"),
+    # Measured on 20 August, not inferred. Three probes from this block came
+    # back drawn as "Modificateur de poste" -- "AVD >> AD", "DLG >> DG" -- and
+    # were refused on players whose position did not match. It was served as
+    # playStyle until then, which is why applying one did nothing.
+    (range(91, 111), "position", "consumablesPosition"),
+    # And these are the real play styles, which were not served at all: the
+    # block sat in the excluded pile with the manager cards. Two probes came
+    # back as "Style joueur", badged "DE BASE" and "MOT", under the chemistry
+    # tabs "De base" and "Milieu" -- and the block is exactly 24 subtypes,
+    # which is exactly how many outfield chemistry styles FIFA 14 has.
+    (range(250, 274), "playStyle", "consumablesTrainingPlayerPlayStyle"),
+    # Kept as the keeper's styles, and still a hypothesis: 16 subtypes, and
+    # nothing from this block draws on an outfield player. That reads as the
+    # screen filtering styles a keeper cannot use, but it has not been seen on
+    # a keeper yet. Serving it costs nothing while that is checked -- it draws
+    # nothing where it does not belong.
     (range(121, 137), "playStyle", "consumablesTrainingGkPlayStyle"),
-    (range(232, 233), "position", "consumablesPosition"),
 ]
 
 TABLES = (
@@ -81,10 +95,12 @@ def main() -> int:
             subtype = row["cardsubtype"]
             family = family_for(subtype)
             if family is None:
-                # Manager modifiers and coin boosts. They are real cards and
-                # they are in here, but no FUT screen this server serves knows
-                # what to do with one, and putting them in the club would only
-                # reproduce the problem this file exists to fix.
+                # Manager modifiers, coin boosts, and subtype 232 -- which was
+                # served as `position` until the real position block was found,
+                # and which draws nothing at all on the apply screen. Whatever
+                # it is, no screen this server serves knows what to do with it.
+                # They are real cards; naming them would be the guess this file
+                # exists to have stopped making.
                 skipped[subtype] = skipped.get(subtype, 0) + 1
                 continue
             item_type, member = family

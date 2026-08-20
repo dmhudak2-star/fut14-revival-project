@@ -2374,10 +2374,25 @@ PILE_CLUB = 7
 # carries. The blocks come from `tools/build_consumables.py`, which reads them
 # out of `cards_ng_db.db`.
 CONTRACT_PLAYER, CONTRACT_MANAGER = 201, 202
-# Chemistry styles, split the way CardsDLL counts them: outfield players under
-# `consumablesTrainingPlayerPlayStyle`, goalkeepers under
-# `consumablesTrainingGkPlayStyle`.
-PLAY_STYLE_OUTFIELD = (91, 110)
+# Chemistry styles and position modifiers, as the title itself draws them.
+#
+# 91-110 was served as the outfield chemistry styles for weeks, on the strength
+# of the member CardsDLL counts it under. That was wrong, and the title said
+# so on 20 August: three probes from the block came back drawn as "Modificateur
+# de poste" -- "AVD >> AD", "DLG >> DG" -- and were refused on players whose
+# position did not match.
+#
+# The real outfield styles are 250-273, which had been sitting in the excluded
+# pile with the manager cards and were never served at all. Two probes came
+# back as "Style joueur", badged "DE BASE" and "MOT", under the chemistry tabs
+# "De base" and "Milieu"; the block is exactly 24 subtypes, and FIFA 14 has
+# exactly 24 outfield chemistry styles.
+#
+# 121-136 is still read as the keeper's styles -- 16 subtypes, and nothing from
+# it draws on an outfield player, which reads as the screen filtering what a
+# keeper cannot use. Not yet seen on a keeper.
+POSITION_MODIFIER = (91, 110)
+PLAY_STYLE_OUTFIELD = (250, 273)
 PLAY_STYLE_GK = (121, 136)
 HEALING_FIRST, HEALING_ANY = 211, 218
 FITNESS_PLAYER, FITNESS_SQUAD = 219, 220
@@ -2574,8 +2589,40 @@ class ConsumableRack:
             where = "all six" if index is None else f"attribute {index}"
             return [target], f"training {where} +{amount}"
 
-        if PLAY_STYLE_OUTFIELD[0] <= subtype <= PLAY_STYLE_GK[1]:
+        if (
+            PLAY_STYLE_OUTFIELD[0] <= subtype <= PLAY_STYLE_OUTFIELD[1]
+            or PLAY_STYLE_GK[0] <= subtype <= PLAY_STYLE_GK[1]
+        ):
             return self._play_style(target, subtype)
+
+        # A position modifier, and refused rather than applied.
+        #
+        # The card changes a player from one position to another, and the pair
+        # is not in the database -- the title draws "AVD >> AD" from its own
+        # copy and enforces it, refusing a card whose source position does not
+        # match the player. This server cannot check that, so applying one
+        # would burn the card and write nothing true.
+        #
+        # It did exactly that on 20 August: the server accepted an apply, set
+        # `playStyle: 105` on a CDM, and the screen said "cet élément ne peut
+        # être appliqué" at the same moment. A card gone, a false value in the
+        # club, and the two sides no longer agreeing. Refusing is the honest
+        # answer until the position pairs are known.
+        if POSITION_MODIFIER[0] <= subtype <= POSITION_MODIFIER[1]:
+            self.refused.append(
+                {
+                    "resourceId": row.get("definitionId"),
+                    "cardsubtypeid": subtype,
+                    "itemType": row.get("itemType"),
+                    "targetId": target.get("id"),
+                    "targetPosition": target.get("preferredPosition"),
+                    "reason": "position pair unknown",
+                }
+            )
+            raise ConsumableRefused(
+                f"subtype {subtype} is a position modifier and this server "
+                "does not know which positions it maps between"
+            )
 
         # The position block (232). What each card in it does is contested:
         # this server's catalogue called it a position change, the PC
@@ -2606,17 +2653,16 @@ class ConsumableRack:
     def _play_style(self, target: dict, subtype: int) -> tuple[list[dict], str]:
         """A chemistry style, written onto the card's own `playStyle`.
 
-        This was refused for weeks, on the grounds that 91-136 might be
-        position modifiers rather than play styles. What settles it is the
-        member CardsDLL counts these cards under, which is in the binary's own
-        name table and is not a label anybody here chose:
+        Which subtypes these are was settled by the title, not by reasoning
+        about CardsDLL's member names -- that reasoning gave 91-110, and the
+        title drew those as position modifiers. Serving one card from each
+        candidate block and reading the screen gave:
 
-            91-110   consumablesTrainingPlayerPlayStyle
-            121-136  consumablesTrainingGkPlayStyle
+            250-273  outfield styles, "Style joueur", badged "DE BASE", "MOT"
+            121-136  the keeper's, on the same reading, not yet seen on a
+                     keeper
 
-        Two ranges, one for outfield players and one for goalkeepers, which is
-        exactly how chemistry styles are split in FUT and is not how a position
-        modifier would be. `playStyle` is a member every player card already
+        `playStyle` is a member every player card already carries. `playStyle` is a member every player card already
         carries, and it has sat at 0 on every card in the club since the club
         existed.
 
