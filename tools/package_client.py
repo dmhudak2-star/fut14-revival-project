@@ -49,11 +49,11 @@ EXTRA = ("fifa14revival.example.ini", "NOTICE.md")
 # A ready-to-run config, written into the package when --server is given, so a
 # player edits one line (their console) instead of three. The example file
 # ships beside it either way: it is the one with all the comments in it.
-READY_INI = """; Prêt à l'emploi. Une seule ligne à changer : console.address.
+READY_INI = """; Ready to run. One line to change: console.address.
 ;
-; Le serveur est déjà renseigné -- c'est celui du revival, hébergé, et il n'y
-; a rien à installer de ce côté. Pour héberger le tien à la place, remplace
-; `host` par son adresse (voir deploy/DEPLOY.md dans le dépôt).
+; The server is already filled in -- it is a hosted revival server, and there
+; is nothing to install on that side. To host your own instead, replace `host`
+; with its address (see deploy/DEPLOY.md in the repository).
 
 [server]
 host = {server}
@@ -61,79 +61,79 @@ core_port = {core_port}
 identity_port = {identity_port}
 
 [console]
-; L'IP de TA Xbox, sur ton réseau local. C'est la seule chose à remplir.
+; YOUR Xbox's IP, on your own network. This is the only thing to fill in.
 address = 192.168.1.25
 title = Hdd:\\Games\\FIFA 14
 """
 
 TOP = "fifa14-revival-client"
 
-README = """# FIFA 14 Ultimate Team -- le client console
+README = """# FIFA 14 Ultimate Team -- the console client
 
-Ce paquet lance FIFA 14 et applique les correctifs. Il ne contient **aucun
-fichier du jeu** et aucun serveur : le serveur est ailleurs, et son adresse se
-met dans `fifa14revival.ini`.
+This launches FIFA 14 on a modded Xbox 360 and applies the patches. It holds
+**no game files** and no server: the server is elsewhere, and its address lives
+in `fifa14revival.ini`.
 
-## Ce qu'il te faut
+## What you need
 
-* une Xbox 360 **RGH ou JTAG**, avec **Dashlaunch** et **XBDM chargé en
-  plugin**. Concrètement une ligne dans le `launch.ini` que Dashlaunch lit
-  vraiment :
+* an Xbox 360 **RGH or JTAG**, with **Dashlaunch** and **XBDM loaded as a
+  plugin**. In practice, one line in the `launch.ini` Dashlaunch actually
+  reads:
 
       plugin4 = Usb:\\xbdm.xex
 
-  Attention : si tu as un `launch.ini` sur le disque dur **et** un sur la clé
-  USB, c'est en général celui de l'USB qui est lu. Éditer l'autre ne fait rien.
-  `xbdm.xex` et Dashlaunch ne sont pas fournis ici, ils ne nous appartiennent
-  pas.
+  Careful: if you have a `launch.ini` on the hard drive **and** one on the USB
+  stick, the USB one usually wins. Editing the other does nothing at all.
+  `xbdm.xex` and Dashlaunch are not included here -- they are not ours to hand
+  out.
 
-* FIFA 14, build `default.xex` timestamp `0x534C8977`. Un autre build sera
-  refusé plutôt que patché de travers.
+* FIFA 14, `default.xex` timestamp `0x534C8977`. Any other build is refused
+  rather than patched wrongly.
 
-* **Python 3.10 ou plus**, sur n'importe quelle machine du même réseau que la
-  console. Aucune dépendance à installer : tout est en bibliothèque standard.
-  Un PC, un Mac, un Linux -- ou **un téléphone Android sous Termux**, ce qui
-  veut dire qu'aucun ordinateur n'est nécessaire.
+* **Python 3.10 or newer**, on any machine on the same network as the console.
+  Nothing to install: it is all standard library. A PC, a Mac, a Linux box --
+  or **an Android phone running Termux**, which means no computer is needed at
+  all.
 
-## Installation
+## Setup
 
     tar xzf fifa14-revival-client.tgz
     cd fifa14-revival-client
 
-Si `fifa14revival.ini` est déjà là, le serveur y est renseigné et il ne reste
-**qu'une ligne** à changer -- `address`, sous `[console]`, l'IP de ta Xbox :
+If `fifa14revival.ini` is already there, the server is filled in and **one
+line** is left -- `address`, under `[console]`, your Xbox's IP:
 
     [console]
-    address = <IP de ta Xbox>
+    address = <your Xbox's IP>
     title = Hdd:\\Games\\FIFA 14
 
-Sinon, pars de `fifa14revival.example.ini`, qui est commenté en détail.
+Otherwise start from `fifa14revival.example.ini`, which is commented in detail.
 
-## Jouer
+## Playing
 
-Console allumée, sur le tableau de bord :
+Console on, sitting at the dashboard:
 
     python3 tools/revival_client.py
 
-Il lance le titre, applique les trois étages de correctifs, affiche `PRÊT`, et
-**garde le troisième appliqué**. Laisse la fenêtre ouverte : le titre recharge
-`helperFunctions` plusieurs fois, et un correctif posé une seule fois se fait
-écraser. Entre dans Ultimate Team quand tu veux.
+It launches the title, applies the three stages of patches, prints `PRÊT`, and
+then **keeps the third one applied**. Leave the window open: the title reloads
+`helperFunctions` more than once, and a patch applied a single time gets
+overwritten. Go into Ultimate Team whenever you like.
 
-Sous Termux :
+On Termux:
 
     pkg install python
     python3 tools/revival_client.py
 
-## Si ça ne marche pas
+## If it does not work
 
-* *« configuration illisible »* -- il manque `fifa14revival.ini`.
-* *« les correctifs de lancement n'ont pas pris »* -- la console ne répond pas
-  sur le port 730 : XBDM n'est pas chargé, ou ce n'est pas le bon `launch.ini`.
-* *« connectez-vous à Xbox Live et aux serveurs EA »* dans le jeu -- la console
-  n'atteint pas le serveur. Vérifie `host` dans le `.ini`.
-* Le jeu démarre mais les cartes sont vides -- le serveur est joignable mais ne
-  répond pas ; regarde de son côté.
+* *"configuration illisible"* -- `fifa14revival.ini` is missing.
+* *"les correctifs de lancement n'ont pas pris"* -- the console is not
+  answering on port 730: XBDM is not loaded, or it is the wrong `launch.ini`.
+* *"connect to Xbox Live and the EA servers"* in the game -- the console is not
+  reaching the server. Check `host` in the `.ini`.
+* The game starts but the cards are empty -- the server is reachable but not
+  answering; look at its side.
 """
 
 
