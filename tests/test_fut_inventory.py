@@ -1923,35 +1923,52 @@ def test_training_raises_one_attribute_or_all_six() -> None:
     assert all(entry["value"] > 50 for entry in player["attributeList"])
 
 
-def test_the_position_block_is_still_refused_and_recorded() -> None:
-    # 232. Both catalogues call it a position change and the binary carries a
-    # FUT_CONSUMABLE_POSITIONMOD -- but the card the console rendered for it
-    # reads "DEBLOQUER / Capacite +8 moral", which is a stadium unlock. Writing
-    # preferredPosition on the strength of that changes the wrong thing on a
-    # real card, and the card is spent either way.
+def test_a_position_modifier_is_refused_rather_than_burned() -> None:
+    """91-110, and the reason this is a refusal and not an application.
+
+    The card changes a player from one position to another and the pair is not
+    in the database: the title draws "AVD >> AD" from its own copy and enforces
+    it, refusing a card whose source position does not match the player.
+
+    This server cannot check that. On 20 August it applied one anyway -- set
+    playStyle 105 on a CDM -- at the same moment the screen said the card could
+    not be applied. A card gone, a false value in the club, and the two sides
+    disagreeing. Refusing is the honest answer while the pairs are unknown.
+    """
     from fut_inventory import ConsumableRefused
 
     inventory, rack, by_subtype = _rack()
     player = next(i for i in inventory.items if i["itemType"] == "player")
-    card = by_subtype[232][0]
+    before = player.get("playStyle", 0)
+    card = by_subtype[91][0]
     try:
         rack.apply(card["resourceId"], [player["id"]])
     except ConsumableRefused:
         pass
     else:
-        raise AssertionError("subtype 232 was applied")
+        raise AssertionError("a position modifier was applied")
+    # Not spent, and nothing written.
     assert card in inventory.items
-    # Recorded, so one application from the console names the family.
-    assert [entry["cardsubtypeid"] for entry in rack.refused] == [232]
+    assert player.get("playStyle", 0) == before
+    assert [entry["cardsubtypeid"] for entry in rack.refused] == [91]
+
+
+def test_subtype_232_is_no_longer_served_at_all() -> None:
+    # It was the catalogue's `position` family until the real one was found.
+    # The console drew it as "DEBLOQUER / Capacite +8 moral" -- a stadium
+    # unlock -- and it draws nothing on the apply screen. Excluded with the
+    # manager cards rather than filed under a name it does not have.
+    _, _, by_subtype = _rack()
+    assert 232 not in by_subtype
 
 
 def test_a_chemistry_style_is_written_onto_the_card() -> None:
-    # Refused for weeks on the grounds that 91-136 might be position
-    # modifiers. What settles it is the member CardsDLL counts these under --
-    # consumablesTrainingPlayerPlayStyle and consumablesTrainingGkPlayStyle --
-    # which is in the binary's name table and is not a label anybody here
-    # chose. Two ranges, outfield and goalkeeper, which is how chemistry
-    # styles are split and is not how a position modifier would be.
+    # Which subtypes these are was settled by the title, not by reasoning
+    # about CardsDLL's member names: that reasoning gave 91-110, and the title
+    # drew those as position modifiers. Serving one card from each candidate
+    # block and reading the screen gave 250-273 for the outfield styles --
+    # "Style joueur", badged "DE BASE" and "MOT" -- and left 121-136 as the
+    # keeper's, which has not been seen on a keeper yet.
     from fut_inventory import ConsumableRefused
 
     inventory, rack, by_subtype = _rack()
@@ -1960,8 +1977,8 @@ def test_a_chemistry_style_is_written_onto_the_card() -> None:
         if i["itemType"] == "player" and i.get("preferredPosition") != "GK"
     )
     assert outfield["playStyle"] == 0
-    rack.apply(by_subtype[91][0]["resourceId"], [outfield["id"]])
-    assert outfield["playStyle"] == 91
+    rack.apply(by_subtype[250][0]["resourceId"], [outfield["id"]])
+    assert outfield["playStyle"] == 250
 
     keeper = next(
         (i for i in inventory.items

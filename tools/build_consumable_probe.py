@@ -51,18 +51,23 @@ import t3db  # noqa: E402
 # middle -- because a block being homogeneous is itself an assumption, and this
 # costs nothing to check.
 PROBES: list[tuple[int, str, int]] = [
-    (51, "fcc_trainingcards", 1),    # control: player training, certain
-    (201, "fcc_contractcards", 1),   # control: contract, certain
-    (91, "fcc_trainingcards", 1),
-    (100, "fcc_trainingcards", 1),
-    (110, "fcc_trainingcards", 1),
+    # Seven cards, because seven is what fits on the screen at once. The list
+    # is walked with the pad otherwise, and walking it is what froze the
+    # console on 20 August -- so the probe is sized to need no walking at all.
+    #
+    # Three blocks are already settled and are not probed again:
+    #   201      contract          -- named "Contrats joueur", +8 +2 +1 Matchs
+    #   51-57    player training   -- drawn under the ENTRAINEMENT tab
+    #   91-110   POSITION modifier -- three probes from it, three position
+    #                                cards ("AVD >> AD", "DLG >> DG"). This is
+    #                                the block that was mislabelled playStyle.
+    (51, "fcc_trainingcards", 1),    # control: certain, and it keeps the tabs honest
     (121, "fcc_trainingcards", 1),
     (136, "fcc_trainingcards", 1),
     (232, "fcc_misccards", 1),
     (250, "fcc_trainingcards", 1),
     (260, "fcc_trainingcards", 1),
     (300, "fcc_trainingcards", 1),
-    (320, "fcc_trainingcards", 1),
 ]
 
 
