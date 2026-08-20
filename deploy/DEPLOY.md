@@ -87,11 +87,17 @@ peut pas marcher. Sur cette machine-ci, `tools/fut.sh` l'obtenait en vidant
 réseau, ni l'un ni l'autre n'est disponible, et `tools/revival_client.py`
 appelle donc cette route juste avant de lancer le titre.
 
-**À savoir avant d'ouvrir la bêta** : contrairement aux clubs, cet état est
-encore **unique pour tout le serveur**. Un joueur qui relance remet donc le
-`FirstTimeFlag` de tous les autres à zéro. Sans conséquence quand deux amis
-jouent, à corriger — en le passant par locataire comme le reste — avant
-d'ouvrir à des inconnus.
+Cet état est **par joueur** depuis le 20 août, comme les clubs :
+`runtime/accounts/<persona>.json`. La persona 0 — une console qui ne s'est
+jamais nommée — garde l'ancien fichier `runtime/local-account.json`, donc une
+installation à un seul joueur ne change pas.
+
+Ça n'a pas été corrigé par précaution : le jour même, un second joueur s'est
+connecté au serveur public et `local-account.json` est revenu en portant **son**
+gamertag. Les clubs étaient déjà séparés, donc rien de visible n'a cassé — le
+club est ce qui porte les cartes et les crédits — mais l'identité et le
+`FirstTimeFlag` étaient partagés, et `/revival/reset`, que chaque lancement
+envoie, remettait l'autre joueur à son premier démarrage en pleine partie.
 
 ## Sécurité, sans enjoliver
 
