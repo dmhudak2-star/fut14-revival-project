@@ -63,8 +63,19 @@ class Connection:
             raise RuntimeError(f"Invalid memory response at 0x{address:08X}")
         return bytes.fromhex(text)
 
+    # Same limit, same reason as `Xbdm.write` in fifa14_plain_send_hook: XBDM
+    # parses a command into a fixed buffer, setmem spends two hex characters
+    # per byte, and a long enough line is refused with a bare `446-` that says
+    # nothing about length. This is the connection the *launcher* uses, so it
+    # is the one that failed when the connect stub reached 252 bytes.
+    CHUNK = 0x80
+
     def write(self, address: int, data: bytes) -> None:
-        self.command(f"setmem addr=0x{address:08X} data={data.hex().upper()}")
+        for offset in range(0, max(len(data), 1), self.CHUNK):
+            piece = data[offset : offset + self.CHUNK]
+            self.command(
+                f"setmem addr=0x{address + offset:08X} data={piece.hex().upper()}"
+            )
 
     def close(self) -> None:
         self.reader.close()
