@@ -53,6 +53,58 @@ It is worth remembering that this is cosmetic for playing: FUT logs in, the club
 loads, the market works and packs open with the banner reading disconnected
 throughout.
 
+## Measured, 20 August 2026: the module never connects at all
+
+Three things were true at once, and that is what makes this decisive.
+
+**The endpoint strings were rewritten, and stayed rewritten.** Read out of a
+*running* title, not out of a patch script's own claim:
+
+    0x89706250: b'192.168.1.40:10041\x00...'
+    0x897061B0: b'http://192.168.1.40:18080\x00...'
+
+**The retail ports were redirected too.** `pal.gt.easfc.ea.com:8094` and
+`content.lt.easfc.ea.com:8080` were outside the connect hook's port filter all
+along, so whichever endpoint the module had kept, its connects had been walking
+past the hook and out to the internet. Both ports joined the filter, and the
+server was listening on both -- Blaze on 8094, a second HTTP listener on 8080.
+
+**And nothing arrived.** The whole session, from boot to the main menu:
+
+    connexion 1  42124  17:58:34            the redirector
+    connexion 2  10041  17:58:34 -> 18:06:37  the title
+    connexion 3  10041  18:07:37 -> 18:12:38  the same title, reconnecting
+
+Connections 2 and 3 are sequential, not concurrent: one client that dropped and
+came back a minute later, not two. Zero frames on 8094. Zero on 8080. Banner
+still reads "EAS FC non connecté".
+
+So the module does not reach the hooked `connect` by either route. Two things
+that can be, and they are different problems:
+
+* it never attempts the session, because something upstream of it fails first
+  and nothing downstream ever runs;
+* or it connects through a path this hook does not cover. The hook is **one
+  callsite in `default.xex`**, and `powdllzf` is a separate module with its own
+  linked code -- its own copy of DirtySock would have its own callsite, at
+  `0x89700000+`, which nothing here has ever looked at.
+
+The second is the cheaper one to test and has never been tried. Everything
+about this problem so far has assumed the module borrows the title's networking.
+
+### What this closes
+
+Rewriting the endpoints is finished as a line of work. It was tried as
+configuration (`ONLINE/POW_CUSTOMURL` and its four siblings, served through
+`OSDK_CORE`), then as an image rewrite, and the image rewrite demonstrably
+lands and demonstrably changes nothing. Neither was ever the mechanism, and no
+amount of making the write land earlier or more reliably will change that --
+which is worth writing down, because "the patcher lost a race" was the standing
+explanation for two weeks and it was wrong.
+
+It stays cosmetic for playing: FUT logs in, the club loads, the market works,
+packs open, consumables render, with the banner reading disconnected throughout.
+
 ## FUT needs an Xbox Live profile, and says so badly
 
 Measured 2026-08-10 by switching profiles on the same console, same launch
