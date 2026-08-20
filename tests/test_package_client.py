@@ -101,3 +101,50 @@ def test_the_walk_reaches_the_modules_the_launcher_only_imports_for_a_flag() -> 
         "fifa14_dlc_loader_trace",
     ):
         assert module in reached, module
+
+
+def test_the_packaged_config_is_read_back_by_the_package_itself() -> None:
+    """A baked-in server address is only useful if the client actually reads it.
+
+    Writing the file is the easy half. The half that breaks is the format --
+    a stray quote, a Windows path mangled by escaping, a section name that does
+    not match -- and none of that shows up until a player runs it. So this
+    parses it with the package's own reader, in the package's own directory.
+    """
+    import subprocess
+
+    with tempfile.TemporaryDirectory() as temp:
+        archive = Path(temp) / "client.tgz"
+        package_client.build(archive, server="203.0.113.10")
+        with tarfile.open(archive) as opened:
+            opened.extractall(temp)
+        root = Path(temp) / package_client.TOP
+
+        def read(key: str) -> str:
+            done = subprocess.run(
+                [sys.executable, "tools/revival_config.py", key],
+                cwd=root, capture_output=True, text=True,
+                env={"PATH": "/usr/bin:/bin", "HOME": temp},
+            )
+            assert done.returncode == 0, done.stderr
+            return done.stdout.strip()
+
+        assert read("server.host") == "203.0.113.10"
+        assert read("server.core_port") == "10041"
+        assert read("server.identity_port") == "18080"
+        # The Windows-shaped path must survive both the packaging and the
+        # RawConfigParser: a `%` or a mangled backslash here is a launch that
+        # cannot find the game.
+        assert read("console.title") == r"Hdd:\Games\FIFA 14"
+
+
+def test_without_a_server_the_package_ships_no_ready_config() -> None:
+    # The example file is always there; a ready-made one is opt-in, because a
+    # config naming a server nobody runs is worse than none at all.
+    with tempfile.TemporaryDirectory() as temp:
+        archive = Path(temp) / "client.tgz"
+        package_client.build(archive)
+        with tarfile.open(archive) as opened:
+            names = opened.getnames()
+    assert f"{package_client.TOP}/fifa14revival.ini" not in names
+    assert f"{package_client.TOP}/fifa14revival.example.ini" in names
