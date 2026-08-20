@@ -35,6 +35,12 @@ fi
 
 mkdir -p "$HERE/runtime/clubs"
 
+# 8094 is EAS FC's Blaze port and 8080 its catalogue (the latter is on by
+# default via --identity-extra-ports). The console's connect hook redirects
+# both by port, so something has to answer there or the redirect lands on a
+# closed door. Keep this list in step with LOCAL_PLAINTEXT_PORTS in
+# tools/fifa14_connect_redirect.py.
+
 # The seasons and cups list only appear in native mode; without this the client
 # reads "Les saisons ne sont pas disponibles". It is the mode every working
 # launch uses, so it is the default here rather than a thing to remember.
@@ -45,6 +51,6 @@ exec "$PY" "$HERE/server/fifa14_blaze_server.py" \
     --advertise "$HOST" \
     --core-port "$CORE" \
     --identity-port "$IDENT" \
-    --ports "$CORE",42124,42126,42127 \
+    --ports "$CORE",42124,42126,42127,8094 \
     --journal "$HERE/runtime/blaze-server.jsonl" \
     --account-state "$HERE/runtime/local-account.json"

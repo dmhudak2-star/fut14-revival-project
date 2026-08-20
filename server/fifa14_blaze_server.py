@@ -4229,8 +4229,15 @@ def main() -> int:
     )
     # Same service, more doors. EAS FC's catalogue is redirected here by port
     # rather than by hostname, so it arrives on 8080 and must be answered
-    # there; `advertise` still names the real identity port, because that is
-    # what any URL this server hands out has to say.
+    # there.
+    #
+    # Each listener builds its own public_base from the port it is on, so the
+    # 8080 one hands out `http://<host>:8080/...` rather than the identity
+    # port. That is not a bug to fix: both listeners serve the same routes, so
+    # a URL naming either one resolves. Said here because the obvious reading
+    # -- that every URL names the identity port -- is wrong, and it is the
+    # kind of wrong that costs an hour when a redirect goes somewhere
+    # unexpected.
     extra_identity = [
         IdentityHttpService(
             args.listen, port, args.advertise, journal, account_store

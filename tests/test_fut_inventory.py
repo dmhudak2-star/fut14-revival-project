@@ -3149,3 +3149,28 @@ def test_the_season_header_carries_the_blob_that_says_it_started(monkeypatch) ->
         assert "dataVersion" not in bare
     finally:
         inventory.SEASON_PROGRESS.entries.clear()
+
+
+def test_a_brand_new_club_opens_with_the_starting_balance() -> None:
+    """A club that has never played can open every screen straight away.
+
+    Pinned through a real tenant rather than by reading the constant, because
+    the constant is not the thing that can break -- the seeding path is. A club
+    that opens at zero looks identical to one that opened correctly until the
+    player tries to buy something.
+
+    The figure itself is a decision, not a discovery: there is no economy here
+    to protect. No auction house full of real sellers, no market to inflate.
+    The coins exist so the store, the market, packs and consumables open
+    instead of refusing.
+    """
+    import fut_inventory as inventory
+
+    persona = 987654321
+    inventory.TENANTS.forget(persona)
+    try:
+        club = inventory.TENANTS.get(persona)
+        assert club.wallet.coins == inventory.STARTING_COINS
+        assert inventory.STARTING_COINS == 100_000_000
+    finally:
+        inventory.TENANTS.forget(persona)

@@ -1429,7 +1429,16 @@ class CardCatalogue:
 # at the top level is skipped, so naming all three costs nothing and a wrapper
 # would have broken the parse, as {"userInfo":{...}} did.
 
-STARTING_COINS = 1_000_000
+# What a club that has never played starts with.
+#
+# A hundred million rather than a million, and the reason is what this server
+# is for. There is no economy to protect here: no auction house full of real
+# sellers, no market to inflate, nobody's grind to devalue. The coins exist so
+# that every screen a player wants to look at -- the store, the market, packs,
+# consumables -- actually opens instead of refusing. A club that has to farm
+# before it can see the transfer market is a club that spends its first hour
+# proving the server works rather than playing.
+STARTING_COINS = 100_000_000
 
 
 class Wallet:

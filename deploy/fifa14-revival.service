@@ -18,7 +18,9 @@ Wants=network-online.target
 Type=simple
 User=fifa14
 WorkingDirectory=/opt/fifa14-revival
-ExecStart=/opt/fifa14-revival/run.sh
+# The package puts run.sh under deploy/; it walks up to find server/,
+# so it works from there.
+ExecStart=/opt/fifa14-revival/deploy/run.sh
 Restart=on-failure
 RestartSec=3
 # Durcissement : le serveur n'écrit que dans runtime/, rien d'autre.
