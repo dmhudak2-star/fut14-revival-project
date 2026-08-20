@@ -185,3 +185,26 @@ parameters and the full sub-path, not just the parameter names. The category
 routes appeared on the first menu opened afterwards. The journal had been
 recording `query_keys` alone for the whole project, which makes every question
 about what a screen asked for answerable only by guessing.
+
+## Vérifié sur console — 20 août 2026
+
+L'écran Mon Club rend maintenant les six familles avec **leur propre icône** et
+un compte réel : Entraînement 56, Contrats 98, Forme 57, Soins 73, Style 43, et
+Championnat Entraînement. Plus un seul NOT FOUND, plus un seul « Entraînement
+équipe » répété sur toutes les cartes.
+
+Ce que la console demande, et ce que le serveur envoie :
+
+    /ut/game/fifa14/club/consumables/training                 18 229 octets
+    /ut/game/fifa14/club/consumables/fitness                  18 856
+    /ut/game/fifa14/club/consumables/playStyle                14 055
+    /ut/game/fifa14/club/consumables/position                  2 090
+    /ut/game/fifa14/club/consumables/managerLeagueModifier        45
+
+Le dernier est vide, et c'est voulu : les cartes de manager et les boosts de
+crédits existent dans `cards_ng_db` mais aucune de ces familles n'est servie —
+rien dans la base ne dit à quel membre chaque bloc de subtypes appartient, et
+les nommer serait exactement la supposition que le décodage a servi à éviter.
+
+C'est la première fois que ces cartes viennent de la base du jeu plutôt que
+d'ids inventés, et c'est la première fois que l'écran les distingue.
