@@ -208,3 +208,54 @@ les nommer serait exactement la supposition que le décodage a servi à éviter.
 
 C'est la première fois que ces cartes viennent de la base du jeu plutôt que
 d'ids inventés, et c'est la première fois que l'écran les distingue.
+
+
+## Les familles étaient une supposition, et le jeu l'a démentie — 20 août 2026
+
+`fcc_trainingcards` ne porte que `cardsubtype`, `cardassetid`, `rating`,
+`weightrare` et `amount`. **Aucun champ, nulle part, ne dit à quelle famille un
+bloc de subtypes appartient.** Les familles de `tools/build_consumables.py` ont
+donc été attribuées par plages — 91-110 en `playStyle`, 232 en `position` — et
+c'était une supposition présentée comme un fait.
+
+Le titre l'a démentie. Une carte servie dans la catégorie `playStyle` est
+dessinée par le jeu comme un **modificateur de poste** — « AVD >> AD », puis
+« DLG >> DG » sur une seconde carte — et refusée sur un joueur dont le poste ne
+correspond pas. Le jeu lit chaque carte dans **sa propre** copie de la base ;
+la catégorie qu'on lui annonce n'est qu'un seau, et il ne s'y fie pas.
+
+C'est exactement le piège que `docs/CARDS_NG_DB_DECODE.md` décrit à propos des
+cartes de manager — « les nommer serait une supposition de l'espèce que ce
+fichier existe pour avoir arrêtée » — écrit avant de la refaire ici.
+
+### Le second défaut, plus grave
+
+Le serveur **applique ce que le jeu refuse**. Il a consommé la carte et écrit
+`playStyle: 105` sur un CDM pendant que l'écran affichait « ne peut être
+appliqué ». Une carte brûlée, une valeur fausse dans le club, et le client et
+le serveur qui ne sont plus d'accord. Le serveur ne valide rien parce qu'il ne
+connaît pas la règle de la carte — et il ne devrait donc pas la consommer.
+
+### La sonde, et pourquoi la première version était mauvaise
+
+`tools/build_consumable_probe.py` sert au titre un mélange délibéré : une carte
+de chaque bloc inconnu, plus deux dont la famille est certaine comme contrôles.
+Le jeu les nomme lui-même.
+
+La première version donnait à chaque sonde un **nombre de copies distinct**,
+en pensant que le badge de quantité imprimé sur chaque carte l'identifierait.
+Faux : ce badge est la quantité **propre** à la carte, toujours 1, et les
+copies deviennent simplement autant de cartes séparées dans la liste. Douze
+sondes ont fait soixante-dix-huit cartes à parcourir, et la console a gelé
+avant la fin du parcours.
+
+Une copie par carte. Douze cartes, douze pressions de DROITE, et le panneau de
+détail — qui nomme la carte, « Contrats joueur », « Style » — est ce qu'on lit.
+
+### Ce que la mesure a déjà établi
+
+- Le contrôle passe : la carte subtype 201 est nommée **« Contrats joueur »**
+  par le jeu, avec `+8 +2 +1 Matchs`. La méthode lit vrai.
+- Les cartes servies en `playStyle` sont des **modificateurs de poste**.
+
+Le reste de la table attend une console rallumée.
