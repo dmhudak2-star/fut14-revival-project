@@ -46,6 +46,26 @@ ROOTS = (
 
 EXTRA = ("fifa14revival.example.ini", "NOTICE.md")
 
+# A ready-to-run config, written into the package when --server is given, so a
+# player edits one line (their console) instead of three. The example file
+# ships beside it either way: it is the one with all the comments in it.
+READY_INI = """; Prêt à l'emploi. Une seule ligne à changer : console.address.
+;
+; Le serveur est déjà renseigné -- c'est celui du revival, hébergé, et il n'y
+; a rien à installer de ce côté. Pour héberger le tien à la place, remplace
+; `host` par son adresse (voir deploy/DEPLOY.md dans le dépôt).
+
+[server]
+host = {server}
+core_port = {core_port}
+identity_port = {identity_port}
+
+[console]
+; L'IP de TA Xbox, sur ton réseau local. C'est la seule chose à remplir.
+address = 192.168.1.25
+title = Hdd:\\Games\\FIFA 14
+"""
+
 TOP = "fifa14-revival-client"
 
 README = """# FIFA 14 Ultimate Team -- le client console
@@ -79,18 +99,15 @@ met dans `fifa14revival.ini`.
 
     tar xzf fifa14-revival-client.tgz
     cd fifa14-revival-client
-    cp fifa14revival.example.ini fifa14revival.ini
 
-Puis dans `fifa14revival.ini` :
-
-    [server]
-    host = <adresse du serveur>
-    core_port = 10041
-    identity_port = 18080
+Si `fifa14revival.ini` est déjà là, le serveur y est renseigné et il ne reste
+**qu'une ligne** à changer -- `address`, sous `[console]`, l'IP de ta Xbox :
 
     [console]
     address = <IP de ta Xbox>
     title = Hdd:\\Games\\FIFA 14
+
+Sinon, pars de `fifa14revival.example.ini`, qui est commenté en détail.
 
 ## Jouer
 
@@ -140,7 +157,8 @@ def closure(roots: tuple[str, ...]) -> set[str]:
     return found
 
 
-def build(output: Path) -> list[str]:
+def build(output: Path, server: str | None = None,
+          core_port: int = 10041, identity_port: int = 18080) -> list[str]:
     modules = sorted(closure(ROOTS))
     members: list[str] = []
     with tarfile.open(output, "w:gz") as archive:
@@ -153,6 +171,15 @@ def build(output: Path) -> list[str]:
             if source.exists():
                 archive.add(source, arcname=f"{TOP}/{name}")
                 members.append(name)
+        if server:
+            ready = READY_INI.format(
+                server=server, core_port=core_port, identity_port=identity_port
+            ).encode("utf-8")
+            info = tarfile.TarInfo(f"{TOP}/fifa14revival.ini")
+            info.size = len(ready)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(ready))
+            members.append("fifa14revival.ini")
         readme = README.encode("utf-8")
         info = tarfile.TarInfo(f"{TOP}/README.md")
         info.size = len(readme)
@@ -166,8 +193,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path,
                         default=REPO / "fifa14-revival-client.tgz")
+    parser.add_argument("--server", default=None,
+                        help="write a ready fifa14revival.ini naming this server")
+    parser.add_argument("--core-port", type=int, default=10041)
+    parser.add_argument("--identity-port", type=int, default=18080)
     args = parser.parse_args(argv)
-    members = build(args.output)
+    members = build(args.output, args.server, args.core_port, args.identity_port)
     size = args.output.stat().st_size
     print(f"{len(members)} fichiers, {size/1024:.0f} Ko -> {args.output}")
     return 0
