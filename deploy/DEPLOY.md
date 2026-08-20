@@ -77,6 +77,22 @@ tranchées : ne jamais purger et surveiller la taille ; purger les clubs
 inactifs depuis N jours ; plafonner le nombre de clubs. Rien n'est implémenté —
 c'est un choix produit, documenté aussi dans `docs/RELEASE.md`.
 
+## Ce que les joueurs appellent, en plus du jeu
+
+`POST /revival/reset` remet l'état de compte à ce qu'un serveur fraîchement
+démarré porte. Ce n'est pas un confort : le titre réécrit cet état depuis sa
+session en mémoire en quelques secondes, donc rentrer dans FUT sans relancer ne
+peut pas marcher. Sur cette machine-ci, `tools/fut.sh` l'obtenait en vidant
+`runtime/local-account.json` et en redémarrant le serveur ; à travers le
+réseau, ni l'un ni l'autre n'est disponible, et `tools/revival_client.py`
+appelle donc cette route juste avant de lancer le titre.
+
+**À savoir avant d'ouvrir la bêta** : contrairement aux clubs, cet état est
+encore **unique pour tout le serveur**. Un joueur qui relance remet donc le
+`FirstTimeFlag` de tous les autres à zéro. Sans conséquence quand deux amis
+jouent, à corriger — en le passant par locataire comme le reste — avant
+d'ouvrir à des inconnus.
+
 ## Sécurité, sans enjoliver
 
 - **Le trafic est en clair.** Pas de TLS sur ce profil. Le jeton de session
