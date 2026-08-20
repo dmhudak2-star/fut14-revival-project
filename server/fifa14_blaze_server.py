@@ -289,6 +289,30 @@ class PersistentAccountStore:
             identity = self.data["identity"]
             return int(identity["persona_id"]), str(identity["persona_name"])
 
+    def reset(self) -> None:
+        """Back to the state a freshly started server has.
+
+        `tools/fut.sh` gets this by clearing `runtime/local-account.json` and
+        restarting the server, and it has to be got somehow: the title rewrites
+        this state from its in-memory session within seconds, so re-entering
+        FUT without a relaunch cannot work. Neither clearing a file nor
+        restarting a process is available to someone whose server is a VPS
+        across the network, which is what `POST /revival/reset` is for.
+
+        Still one store for the whole server, unlike the club state beside it
+        -- so on a shared server this resets everyone's first-login flag, not
+        just the caller's. Harmless in the moment it is used (a player
+        relaunching their own title), and it has to become per-tenant before an
+        open beta; `docs/DEPLOY.md` says so where an operator will read it.
+        """
+        with self.lock:
+            self.data = {
+                "user_settings": {"FirstTimeFlag": "0"},
+                "account": {"OPTQ": 0, "OPTS": 0},
+                "identity": {"persona_id": 1_000_001, "persona_name": "OfflineFUT"},
+            }
+            self._save_locked()
+
 
 # CardsDLL formats its authentication request against OSDK_EASW_AUTH_URL.
 # The PC build posts JSON to ``/v2/authenticationNucleusPersona``; this Xbox
@@ -1959,6 +1983,17 @@ class IdentityHttpService:
                     return
                 if parsed.path == "/health":
                     self.reply(200, b"ok\n", {"Content-Type": "text/plain"})
+                    return
+                if parsed.path == "/revival/reset" and self.command == "POST":
+                    owner.account_store.reset()
+                    owner.journal.event(
+                        "account_state_reset", peer=self.client_address[0]
+                    )
+                    self.reply(
+                        200,
+                        "session réinitialisée\n".encode("utf-8"),
+                        {"Content-Type": "text/plain; charset=utf-8"},
+                    )
                     return
                 if parsed.path == "/roster":
                     owner.journal.event(

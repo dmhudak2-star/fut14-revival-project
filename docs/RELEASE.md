@@ -252,8 +252,13 @@ jeu, clés console, KV, profils, captures de session. `NOTICE.md` et
 
 1. ~~**Router l'état par persona**~~ — fait le 14 août, voir ci-dessus.
 2. ~~**Externaliser la configuration**~~ — fait le 14 août, `fifa14revival.ini`.
-3. **Le plugin Dashlaunch** — le seul vrai obstacle technique restant.
-4. Plus tard, si tu veux supprimer aussi le plugin : le patch statique, qui
+3. **Un client console sans serveur local** — fait, `tools/revival_client.py`.
+   Toute la chaîne de patch étant en bibliothèque standard pure, elle tourne
+   sous Termux : un joueur avec un VPS et un téléphone Android n'a besoin
+   d'aucun PC. Voir `docs/JOUER_SANS_PC.md`, qui est la réponse à donner à
+   quelqu'un qui demande comment y jouer.
+4. **Le plugin Dashlaunch** — le seul vrai obstacle technique restant.
+5. Plus tard, si tu veux supprimer aussi le plugin : le patch statique, qui
    demande de gagner 5 % sur l'encodeur LZX *et* de résoudre la question de la
    distribution de fichiers EA.
 
