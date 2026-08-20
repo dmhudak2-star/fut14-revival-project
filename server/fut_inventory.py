@@ -3008,7 +3008,17 @@ CLUB_ITEM_ID_BASE = 1_750_000_000
 # card, named all of them "Entraînement equipe" and applied nothing. The title
 # looks a consumable up by its subtype and draws it by its asset id, so neither
 # is ours to choose.
-CONSUMABLE_FILE = Path(__file__).resolve().parent / "fifa14_consumables.json"
+# The catalogue, overridable by environment so a probe build can be swapped in
+# without editing the file the real club is served from. `docs/CONSUMABLES.md`
+# explains what a probe is for: the database says which cards exist and says
+# nothing about which family each block of subtypes belongs to, so the only
+# source for that is the title itself, which renders each card from its own
+# copy of the database. Serving it a deliberate mixture and reading the screen
+# is how that gets settled.
+CONSUMABLE_FILE = Path(
+    os.environ.get("FIFA14_CONSUMABLES")
+    or Path(__file__).resolve().parent / "fifa14_consumables.json"
+)
 
 # Contracts and fitness are what a club actually runs out of, so it carries a
 # stack of each; one of everything else is enough to apply it.
@@ -3131,7 +3141,12 @@ def _club_extras() -> list[dict]:
     next_id = CLUB_ITEM_ID_BASE
 
     for card in _consumable_catalogue():
-        for _ in range(CONSUMABLE_COPIES.get(card["itemType"], 1)):
+        # A card may ask for its own count. Nothing in the shipped catalogue
+        # does; a probe build uses it to encode which block a card came from
+        # in the one field the screen shows plainly -- the quantity badge --
+        # so a single screenshot identifies every card in the list.
+        copies = card.get("copies") or CONSUMABLE_COPIES.get(card["itemType"], 1)
+        for _ in range(copies):
             items.append(_consumable_item(card, next_id))
             next_id += 1
 
