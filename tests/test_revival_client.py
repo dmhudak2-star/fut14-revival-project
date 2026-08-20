@@ -102,12 +102,13 @@ class ServerRouteTest(unittest.TestCase):
     def test_reset_restores_the_state_a_fresh_server_has(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             journal = SERVER.Journal(Path(temp) / "journal.jsonl")
-            store = SERVER.PersistentAccountStore(Path(temp) / "account.json")
+            accounts = SERVER.AccountStores(Path(temp) / "account.json")
+            store = accounts.get(0)
             # What a title that has been through first-login leaves behind.
             store.save_setting("FirstTimeFlag", "1")
             store.save_identity(0x123456789, "SomebodyElse")
             identity = SERVER.IdentityHttpService(
-                "127.0.0.1", 0, "127.0.0.1", journal, store
+                "127.0.0.1", 0, "127.0.0.1", journal, accounts
             )
             identity.start()
             try:
@@ -132,10 +133,11 @@ class ServerRouteTest(unittest.TestCase):
         # walking the server must not wipe a session out from under a player.
         with tempfile.TemporaryDirectory() as temp:
             journal = SERVER.Journal(Path(temp) / "journal.jsonl")
-            store = SERVER.PersistentAccountStore(Path(temp) / "account.json")
+            accounts = SERVER.AccountStores(Path(temp) / "account.json")
+            store = accounts.get(0)
             store.save_setting("FirstTimeFlag", "1")
             identity = SERVER.IdentityHttpService(
-                "127.0.0.1", 0, "127.0.0.1", journal, store
+                "127.0.0.1", 0, "127.0.0.1", journal, accounts
             )
             identity.start()
             try:

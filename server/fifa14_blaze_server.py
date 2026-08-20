@@ -314,6 +314,43 @@ class PersistentAccountStore:
             self._save_locked()
 
 
+class AccountStores:
+    """One account store per persona, opened the first time it is asked for.
+
+    The club state went per-tenant on 14 August; this did not, and on 20 August
+    it showed. A second player logged into the public server and
+    `runtime/local-account.json` came back carrying *his* gamertag -- one file,
+    last writer wins, for everybody on the machine. Nothing visible broke,
+    because the club is what holds the cards and the coins, but the first-login
+    flag and the identity were shared: either player relaunching reset the
+    other, and `/revival/reset` reset them both.
+
+    Same convention as `club_save_path`: persona 0 keeps the historical file,
+    so a single console that never identifies itself -- and the whole test
+    suite -- behaves exactly as before. A real nucleus id gets its own file in
+    `accounts/` beside the clubs.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.default_path = path
+        self._lock = threading.RLock()
+        self._stores: dict[int, PersistentAccountStore] = {}
+
+    def path_for(self, persona_id: int) -> Path | None:
+        if not persona_id or self.default_path is None:
+            return self.default_path
+        return self.default_path.parent / "accounts" / f"{int(persona_id)}.json"
+
+    def get(self, persona_id: int = 0) -> PersistentAccountStore:
+        key = int(persona_id or 0)
+        with self._lock:
+            store = self._stores.get(key)
+            if store is None:
+                store = PersistentAccountStore(self.path_for(key))
+                self._stores[key] = store
+            return store
+
+
 # CardsDLL formats its authentication request against OSDK_EASW_AUTH_URL.
 # The PC build posts JSON to ``/v2/authenticationNucleusPersona``; this Xbox
 # build posts a form to ``/authentication360`` with a ``version`` query and
@@ -908,13 +945,16 @@ class Fifa14Protocol:
         core_port: int,
         logger: "Journal",
         identity_port: int = 18080,
-        account_store: PersistentAccountStore | None = None,
+        accounts: "AccountStores | None" = None,
     ):
         self.advertise = advertise
         self.core_port = core_port
         self.logger = logger
         self.identity_port = identity_port
-        self.account_store = account_store or PersistentAccountStore()
+        # `accounts` is the registry; `account_store` stays as the store for
+        # the console that has not named itself, which is what every caller
+        # without a persona in hand means.
+        self.accounts = accounts if accounts is not None else AccountStores()
 
     @property
     def identity_base(self) -> str:
@@ -1341,10 +1381,11 @@ class Fifa14Protocol:
         # of its own.  The FUT auth request does carry the console's real one,
         # so reuse the stored persona instead of overwriting it with the
         # placeholder and advertising a name the client never presented.
-        stored_id, stored_name = self.account_store.load_identity()
+        store = self.accounts.get(state.xuid)
+        stored_id, stored_name = store.load_identity()
         if state.gamertag == ClientState.gamertag and stored_id == state.xuid:
             state.gamertag = stored_name
-        self.account_store.save_identity(state.xuid, state.gamertag)
+        store.save_identity(state.xuid, state.gamertag)
         # Named, not bound. The Blaze side touches exactly one piece of club
         # state -- the persona -- so it says which club it means instead of
         # binding the thread to one. Binding here was the first attempt and it
@@ -1623,7 +1664,7 @@ class Fifa14Protocol:
         if route == (UTIL, UTIL_USER_SETTINGS_LOAD):
             key_field = find_field(decoded["fields"], "KEY")
             key = str(key_field.value) if key_field is not None else ""
-            value = self.account_store.load_setting(key)
+            value = self.accounts.get(state.xuid).load_setting(key)
             self.logger.event(
                 "user_setting_load",
                 connection=state.connection_id,
@@ -1642,7 +1683,7 @@ class Fifa14Protocol:
             key = str(key_field.value) if key_field is not None else ""
             value = str(data_field.value) if data_field is not None else ""
             if key:
-                self.account_store.save_setting(key, value)
+                self.accounts.get(state.xuid).save_setting(key, value)
             self.logger.event(
                 "user_setting_save",
                 connection=state.connection_id,
@@ -1653,7 +1694,7 @@ class Fifa14Protocol:
         if route == (UTIL, UTIL_FETCH_CONFIG):
             return [self.fetch_config(request, decoded["fields"], state)]
         if route == (UTIL, UTIL_USER_SETTINGS_LOAD_ALL):
-            settings = self.account_store.load_all_settings()
+            settings = self.accounts.get(state.xuid).load_all_settings()
             self.logger.event(
                 "user_settings_load_all",
                 connection=state.connection_id,
@@ -1694,7 +1735,7 @@ class Fifa14Protocol:
             opts_field = find_field(decoded["fields"], "OPTS")
             optq = int(optq_field.value) if optq_field is not None else 0
             opts = int(opts_field.value) if opts_field is not None else 0
-            self.account_store.save_account_preferences(optq, opts)
+            self.accounts.get(state.xuid).save_account_preferences(optq, opts)
             self.logger.event(
                 "account_preferences_save",
                 connection=state.connection_id,
@@ -1794,7 +1835,18 @@ class Fifa14Protocol:
             # the key names.
             key = find_field(decoded["fields"], "SKEY")
             presented = str(key.value) if key is not None else ""
-            stored_id, stored_name = self.account_store.load_identity()
+            # The key *is* "offline-<persona in hex>", so it says which
+            # account it claims to resume. Reading that first and looking the
+            # persona up is the same move the HTTP side makes with X-UT-SID:
+            # let the client's own echo be the routing key. Consulting one
+            # shared store here would resume whichever player logged in last.
+            resumed = 0
+            if presented.startswith("offline-"):
+                try:
+                    resumed = int(presented[len("offline-"):], 16)
+                except ValueError:
+                    resumed = 0
+            stored_id, stored_name = self.accounts.get(resumed).load_identity()
             expected = f"offline-{stored_id:x}" if stored_id else ""
             if not presented or presented != expected:
                 self.logger.event(
@@ -1880,13 +1932,16 @@ class IdentityHttpService:
         port: int,
         advertise: str,
         journal: "Journal",
-        account_store: PersistentAccountStore | None = None,
+        accounts: "AccountStores | None" = None,
     ):
         self.listen = listen
         self.port = port
         self.advertise = advertise
         self.journal = journal
-        self.account_store = account_store or PersistentAccountStore()
+        # `accounts` is the registry; `account_store` stays as the store for
+        # the console that has not named itself, which is what every caller
+        # without a persona in hand means.
+        self.accounts = accounts if accounts is not None else AccountStores()
         self.server: http.server.ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -1918,6 +1973,18 @@ class IdentityHttpService:
                 self.end_headers()
                 if self.command != "HEAD" and body:
                     self.wfile.write(body)
+
+            def account_store(self) -> "PersistentAccountStore":
+                """The account state of whoever this request belongs to.
+
+                `bind_request_club` has already decided that, from X-UT-SID or
+                from the bootstrap headers, so this asks the bound club rather
+                than deciding again. A request that proved nobody gets persona
+                0 -- the same default club it already reads -- so an unproven
+                request cannot write into a real player's account state.
+                """
+                club = current_tenant()
+                return owner.accounts.get(getattr(club, "persona_id", 0))
 
             def serve_identity(self) -> None:
                 # Bind a club for this request, and give the thread back the
@@ -1985,7 +2052,7 @@ class IdentityHttpService:
                     self.reply(200, b"ok\n", {"Content-Type": "text/plain"})
                     return
                 if parsed.path == "/revival/reset" and self.command == "POST":
-                    owner.account_store.reset()
+                    self.account_store().reset()
                     owner.journal.event(
                         "account_state_reset", peer=self.client_address[0]
                     )
@@ -2063,7 +2130,7 @@ class IdentityHttpService:
                         bytes=len(body),
                         body=request_body_preview(body),
                     )
-                    persona_id, _ = owner.account_store.load_identity()
+                    persona_id, _ = self.account_store().load_identity()
                     self.reply(
                         200,
                         b"",
@@ -2086,7 +2153,7 @@ class IdentityHttpService:
                     presented = auth_request_identity(body)
                     if presented is not None:
                         persona_id, persona_name = presented
-                        owner.account_store.save_identity(persona_id, persona_name)
+                        self.account_store().save_identity(persona_id, persona_name)
                         PERSONA.adopt(persona_id)
                         owner.journal.event(
                             "fut_auth_identity_adopted",
@@ -2138,7 +2205,7 @@ class IdentityHttpService:
                         WALLET.user_info(
                             club_name(),
                             CLUB_IDENTITY.abbr,
-                            owner.account_store.load_identity()[0],
+                            self.account_store().load_identity()[0],
                         ) + b"\n",
                         {
                             "Content-Type": "application/json; charset=utf-8",
@@ -3055,7 +3122,7 @@ class IdentityHttpService:
                         else WALLET.user_info(
                             club_name(),
                             CLUB_IDENTITY.abbr,
-                            owner.account_store.load_identity()[0],
+                            self.account_store().load_identity()[0],
                         )
                     )
                     self.reply(
@@ -3572,7 +3639,7 @@ class IdentityHttpService:
                     )
                     return
                 if normalized_path == "/ut/game/fifa14/user/accountinfo":
-                    persona_id, persona_name = owner.account_store.load_identity()
+                    persona_id, persona_name = self.account_store().load_identity()
                     # An empty persona list is what the PC revival serves, and
                     # the difference is not cosmetic.  A populated list tells
                     # the client it already owns a FUT account, so the login
@@ -4204,13 +4271,13 @@ def main() -> int:
         tls_ports.update(args.redirector_tls_ports)
 
     journal = Journal(args.journal)
-    account_store = PersistentAccountStore(args.account_state)
+    accounts = AccountStores(args.account_state)
     protocol = Fifa14Protocol(
         args.advertise,
         args.core_port,
         journal,
         identity_port=args.identity_port,
-        account_store=account_store,
+        accounts=accounts,
     )
     service = BlazeService(
         args.listen,
@@ -4225,7 +4292,7 @@ def main() -> int:
         args.identity_port,
         args.advertise,
         journal,
-        account_store,
+        accounts,
     )
     # Same service, more doors. EAS FC's catalogue is redirected here by port
     # rather than by hostname, so it arrives on 8080 and must be answered
@@ -4240,7 +4307,7 @@ def main() -> int:
     # unexpected.
     extra_identity = [
         IdentityHttpService(
-            args.listen, port, args.advertise, journal, account_store
+            args.listen, port, args.advertise, journal, accounts
         )
         for port in args.identity_extra_ports
         if port != args.identity_port

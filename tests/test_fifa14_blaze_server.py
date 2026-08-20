@@ -163,7 +163,9 @@ class ProtocolTests(unittest.TestCase):
 
     def test_authentication2_reuses_the_persona_fut_auth_adopted(self) -> None:
         external_id = 2535469248587161
-        self.protocol.account_store.save_identity(external_id, "Imskobogota6z")
+        self.protocol.accounts.get(external_id).save_identity(
+            external_id, "Imskobogota6z"
+        )
         login = request(
             35,
             10,
@@ -177,13 +179,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(persona.value[0].value, "Imskobogota6z")
         self.assertEqual(self.state.gamertag, "Imskobogota6z")
         self.assertEqual(
-            self.protocol.account_store.load_identity(),
+            self.protocol.accounts.get(external_id).load_identity(),
             (external_id, "Imskobogota6z"),
         )
 
     def test_authentication2_keeps_a_gamertag_the_client_supplied(self) -> None:
         external_id = 2535469248587161
-        self.protocol.account_store.save_identity(external_id, "StoredName")
+        self.protocol.accounts.get(external_id).save_identity(external_id, "StoredName")
         self.state.gamertag = "LiveGamertag"
         login = request(
             35,
@@ -200,7 +202,9 @@ class ProtocolTests(unittest.TestCase):
     def test_authentication2_ignores_a_persona_stored_for_another_account(
         self,
     ) -> None:
-        self.protocol.account_store.save_identity(42, "OtherAccount")
+        # Stored against persona 42, and the login presents another id --
+        # so with a store per persona this cannot leak even by accident.
+        self.protocol.accounts.get(42).save_identity(42, "OtherAccount")
         login = request(
             35,
             10,
@@ -491,8 +495,10 @@ class ProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             journal_path = Path(temp) / "journal.jsonl"
             journal = SERVER.Journal(journal_path)
-            store = SERVER.PersistentAccountStore()
-            store.save_identity(4242, "Local")
+            store = SERVER.AccountStores()
+            # Persona 0: this request carries no session, so it is bound to the
+            # default club and reads the default club's account state.
+            store.get(0).save_identity(4242, "Local")
             identity = SERVER.IdentityHttpService(
                 "127.0.0.1", 0, "127.0.0.1", journal, store
             )
@@ -1205,10 +1211,12 @@ class TcpServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             journal_path = Path(temp) / "journal.jsonl"
             journal = SERVER.Journal(journal_path)
-            account_store = SERVER.PersistentAccountStore()
-            account_store.save_identity(0x123456789, "MatchedPersona")
+            accounts = SERVER.AccountStores()
+            accounts.get(0x123456789).save_identity(
+                0x123456789, "MatchedPersona"
+            )
             identity = SERVER.IdentityHttpService(
-                "127.0.0.1", 0, "127.0.0.1", journal, account_store
+                "127.0.0.1", 0, "127.0.0.1", journal, accounts
             )
             identity.start()
             try:
@@ -1327,10 +1335,10 @@ class TcpServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             journal_path = Path(temp) / "journal.jsonl"
             journal = SERVER.Journal(journal_path)
-            account_store = SERVER.PersistentAccountStore()
-            account_store.save_identity(1_000_001, "OfflineFUT")
+            accounts = SERVER.AccountStores()
+            accounts.get(1_000_001).save_identity(1_000_001, "OfflineFUT")
             identity = SERVER.IdentityHttpService(
-                "127.0.0.1", 0, "127.0.0.1", journal, account_store
+                "127.0.0.1", 0, "127.0.0.1", journal, accounts
             )
             identity.start()
             try:
@@ -1809,12 +1817,16 @@ class SessionResumeTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
-        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        store = SERVER.AccountStores(Path(temp.name) / "account.json")
         protocol = SERVER.Fifa14Protocol(
-            "192.0.2.35", 10041, journal, account_store=store
+            "192.0.2.35", 10041, journal, accounts=store
         )
         xuid = 0x901FEEFE6A599
-        store.save_identity(xuid, "Imskobogota6z")
+        # Stored against that persona, because the key names it: the resume
+        # reads "offline-<persona in hex>" and looks that persona up rather
+        # than consulting one shared store, which would resume whoever logged
+        # in last.
+        store.get(xuid).save_identity(xuid, "Imskobogota6z")
 
         state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
         replies = protocol.handle(
@@ -1839,11 +1851,11 @@ class SessionResumeTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         journal = SERVER.Journal(Path(temp.name) / "journal.jsonl")
-        store = SERVER.PersistentAccountStore(Path(temp.name) / "account.json")
+        store = SERVER.AccountStores(Path(temp.name) / "account.json")
         protocol = SERVER.Fifa14Protocol(
-            "192.0.2.35", 10041, journal, account_store=store
+            "192.0.2.35", 10041, journal, accounts=store
         )
-        store.save_identity(1234, "Someone")
+        store.get(1234).save_identity(1234, "Someone")
         state = SERVER.ClientState(2, ("192.0.2.25", 1037), 10041)
         replies = protocol.handle(
             request(0x7802, 35, [Field("SKEY", STRING, "offline-deadbeef")]),
@@ -1887,3 +1899,57 @@ class IdentityChannelTests(unittest.TestCase):
             )
         finally:
             inventory.PERSONA.id = 0
+
+
+class AccountStoreTenancyTests(unittest.TestCase):
+    """Two players must not share account state.
+
+    This is not hypothetical. On 20 August a second player logged into the
+    public server and `runtime/local-account.json` came back carrying *his*
+    gamertag: one file for the whole machine, last writer wins. The clubs were
+    already per-tenant, so nothing visible broke -- the club is what holds the
+    cards and the coins -- but the identity and the first-login flag were
+    shared, and either player relaunching reset the other.
+    """
+
+    def test_two_personas_keep_separate_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            accounts = SERVER.AccountStores(Path(temp) / "local-account.json")
+            accounts.get(111).save_identity(111, "PlayerOne")
+            accounts.get(222).save_identity(222, "PlayerTwo")
+            self.assertEqual(accounts.get(111).load_identity(), (111, "PlayerOne"))
+            self.assertEqual(accounts.get(222).load_identity(), (222, "PlayerTwo"))
+
+    def test_a_reset_touches_only_the_caller(self) -> None:
+        # `/revival/reset` is sent by every launch. Shared, it logged the other
+        # player's console back to its first run in the middle of their game.
+        with tempfile.TemporaryDirectory() as temp:
+            accounts = SERVER.AccountStores(Path(temp) / "local-account.json")
+            accounts.get(111).save_setting("FirstTimeFlag", "1")
+            accounts.get(222).save_setting("FirstTimeFlag", "1")
+            accounts.get(111).reset()
+            self.assertEqual(accounts.get(111).load_setting("FirstTimeFlag"), "0")
+            self.assertEqual(accounts.get(222).load_setting("FirstTimeFlag"), "1")
+
+    def test_each_persona_gets_its_own_file_beside_the_clubs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "local-account.json"
+            accounts = SERVER.AccountStores(root)
+            accounts.get(111).save_identity(111, "PlayerOne")
+            self.assertTrue((Path(temp) / "accounts" / "111.json").exists())
+
+    def test_persona_zero_keeps_the_historical_path(self) -> None:
+        # A single console that never identifies itself, and the whole test
+        # suite, must behave exactly as before -- same convention as
+        # club_save_path.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "local-account.json"
+            accounts = SERVER.AccountStores(root)
+            self.assertEqual(accounts.path_for(0), root)
+            accounts.get(0).save_identity(7, "Nobody")
+            self.assertTrue(root.exists())
+
+    def test_the_same_persona_gets_the_same_store_back(self) -> None:
+        accounts = SERVER.AccountStores()
+        self.assertIs(accounts.get(111), accounts.get(111))
+        self.assertIsNot(accounts.get(111), accounts.get(222))
