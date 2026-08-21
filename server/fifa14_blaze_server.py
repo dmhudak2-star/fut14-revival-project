@@ -149,6 +149,11 @@ STATS_GET_PERIOD_IDS = 20
 # agree, and 13 is confirmed twice over: by the table, and by the payload the
 # console actually sent, which carries matchmaking criteria and a duration.
 GAME_MANAGER_CREATE_GAME = 1
+# The two the console started sending the moment it could find itself in the
+# roster. 15 hands over the XNet session it just built; 29 reports, per peer,
+# whether it can see them.
+GAME_MANAGER_FINALIZE_GAME_CREATION = 15
+GAME_MANAGER_UPDATE_MESH_CONNECTION = 29
 GAME_MANAGER_START_MATCHMAKING = 13
 GAME_MANAGER_CANCEL_MATCHMAKING = 14
 
@@ -162,6 +167,7 @@ NOTIFY_PLATFORM_HOST_INITIALIZED = 71
 NOTIFY_PLAYER_JOINING = 21
 NOTIFY_PLAYER_JOIN_COMPLETED = 30
 NOTIFY_GAME_STATE_CHANGE = 100
+NOTIFY_GAME_SESSION_UPDATED = 115
 NOTIFY_MATCHMAKING_FAILED = 10
 NOTIFY_MATCHMAKING_ASYNC_STATUS = 12
 
@@ -174,6 +180,11 @@ GAME_STATE_IN_GAME = 131
 
 # PlayerState. A player who is in the game and reachable is 4, not 2.
 PLAYER_STATE_ACTIVE_CONNECTED = 4
+
+# PlayerNetConnectionStatus, as reported by updateMeshConnection.
+MESH_DISCONNECTED = 0
+MESH_ESTABLISHING = 1
+MESH_CONNECTED = 2
 
 # `GameSetupReason` is a union, and `CREATE_GAME_SETUP_CONTEXT` is not one of
 # its indices -- it is a value of the `DCTX` enum inside index 0's
@@ -358,6 +369,10 @@ class HostedGame:
     game_id: int
     persona_id: int
     gamertag: str
+    # Handed over by the host in finalizeGameCreation once its console has
+    # built the session. This is the blob a second console needs to dial in.
+    xnet_nonce: bytes = b""
+    xnet_session: bytes = b""
     state: int = GAME_STATE_INITIALIZING
     presence: int = 1
     voip: int = 2
@@ -2132,6 +2147,77 @@ class Fifa14Protocol:
             *self.game_setup_notifications(game),
         ]
 
+    def finalize_game_creation(self, request: bytes, state: ClientState) -> list[bytes]:
+        """The host hands over the XNet session it has just built.
+
+        This is the frame that says the Blaze side is done and the network
+        side has begun. The console only sends it once it has a game it
+        believes in -- it never sent one until the roster carried `UID` and it
+        could find itself in there -- and it carries `XNNC`, a sixteen-byte
+        nonce, and `XSES`, the XSESSION_INFO holding the session key.
+
+        Those two are not this server's to invent and never were. They are
+        kept, echoed back in notification 115, and are exactly what a second
+        console will need in order to dial this one.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        game_id = find_field(fields, "GID")
+        nonce = find_field(fields, "XNNC")
+        session = find_field(fields, "XSES")
+        game = self.games.get(int(game_id.value) if game_id is not None else 0)
+        if game is not None:
+            if nonce is not None:
+                game.xnet_nonce = bytes(nonce.value)
+            if session is not None:
+                game.xnet_session = bytes(session.value)
+        self.logger.event(
+            "game_session_finalised",
+            connection=state.connection_id,
+            game=int(game_id.value) if game_id is not None else 0,
+            nonce_bytes=len(game.xnet_nonce) if game else 0,
+            session_bytes=len(game.xnet_session) if game else 0,
+        )
+        replies = [response_frame(request)]
+        if game is not None:
+            replies.append(
+                notification_frame(
+                    GAME_MANAGER,
+                    NOTIFY_GAME_SESSION_UPDATED,
+                    encode_fields([
+                        Field("GID", INTEGER, game.game_id),
+                        Field("XNNC", BINARY, game.xnet_nonce),
+                        Field("XSES", BINARY, game.xnet_session),
+                    ]),
+                )
+            )
+        return replies
+
+    def update_mesh_connection(self, request: bytes, state: ClientState) -> list[bytes]:
+        """"I can see this peer", or "I cannot".
+
+        Sent per target, addressed by connection group rather than by player
+        id. The console reported CONNECTED for itself and DISCONNECTED for the
+        opponent this server made up -- which is the correct answer, and the
+        first time anything here has been told the truth about the network
+        rather than about the protocol.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        target = find_field(fields, "TCG")
+        status = find_field(fields, "STAT")
+        game_id = find_field(fields, "GID")
+        self.logger.event(
+            "mesh_connection",
+            connection=state.connection_id,
+            game=int(game_id.value) if game_id is not None else 0,
+            # The value alone: the connection group as (component, type, id),
+            # which is what a reader wants to compare against a persona.
+            target=json_value(target.value) if target is not None else None,
+            status=int(status.value) if status is not None else None,
+        )
+        return [response_frame(request)]
+
     def expire_matchmaking(self, state: ClientState, session: int) -> None:
         """End a search nobody could be found for.
 
@@ -2807,6 +2893,10 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (GAME_MANAGER, GAME_MANAGER_FINALIZE_GAME_CREATION):
+            return self.finalize_game_creation(request, state)
+        if route == (GAME_MANAGER, GAME_MANAGER_UPDATE_MESH_CONNECTION):
+            return self.update_mesh_connection(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_CREATE_GAME):
             return self.create_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_START_MATCHMAKING):
