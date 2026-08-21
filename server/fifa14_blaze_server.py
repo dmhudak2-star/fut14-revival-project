@@ -153,6 +153,7 @@ GAME_MANAGER_CREATE_GAME = 1
 # roster. 15 hands over the XNet session it just built; 29 reports, per peer,
 # whether it can see them.
 GAME_MANAGER_DESTROY_GAME = 2
+GAME_MANAGER_JOIN_GAME = 9
 GAME_MANAGER_ADVANCE_GAME_STATE = 3
 GAME_MANAGER_REMOVE_PLAYER = 11
 GAME_MANAGER_FINALIZE_GAME_CREATION = 15
@@ -210,6 +211,10 @@ SETUP_CONTEXT_CREATE_GAME = 0
 
 MATCHMAKING_SUCCESS_CREATED_GAME = 0
 MATCHMAKING_SUCCESS_JOINED_NEW_GAME = 1
+MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME = 2
+
+# JoinGameState. The client asked to join and it did.
+JOIN_STATE_JOINED_GAME = 0
 MATCHMAKING_SESSION_TIMED_OUT = 3
 MATCHMAKING_SESSION_CANCELED = 4
 
@@ -2247,6 +2252,92 @@ class Fifa14Protocol:
             *self.game_setup_notifications(game),
         ]
 
+    def join_game(self, request: bytes, state: ClientState) -> list[bytes]:
+        """Somebody entering a game that already exists.
+
+        The joiner brings everything needed with it -- its own `PNET` and its
+        own `XSES` -- so nothing about the second console has to have been
+        cached beforehand. It is added to the roster, told what it joined, and
+        the people already in there are told somebody arrived.
+
+        The response is four members, not the two the published tables give:
+        `JEX` and `REX` list external players who came along, and are empty
+        here because nobody brings a party to a two-player match.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        game_id = find_field(fields, "GID")
+        game = self.games.get(int(game_id.value) if game_id is not None else 0)
+        if game is None:
+            self.logger.event(
+                "join_refused",
+                connection=state.connection_id,
+                game=int(game_id.value) if game_id is not None else 0,
+                reason="no such game",
+            )
+            return [response_frame(request)]
+
+        network = find_field(fields, "PNET")
+        address = None
+        if network is not None and isinstance(network.value, tuple):
+            active, valu = network.value
+            if valu is not None:
+                address = (active, valu)
+        joined = self.member(
+            game, state.xuid, state.gamertag, state.connection_id,
+            address, slot=len(game.members), team=len(game.members) % 2,
+            state=state,
+        )
+        game.members.append(joined)
+        game.roster.append(state.connection_id)
+        self.logger.event(
+            "player_joined",
+            connection=state.connection_id,
+            game=game.game_id,
+            persona=state.xuid,
+            players=len(game.members),
+        )
+        self.tell_members(game, notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOINING,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PDAT", STRUCT, self.member_player(game, joined)),
+            ]),
+        ), skip=state)
+        self.tell_members(game, notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOIN_COMPLETED,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PID", INTEGER, state.xuid),
+            ]),
+        ), skip=state)
+        self.broadcast_census()
+        return [
+            response_frame(request, encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("JEX", LIST, (INTEGER, [])),
+                Field("JGS", INTEGER, JOIN_STATE_JOINED_GAME),
+                Field("REX", LIST, (INTEGER, [])),
+            ])),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS,
+                encode_fields(self.game_setup_payload(
+                    game, session=0, result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME
+                )),
+            ),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_PLAYER_JOIN_COMPLETED,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("PID", INTEGER, state.xuid),
+                ]),
+            ),
+        ]
+
     def advance_game_state(self, request: bytes, state: ClientState) -> list[bytes]:
         """The host moves the game on by itself.
 
@@ -3224,6 +3315,8 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (GAME_MANAGER, GAME_MANAGER_JOIN_GAME):
+            return self.join_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_ADVANCE_GAME_STATE):
             return self.advance_game_state(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_DESTROY_GAME):
