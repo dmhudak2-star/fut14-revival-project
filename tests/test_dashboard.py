@@ -255,3 +255,36 @@ def test_the_access_code_survives_a_restart(tmp_path: Path) -> None:
     assert first and dashboard.resolve_token(tmp_path, None) == first
     # An explicit empty string is how the guard is turned off on a home network.
     assert dashboard.resolve_token(tmp_path, "") == ""
+
+
+def test_a_match_being_found_reads_as_a_sentence(tmp_path: Path) -> None:
+    """The activity feed has to be able to say what happened on 21 August."""
+    rows = [
+        dashboard.describe_event({
+            "event": "matchmaking_started", "topology": 130,
+            "duration_ms": 20000, "time": stamp(1),
+        }),
+        dashboard.describe_event({
+            "event": "game_session_finalised", "session_bytes": 60,
+            "nonce_bytes": 16, "time": stamp(2),
+        }),
+        dashboard.describe_event({
+            "event": "mesh_complete", "peers": [2, 1000002], "time": stamp(3),
+        }),
+    ]
+    assert rows[0]["title"] == "Recherche d'adversaire"
+    assert rows[0]["detail"] == "topologie 130, 20 s"
+    assert rows[1]["detail"] == "60 octets de session XNet, 16 de nonce"
+    assert rows[2]["detail"] == "2 joueurs"
+    assert {row["category"] for row in rows} == {"match"}
+
+
+def test_an_invented_opponent_is_never_shown_as_a_real_one() -> None:
+    """A dashboard that hid the difference would make the whole thing
+    untrustworthy -- the point of the test opponent is that it is labelled."""
+    row = dashboard.describe_event({
+        "event": "matchmaking_found_synthetic_opponent",
+        "opponent": "Sparring", "synthetic": True, "time": stamp(4),
+    })
+    assert "inventé par le serveur" in row["detail"]
+    assert row["level"] == "warn"

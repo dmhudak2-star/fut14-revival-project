@@ -190,6 +190,17 @@ EVENTS: dict[str, dict] = {
     "fut_trophy_item": {"cat": "club", "verb": "Trophée reçu"},
     "fut_club_consumables_request": {"cat": "club", "verb": "Consommables consultés", "noise": True},
     "fut_tasks_saved": {"cat": "club", "verb": "Objectifs enregistrés"},
+    # Le matchmaking en ligne, arrivé le 21 août 2026 -- la première fois que
+    # le composant 4 a servi à quelque chose. Ces lignes sont l'histoire d'un
+    # match qui se cherche, se trouve, et se met en place.
+    "matchmaking_started": {"cat": "match", "verb": "Recherche d'adversaire"},
+    "matchmaking_cancelled": {"cat": "match", "verb": "Recherche annulée"},
+    "matchmaking_timed_out": {"cat": "match", "verb": "Aucun adversaire trouvé"},
+    "matchmaking_found_synthetic_opponent": {"cat": "match", "verb": "Adversaire de test trouvé", "level": "warn"},
+    "game_created": {"cat": "match", "verb": "Partie créée"},
+    "game_session_finalised": {"cat": "match", "verb": "Session XNet reçue"},
+    "mesh_connection": {"cat": "match", "verb": "État du maillage", "noise": True},
+    "mesh_complete": {"cat": "match", "verb": "Match lancé — tout le monde se voit"},
     "fut_pack_opened": {"cat": "economy", "verb": "Pack ouvert"},
     "fut_quick_sell": {"cat": "economy", "verb": "Vente rapide"},
     "fut_market_search": {"cat": "market", "verb": "Recherche sur le marché"},
@@ -396,6 +407,21 @@ def describe_event(record: dict) -> dict:
             }
     elif kind == "ready":
         detail = f"advertise {record.get('advertise')}, port {record.get('core_port')}"
+    elif kind == "matchmaking_started":
+        detail = f"topologie {record.get('topology')}, {record.get('duration_ms', 0) // 1000} s"
+    elif kind == "matchmaking_found_synthetic_opponent":
+        # Said out loud, always. A server that invented an opponent and did
+        # not say so would be a server nobody could trust the rest of.
+        detail = f"{record.get('opponent')} — inventé par le serveur"
+    elif kind == "game_created":
+        detail = f"{record.get('game_type') or 'partie'}, topologie {record.get('topology')}"
+    elif kind == "game_session_finalised":
+        detail = (
+            f"{record.get('session_bytes')} octets de session XNet, "
+            f"{record.get('nonce_bytes')} de nonce"
+        )
+    elif kind == "mesh_complete":
+        detail = f"{len(record.get('peers') or [])} joueurs"
 
     return {
         "event": kind,
