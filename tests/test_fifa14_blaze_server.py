@@ -2316,3 +2316,63 @@ class MatchmakingTimeoutTests(unittest.TestCase):
         second = self.protocol.matchmaking_timers[self.state.connection_id]
         self.assertIsNot(first, second)
         self.assertFalse(first.is_alive())
+
+
+class CreateGameTests(unittest.TestCase):
+    """The real 611-byte createGame, replayed against the server.
+
+    Same frame the decoder used to die on, so this also proves the two fixes
+    hold together: the union-in-a-list rule reads it, and the handler answers
+    it with a game number instead of a fieldless success that decodes as 0.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.168.1.25", 1040), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.authenticated = True
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_blaze_tdf_union_lists import CREATE_GAME
+        self.frame = CREATE_GAME
+
+    def tearDown(self) -> None:
+        self.protocol.stop()
+        self.temp.cleanup()
+
+    def events(self, kind: str) -> list[dict]:
+        path = Path(self.temp.name) / "journal.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if json.loads(line).get("event") == kind
+        ]
+
+    def test_the_console_gets_a_game_number(self) -> None:
+        answered = self.protocol.handle(self.frame, self.state)
+        self.assertEqual(len(answered), 1)
+        self.assertNotEqual(by_label(decode_frame(answered[0]), "GID").value, 0)
+
+    def test_two_games_are_two_numbers(self) -> None:
+        first = by_label(decode_frame(self.protocol.handle(self.frame, self.state)[0]), "GID").value
+        second = by_label(decode_frame(self.protocol.handle(self.frame, self.state)[0]), "GID").value
+        self.assertNotEqual(first, second)
+
+    def test_what_the_game_is_gets_written_down(self) -> None:
+        """Including the host address, which is the thing a second console
+        will need verbatim to dial this one."""
+        self.protocol.handle(self.frame, self.state)
+        created = self.events("game_created")
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["topology"], 130)
+        self.assertEqual(created[0]["game_type"], "gameType0")
+        self.assertEqual(created[0]["protocol_version"], "qa-only-day45")
+        self.assertIn("C0A80119", json.dumps(created[0]["host_addresses"]))
+        self.assertIn("fifaHalfLength", json.dumps(created[0]["settings"]))
+
+    def test_creating_a_game_is_no_longer_an_unknown_route(self) -> None:
+        self.protocol.handle(self.frame, self.state)
+        self.assertEqual(self.events("unknown_route"), [])

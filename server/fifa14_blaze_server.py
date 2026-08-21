@@ -140,6 +140,7 @@ STATS_GET_PERIOD_IDS = 20
 # 17, and it adds `joinGameByUserList` at 30). The dozen that matter happen to
 # agree, and 13 is confirmed twice over: by the table, and by the payload the
 # console actually sent, which carries matchmaking criteria and a duration.
+GAME_MANAGER_CREATE_GAME = 1
 GAME_MANAGER_START_MATCHMAKING = 13
 GAME_MANAGER_CANCEL_MATCHMAKING = 14
 
@@ -1044,6 +1045,9 @@ class Fifa14Protocol:
         self.matchmaking_timers: dict[int, threading.Timer] = {}
         self.matchmaking_lock = threading.Lock()
         self.matchmaking_next = 1
+        # Games this server has handed out a number for. Non-zero for the
+        # same reason a session id is: a fieldless success decodes as 0.
+        self.next_game_id = 1
 
     def stop(self) -> None:
         """Stop every timer this protocol still owns.
@@ -1553,6 +1557,50 @@ class Fifa14Protocol:
 
     def close_matchmaking_session(self, state: ClientState) -> int:
         return self.forget_matchmaking(state.connection_id)
+
+    def create_game(self, request: bytes, state: ClientState) -> list[bytes]:
+        """"Créer un match", once the search has found nobody.
+
+        The whole request is worth reading and it is all in the journal: two
+        player slots, `gameType0`, protocol version `qa-only-day45`, the
+        match's own settings in `ATTR` (half length, game speed, team level),
+        and `HNET` -- one NetworkAddress union carrying this console's XNADDR.
+        That address is what a second console will need, unaltered, to dial
+        this one.
+
+        `CreateGameResponse` is a single field, `GID`, the same shape as the
+        matchmaking session id. Handing one out is not the end of it: the
+        client then expects `NotifyGameSetup`, which carries a whole
+        ReplicatedGameData, and that is the next thing to build. Until then
+        the game exists as far as this server is concerned and the console
+        has its number.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+
+        def value(label: str, fallback: Any = None) -> Any:
+            found = find_field(fields, label)
+            return found.value if found is not None else fallback
+
+        with self.matchmaking_lock:
+            game_id = self.next_game_id
+            self.next_game_id += 1
+        host = find_field(fields, "HNET")
+        self.logger.event(
+            "game_created",
+            connection=state.connection_id,
+            game=game_id,
+            persona=state.xuid,
+            topology=value("NTOP"),
+            game_type=value("GTYP"),
+            protocol_version=value("VSTR"),
+            capacity=value("PCAP"),
+            settings=json_value(find_field(fields, "ATTR")),
+            host_addresses=json_value(host) if host is not None else None,
+        )
+        return [
+            response_frame(request, encode_fields([Field("GID", INTEGER, game_id)])),
+        ]
 
     def expire_matchmaking(self, state: ClientState, session: int) -> None:
         """End a search nobody could be found for.
@@ -2161,6 +2209,8 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (GAME_MANAGER, GAME_MANAGER_CREATE_GAME):
+            return self.create_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_START_MATCHMAKING):
             return self.start_matchmaking(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_CANCEL_MATCHMAKING):
