@@ -2355,7 +2355,7 @@ class CreateGameTests(unittest.TestCase):
         """A number alone is not a game: the client waits to be told what it
         is, and by whom it is hosted."""
         answered = self.protocol.handle(self.frame, self.state)
-        self.assertEqual(len(answered), 4)
+        self.assertEqual(len(answered), 5)
         game_id = by_label(decode_frame(answered[0]), "GID").value
         self.assertNotEqual(game_id, 0)
 
@@ -2454,7 +2454,7 @@ class CreateGameTests(unittest.TestCase):
         built.
         """
         answered = self.protocol.handle(self.frame, self.state)
-        state_change = decode_frame(answered[3])
+        state_change = decode_frame(answered[4])
         self.assertEqual((state_change["component"], state_change["command"]), (4, 100))
         # 130, not 3 -- the two GameState values that matter are the two that
         # look least like the rest of the enum.
@@ -2468,3 +2468,16 @@ class CreateGameTests(unittest.TestCase):
         self.protocol.handle(self.frame, self.state)
         game = next(iter(self.protocol.games.values()))
         self.assertEqual(game.state, 130)
+
+    def test_the_host_is_told_it_finished_joining_its_own_game(self) -> None:
+        """The roster describes the host as connected; this is the event that
+        says so. Pressing "Créer un match" drops the console's A/B prompts --
+        it acts on the setup -- and then waits."""
+        answered = self.protocol.handle(self.frame, self.state)
+        joined = decode_frame(answered[3])
+        self.assertEqual((joined["component"], joined["command"]), (4, 30))
+        self.assertEqual(by_label(joined, "PID").value, 2535469248587161)
+        self.assertEqual(
+            by_label(joined, "GID").value,
+            by_label(decode_frame(answered[0]), "GID").value,
+        )
