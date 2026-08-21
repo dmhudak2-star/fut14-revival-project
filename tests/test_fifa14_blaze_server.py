@@ -2191,3 +2191,104 @@ class MatchmakingTests(unittest.TestCase):
             if json.loads(line).get("event") == "unknown_route"
         ]
         self.assertEqual(unknown, [])
+
+
+class MatchmakingTimeoutTests(unittest.TestCase):
+    """The server has to be the one that ends a search.
+
+    On 21 August the console sat on the spinner for minutes with `DUR` set to
+    twenty seconds. Blaze's duration is an instruction to the matchmaker, not
+    a client-side timeout: the client waits until it is told. Until this, the
+    server had no way to tell it anything -- every frame it had ever sent was
+    a reply written by the loop that had just read a request.
+    """
+
+    class Channel:
+        """Stands in for the socket, and records what was pushed."""
+
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+            self.broken = False
+
+        def sendall(self, data: bytes) -> None:
+            if self.broken:
+                raise OSError("connection reset")
+            self.sent.append(data)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
+        self.state.xuid = 2535469248587161
+        self.channel = self.Channel()
+        self.state.channel = self.channel
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def start(self, duration_ms: int = 20000) -> int:
+        answered = self.protocol.handle(
+            request(4, 13, [Field("DUR", INTEGER, duration_ms)]), self.state
+        )
+        return by_label(decode_frame(answered[0]), "MSID").value
+
+    def test_a_search_nobody_answers_ends_by_itself(self) -> None:
+        session = self.start()
+        self.protocol.expire_matchmaking(self.state, session)
+        self.assertEqual(len(self.channel.sent), 1)
+        failed = decode_frame(self.channel.sent[0])
+        self.assertEqual(failed["component"], 4)
+        self.assertEqual(failed["command"], 10)
+        self.assertEqual(by_label(failed, "MSID").value, session)
+        # 3 is SESSION_TIMED_OUT, and it is the truth: there is genuinely
+        # nobody else on this server to be matched with.
+        self.assertEqual(by_label(failed, "RSLT").value, 3)
+
+    def test_a_search_already_cancelled_is_not_ended_twice(self) -> None:
+        session = self.start()
+        self.protocol.handle(request(4, 14), self.state)
+        self.protocol.expire_matchmaking(self.state, session)
+        self.assertEqual(self.channel.sent, [])
+
+    def test_a_timer_from_an_abandoned_search_cannot_end_the_new_one(self) -> None:
+        """Back out, search again, and the first timer fires mid-search."""
+        first = self.start()
+        self.protocol.handle(request(4, 14), self.state)
+        second = self.start()
+        self.protocol.expire_matchmaking(self.state, first)
+        self.assertEqual(self.channel.sent, [])
+        self.assertNotEqual(second, first)
+
+    def test_a_console_that_went_away_is_not_an_error(self) -> None:
+        """The console dropped off the network twice today. A timer firing
+        into a dead socket has to be a non-event, not a traceback."""
+        session = self.start()
+        self.channel.broken = True
+        self.protocol.expire_matchmaking(self.state, session)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        timed_out = [e for e in events if e.get("event") == "matchmaking_timed_out"]
+        self.assertEqual(len(timed_out), 1)
+        self.assertIs(timed_out[0]["delivered"], False)
+
+    def test_nothing_is_pushed_before_a_connection_has_a_channel(self) -> None:
+        self.state.channel = None
+        session = self.start()
+        self.protocol.expire_matchmaking(self.state, session)  # must not raise
+
+    def test_the_timer_is_armed_from_the_duration_the_client_asked_for(self) -> None:
+        timer = self.protocol.schedule_matchmaking_timeout(self.state, 7, 20000)
+        try:
+            self.assertAlmostEqual(timer.interval, 20.0, places=3)
+        finally:
+            timer.cancel()
+        # And a floor, so a very short search is not answered before the
+        # client's own screen has drawn.
+        timer = self.protocol.schedule_matchmaking_timeout(self.state, 8, 10)
+        try:
+            self.assertAlmostEqual(timer.interval, 2.0, places=3)
+        finally:
+            timer.cancel()
