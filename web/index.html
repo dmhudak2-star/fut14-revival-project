@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FUT 14 Revival — Console d'administration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>⚽</text></svg>">
+</head>
+<body>
+
+<div class="pitch" aria-hidden="true"></div>
+<div class="lights" aria-hidden="true"></div>
+
+<!-- Gate. The API answers /api/hello without a code so the page can ask
+     whether it needs one before it has it. -->
+<section id="gate" class="gate" hidden>
+  <form class="gate-card" id="gate-form">
+    <div class="crest"><span>EA</span><small>SPORTS</small></div>
+    <h1>FUT<span>14</span> REVIVAL</h1>
+    <p>Console d'administration du serveur.</p>
+    <label for="gate-code">Code d'accès</label>
+    <input id="gate-code" type="password" autocomplete="current-password" spellcheck="false" required>
+    <button type="submit">Entrer</button>
+    <p class="gate-error" id="gate-error" hidden>Code refusé.</p>
+  </form>
+</section>
+
+<main id="app" hidden>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="crest small"><span>EA</span><small>SPORTS</small></div>
+      <div class="wordmark">FIFA<span>14</span></div>
+      <div class="sub">REVIVAL</div>
+    </div>
+
+    <!-- The player capsule from the FIFA 14 menus, reading the server
+         instead of a career: state, uptime, and the coins of every club. -->
+    <div class="capsule">
+      <div class="capsule-badge"><span id="cap-players">0</span></div>
+      <div class="capsule-body">
+        <div class="capsule-name" id="cap-name">SERVEUR</div>
+        <div class="capsule-meters">
+          <div class="meter" title="Activité de la dernière heure">
+            <div class="meter-fill" id="cap-meter"></div>
+            <span id="cap-uptime">—</span>
+          </div>
+          <div class="coins"><i></i><span id="cap-coins">0</span></div>
+        </div>
+      </div>
+      <div class="capsule-dot" id="cap-dot" title="État"></div>
+    </div>
+  </header>
+
+  <nav class="nav" id="nav">
+    <a href="#/accueil"   data-view="accueil">ACCUEIL</a>
+    <a href="#/joueurs"   data-view="joueurs">JOUEURS</a>
+    <a href="#/activite"  data-view="activite">ACTIVITÉ</a>
+    <a href="#/economie"  data-view="economie">ÉCONOMIE</a>
+    <a href="#/serveur"   data-view="serveur">SERVEUR</a>
+  </nav>
+
+  <div class="views">
+    <section class="view" id="view-accueil"></section>
+    <section class="view" id="view-joueurs"></section>
+    <section class="view" id="view-activite"></section>
+    <section class="view" id="view-economie"></section>
+    <section class="view" id="view-serveur"></section>
+    <section class="view" id="view-joueur"></section>
+  </div>
+
+  <footer class="hints">
+    <span class="hint"><b class="a">A</b> Sélectionner</span>
+    <span class="hint"><b class="b">B</b> Retour</span>
+    <span class="hint"><b class="x">X</b> Rafraîchir</span>
+    <span class="spacer"></span>
+    <span class="hint quiet" id="status">connexion…</span>
+  </footer>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
