@@ -116,9 +116,38 @@ sans erreur et sans un mot.
 
 Une seconde après l'avoir ajouté, la console envoyait `finalizeGameCreation`.
 
+## Le résultat, le 22 août à 00 h 41
+
+La séquence entière, sur du vrai matériel, en vingt et une secondes :
+
+```
+00:41:07  4/13  startMatchmaking          ->  { MSID }  puis 4/12
+00:41:27  4/20  NotifyGameSetup               partie, roster de deux joueurs
+          4/71  hôte de plateforme
+          4/30  l'hôte a fini de rejoindre
+          4/100 état -> PRE_GAME
+          4/21  Sparring arrive
+          4/30  Sparring a fini de rejoindre
+00:41:28  4/15  finalizeGameCreation      <-  XNNC 16 o, XSES 256 o
+          4/115 session mise à jour       ->  renvoyés tels quels
+          4/29  maillage : connecté à lui-même
+          4/100 état -> IN_GAME
+          4/29  maillage : Sparring injoignable
+```
+
+Et à l'écran : **« Votre adversaire a quitté la partie. »**
+
+C'est la première fois que ce projet obtient un message de *football* plutôt
+qu'une erreur de protocole. Le titre est entré dans le match, a composé le
+numéro de son adversaire, n'a trouvé personne — parce qu'il n'y a personne à
+`192.168.1.200` — et en a tiré la seule conclusion possible.
+
+**Autrement dit : tout ce que Blaze pouvait faire est fait.** Ce qui reste
+n'est plus du protocole, c'est une deuxième console.
+
 ## Ce que la console fabrique elle-même
 
-`XNNC` (16 octets) et `XSES` (60 octets, un `XSESSION_INFO`) ne sont **pas au
+`XNNC` (16 octets) et `XSES` (**256 octets**) ne sont **pas au
 serveur de les inventer**. L'hôte les construit sur son propre matériel et les
 remet dans `finalizeGameCreation`. Le serveur les garde et les renvoie — et
 c'est **exactement le blob dont une deuxième console a besoin** pour composer
@@ -126,6 +155,12 @@ le numéro de la première.
 
 C'est aussi pourquoi ils ne sont pas envoyés dans le `NotifyGameSetup`
 initial : en mettre des vides serait prétendre savoir.
+
+Sur la taille de `XSES` : la littérature décrit un `XSESSION_INFO` de 60
+octets (XNKID + XNADDR de l'hôte + XNKEY). Ce que la console envoie en fait
+**256**, dont 146 non nuls, avec un motif qui se répète à la moitié — donc
+deux blocs de 128 plutôt qu'une structure unique. Ce n'est pas décodé et ce
+n'est pas nécessaire de le décoder : le serveur le relaie tel quel.
 
 ## Le décor : Xbox LIVE
 
