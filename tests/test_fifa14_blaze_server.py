@@ -3132,3 +3132,40 @@ class TwoConsolesTests(unittest.TestCase):
         )
         self.assertEqual(len(answered), 1)
         self.assertEqual(decode_frame(answered[0])["fields"], [])
+
+    def test_a_player_walking_out_takes_itself_off_the_roster(self) -> None:
+        """Sent straight after "votre adversaire a quitté la partie" -- the
+        console drawing the conclusion that its peer never answered."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        game_id = next(iter(self.protocol.games))
+        self.protocol.handle(
+            request(4, 22, [
+                Field("GID", INTEGER, game_id),
+                Field("PID", INTEGER, self.state.xuid),
+                Field("REAS", INTEGER, 7),
+            ]),
+            self.state,
+        )
+        # Nobody real is left in it, so the game goes with them.
+        self.assertEqual(self.protocol.games, {})
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        left = [e for e in events if e.get("event") == "player_left"]
+        self.assertEqual(len(left), 1)
+        # The reason is recorded rather than interpreted: that enum is unread.
+        self.assertEqual(left[0]["reason"], 7)
+
+    def test_leaving_is_no_longer_an_unknown_route(self) -> None:
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        self.protocol.handle(request(4, 22, [Field("GID", INTEGER, 1)]), self.state)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual([e for e in events if e.get("event") == "unknown_route"], [])
