@@ -2895,3 +2895,23 @@ class SyntheticOpponentTests(unittest.TestCase):
         )
         self.assertEqual(len(self.mesh(2, 2)), 1)
         self.assertEqual(self.protocol.games[1].state, SERVER.GAME_STATE_PRE_GAME)
+
+    def test_the_roster_holds_both_players_not_just_the_host(self) -> None:
+        """What a second console will read to find out who it is playing.
+
+        A peer-to-peer game needs exactly one thing from a server:
+        introductions. The roster is the introduction.
+        """
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        _, roster = by_label(self.pushed()[0], "PROS").value
+        players = [{f.label: f.value for f in entry} for entry in roster]
+        self.assertEqual([p["NAME"] for p in players], ["Imskobogota6z", "Sparring"])
+        self.assertEqual([p["TIDX"] for p in players], [0, 1])
+        # Each carries the address the other has to dial.
+        for player in players:
+            active, valu = player["PNET"]
+            self.assertEqual(active, 0)
+            self.assertIsNotNone(SERVER.find_field(valu.value, "XDDR"))
