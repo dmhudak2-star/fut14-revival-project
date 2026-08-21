@@ -2770,3 +2770,69 @@ class SyntheticOpponentTests(unittest.TestCase):
         joining = next(f for f in self.pushed() if f["command"] == 21)
         other = {f.label: f.value for f in by_label(joining, "PDAT").value}
         self.assertEqual(other["UID"], SERVER.SYNTHETIC_PERSONA)
+
+    def test_the_host_hands_over_its_xnet_session(self) -> None:
+        """The frame that says Blaze is done and the network has begun.
+
+        The console never sent one of these until the roster carried `UID`
+        and it could find itself in there. It carries a sixteen-byte nonce and
+        the XSESSION_INFO holding the session key -- neither of which is this
+        server's to invent, and both of which a second console will need.
+        """
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        game_id = next(iter(self.protocol.games))
+        nonce = bytes.fromhex("C783DB9DF0BE9BEBF3800000000E71CE")
+        answered = self.protocol.handle(
+            request(4, 15, [
+                Field("GID", INTEGER, game_id),
+                Field("XNNC", BINARY, nonce),
+                Field("XSES", BINARY, b"\x28\x21\x24\xC0" + bytes(56)),
+            ]),
+            self.state,
+        )
+        self.assertEqual(self.protocol.games[game_id].xnet_nonce, nonce)
+        self.assertEqual(len(self.protocol.games[game_id].xnet_session), 60)
+        # Echoed straight back, because that is what the other side reads.
+        updated = decode_frame(answered[1])
+        self.assertEqual((updated["component"], updated["command"]), (4, 115))
+        self.assertEqual(by_label(updated, "XNNC").value, nonce)
+
+    def test_the_console_reports_the_mesh_truthfully(self) -> None:
+        """Connected to itself, disconnected from the opponent that does not
+        exist. The first thing in this whole exchange that is about the
+        network rather than about the protocol."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        for status, target in ((2, 2), (0, SERVER.SYNTHETIC_PERSONA)):
+            self.protocol.handle(
+                request(4, 29, [
+                    Field("FLGS", INTEGER, 0),
+                    Field("GID", INTEGER, 1),
+                    Field("SCG", SERVER.OBJECT_ID, (0, 0, 0)),
+                    Field("STAT", INTEGER, status),
+                    Field("TCG", SERVER.OBJECT_ID, (30722, 2, target)),
+                ]),
+                self.state,
+            )
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        mesh = [e for e in events if e.get("event") == "mesh_connection"]
+        self.assertEqual([e["status"] for e in mesh], [2, 0])
+        self.assertEqual(mesh[1]["target"][2], SERVER.SYNTHETIC_PERSONA)
+
+    def test_neither_is_an_unknown_route_any_more(self) -> None:
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        self.protocol.handle(request(4, 15, [Field("GID", INTEGER, 1)]), self.state)
+        self.protocol.handle(request(4, 29, [Field("GID", INTEGER, 1)]), self.state)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual([e for e in events if e.get("event") == "unknown_route"], [])
