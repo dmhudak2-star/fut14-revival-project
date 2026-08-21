@@ -3186,3 +3186,38 @@ class TwoConsolesTests(unittest.TestCase):
             for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
         ]
         self.assertEqual([e for e in events if e.get("event") == "unknown_route"], [])
+
+    def test_a_search_can_be_held_open_longer_than_the_client_asked(self) -> None:
+        """Two friends on two consoles cannot press within the same twenty
+        seconds of each other.
+
+        The client's twenty seconds are a note to the matchmaker, not a
+        deadline of its own -- it waits until it is told, which is exactly why
+        the server can hold the door open. Nothing is faked: there is still no
+        opponent until one arrives, and the failure is still announced if none
+        does.
+        """
+        os.environ["FIFA14_SEARCH_WINDOW"] = "180"
+        try:
+            timer = self.protocol.schedule_matchmaking_timeout(self.one, 1, 20000)
+            self.assertAlmostEqual(timer.interval, 180.0, places=3)
+            timer.cancel()
+        finally:
+            os.environ.pop("FIFA14_SEARCH_WINDOW", None)
+
+    def test_without_the_window_the_client_gets_what_it_asked_for(self) -> None:
+        timer = self.protocol.schedule_matchmaking_timeout(self.one, 1, 20000)
+        self.assertAlmostEqual(timer.interval, 20.0, places=3)
+        timer.cancel()
+
+    def test_the_second_console_is_paired_however_late_it_arrives(self) -> None:
+        """The point of the window: whoever comes second finds the first
+        still waiting rather than a search that has already been given up on."""
+        os.environ["FIFA14_SEARCH_WINDOW"] = "180"
+        try:
+            self.search(self.one, ip=25)
+            self.assertEqual(self.protocol.games, {})
+            self.search(self.two, ip=26)
+            self.assertEqual(len(self.protocol.games), 1)
+        finally:
+            os.environ.pop("FIFA14_SEARCH_WINDOW", None)
