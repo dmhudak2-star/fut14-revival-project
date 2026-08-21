@@ -2915,3 +2915,171 @@ class SyntheticOpponentTests(unittest.TestCase):
             active, valu = player["PNET"]
             self.assertEqual(active, 0)
             self.assertIsNotNone(SERVER.find_field(valu.value, "XDDR"))
+
+
+class GameLifecycleTests(unittest.TestCase):
+    """The commands a game sends once it exists.
+
+    The host moves its own game on and tears it down at the end. Neither is
+    the server's decision on a peer-to-peer game -- it records and relays.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.168.1.25", 1040), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.authenticated = True
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_blaze_tdf_union_lists import CREATE_GAME
+        self.protocol.handle(CREATE_GAME, self.state)
+        self.game_id = next(iter(self.protocol.games))
+
+    def tearDown(self) -> None:
+        os.environ.pop("FIFA14_TEST_OPPONENT", None)
+        self.protocol.stop()
+        self.temp.cleanup()
+
+    def test_the_host_can_move_its_own_game_on(self) -> None:
+        self.protocol.handle(
+            request(4, 3, [
+                Field("GID", INTEGER, self.game_id),
+                Field("GSTA", INTEGER, 131),
+            ]),
+            self.state,
+        )
+        self.assertEqual(self.protocol.games[self.game_id].state, 131)
+
+    def test_a_game_that_is_destroyed_stops_being_counted(self) -> None:
+        """Otherwise "En cours de partie" only ever climbs."""
+        self.protocol.handle(
+            request(4, 2, [Field("GID", INTEGER, self.game_id)]), self.state
+        )
+        self.assertEqual(self.protocol.games, {})
+
+    def test_neither_is_an_unknown_route(self) -> None:
+        self.protocol.handle(request(4, 3, [Field("GID", INTEGER, 1)]), self.state)
+        self.protocol.handle(request(4, 2, [Field("GID", INTEGER, 1)]), self.state)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual([e for e in events if e.get("event") == "unknown_route"], [])
+
+
+class TwoConsolesTests(unittest.TestCase):
+    """Real matchmaking: two consoles looking at the same time.
+
+    This needs nothing that has not already been proved on hardware. Both
+    consoles send `startMatchmaking` carrying their own XNADDR, so the server
+    has both addresses and its whole job is to put them in one game and hand
+    each the other's.
+    """
+
+    class Channel:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        def sendall(self, data: bytes) -> None:
+            self.sent.append(data)
+
+    def console(self, connection: int, xuid: int, name: str, ip: int):
+        state = SERVER.ClientState(connection, ("192.168.1.%d" % ip, 1040), 10041)
+        state.xuid = xuid
+        state.gamertag = name
+        state.authenticated = True
+        state.channel = self.Channel()
+        self.protocol.remember_connection(state)
+        return state
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.one = self.console(1, 2535469248587161, "Imskobogota6z", 25)
+        self.two = self.console(2, 2535424500563471, "Igordos7943", 26)
+
+    def tearDown(self) -> None:
+        self.protocol.stop()
+        self.temp.cleanup()
+
+    def search(self, state, version: str = "qa-only-day45", ip: int = 25):
+        return self.protocol.handle(
+            request(4, 13, [
+                Field("DUR", INTEGER, 20000),
+                Field("GVER", STRING, version),
+                Field("NTOP", INTEGER, 130),
+                Field("PNET", SERVER.UNION, (0, Field("VALU", STRUCT, [
+                    Field("MACI", INTEGER, ip),
+                    Field("XDDR", BINARY, bytes([192, 168, 1, ip]) + bytes(32)),
+                    Field("XUID", INTEGER, state.xuid),
+                ]))),
+            ]),
+            state,
+        )
+
+    def pushed(self, state):
+        return [decode_frame(frame) for frame in state.channel.sent]
+
+    def test_the_second_console_to_look_finds_the_first(self) -> None:
+        self.search(self.one, ip=25)
+        self.assertEqual(self.protocol.games, {})   # nobody to pair with yet
+        self.search(self.two, ip=26)
+        self.assertEqual(len(self.protocol.games), 1)
+        game = next(iter(self.protocol.games.values()))
+        self.assertEqual(
+            [member["gamertag"] for member in game.members],
+            ["Imskobogota6z", "Igordos7943"],
+        )
+
+    def test_each_console_is_told_the_other_address(self) -> None:
+        """The whole point. A peer-to-peer game needs introductions and
+        nothing else from a server."""
+        self.search(self.one, ip=25)
+        self.search(self.two, ip=26)
+        setup = next(f for f in self.pushed(self.one) if f["command"] == 20)
+        _, roster = by_label(setup, "PROS").value
+        addresses = []
+        for entry in roster:
+            _, valu = SERVER.find_field(entry, "PNET").value
+            addresses.append(SERVER.find_field(valu.value, "XDDR").value[:4])
+        self.assertEqual(
+            addresses, [bytes([192, 168, 1, 25]), bytes([192, 168, 1, 26])]
+        )
+
+    def test_the_one_who_waited_hosts_and_the_other_dials(self) -> None:
+        """The host is the one whose XNet session the other will dial, so it
+        has to be the one that was already there to be dialled into."""
+        self.search(self.one, ip=25)
+        self.search(self.two, ip=26)
+        first = [f["command"] for f in self.pushed(self.one)]
+        second = [f["command"] for f in self.pushed(self.two)]
+        self.assertIn(20, first)         # you created a game
+        self.assertIn(22, second)        # you are joining one that exists
+        self.assertNotIn(20, second)
+
+    def test_two_builds_that_disagree_are_not_matched(self) -> None:
+        """A mismatch would fail in the network layer for a reason that has
+        nothing to do with the network."""
+        self.search(self.one, version="qa-only-day45")
+        self.search(self.two, version="some-other-build")
+        self.assertEqual(self.protocol.games, {})
+
+    def test_one_player_on_two_connections_is_not_two_players(self) -> None:
+        third = self.console(3, self.one.xuid, "Imskobogota6z", 25)
+        self.search(self.one)
+        self.search(third)
+        self.assertEqual(self.protocol.games, {})
+
+    def test_the_pairing_is_written_down(self) -> None:
+        self.search(self.one)
+        self.search(self.two)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        paired = [e for e in events if e.get("event") == "matchmaking_paired"]
+        self.assertEqual(len(paired), 1)
+        self.assertEqual(paired[0]["host"], self.one.xuid)
+        self.assertEqual(paired[0]["guest"], self.two.xuid)
