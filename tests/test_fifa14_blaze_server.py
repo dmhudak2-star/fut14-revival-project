@@ -3083,3 +3083,52 @@ class TwoConsolesTests(unittest.TestCase):
         self.assertEqual(len(paired), 1)
         self.assertEqual(paired[0]["host"], self.one.xuid)
         self.assertEqual(paired[0]["guest"], self.two.xuid)
+
+    def test_a_console_can_join_a_game_that_already_exists(self) -> None:
+        """The other way in. The joiner brings its own address and its own
+        Xbox session, so nothing about it has to have been cached first."""
+        self.search(self.one, ip=25)
+        self.protocol.forget_matchmaking(self.one.connection_id)
+        self.protocol.games[7] = SERVER.HostedGame(
+            game_id=7, persona_id=self.one.xuid, gamertag=self.one.gamertag,
+            state=SERVER.GAME_STATE_PRE_GAME,
+            roster=[self.one.connection_id],
+        )
+        game = self.protocol.games[7]
+        game.members = [self.protocol.member(
+            game, self.one.xuid, self.one.gamertag, self.one.connection_id,
+            None, slot=0, team=0, state=self.one,
+        )]
+        answered = self.protocol.handle(
+            request(4, 9, [
+                Field("GID", INTEGER, 7),
+                Field("GVER", STRING, "qa-only-day45"),
+                Field("JMET", INTEGER, 1),
+                Field("PNET", SERVER.UNION, (0, Field("VALU", STRUCT, [
+                    Field("XDDR", BINARY, bytes([192, 168, 1, 26]) + bytes(32)),
+                    Field("XUID", INTEGER, self.two.xuid),
+                ]))),
+            ]),
+            self.two,
+        )
+        reply = decode_frame(answered[0])
+        self.assertEqual(by_label(reply, "GID").value, 7)
+        # 0 is JOINED_GAME. Four members, not the two the published tables give.
+        self.assertEqual(by_label(reply, "JGS").value, 0)
+        self.assertEqual(
+            sorted(f.label for f in reply["fields"]), ["GID", "JEX", "JGS", "REX"]
+        )
+        self.assertEqual([f["command"] for f in self.pushed(self.two)], [])
+        self.assertEqual(
+            [decode_frame(f)["command"] for f in answered[1:]], [22, 30]
+        )
+        # And the one already in there hears that somebody arrived.
+        self.assertEqual([f["command"] for f in self.pushed(self.one)], [21, 30])
+        self.assertEqual(len(self.protocol.games[7].members), 2)
+
+    def test_joining_a_game_that_does_not_exist_is_refused_quietly(self) -> None:
+        answered = self.protocol.handle(
+            request(4, 9, [Field("GID", INTEGER, 999)]), self.two
+        )
+        self.assertEqual(len(answered), 1)
+        self.assertEqual(decode_frame(answered[0])["fields"], [])
