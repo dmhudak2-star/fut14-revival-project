@@ -280,6 +280,24 @@ class ClientState:
     authenticated: bool = False
     request_count: int = 0
     send_lock: threading.Lock = field(default_factory=threading.Lock)
+    # The socket this connection is on, so the server can say something the
+    # client did not ask for. Every frame until now was a reply, written by
+    # the loop that had just read a request -- which is fine for a protocol
+    # that only ever answers, and not fine for matchmaking, where the whole
+    # point is telling a client something later.
+    channel: Any = None
+
+    def push(self, frame: bytes) -> bool:
+        """Send an unsolicited frame. False if the connection is gone."""
+        channel = self.channel
+        if channel is None:
+            return False
+        with self.send_lock:
+            try:
+                channel.sendall(frame)
+                return True
+            except OSError:
+                return False
 
 
 class PersistentAccountStore:
@@ -1501,6 +1519,56 @@ class Fifa14Protocol:
         with self.matchmaking_lock:
             return self.matchmaking.pop(state.connection_id, 0)
 
+    def expire_matchmaking(self, state: ClientState, session: int) -> None:
+        """End a search nobody could be found for.
+
+        The client does not give up on its own. `DUR` says twenty seconds and
+        the console honoured none of it: the search sat spinning for minutes
+        with the server saying nothing, because in Blaze the duration is an
+        instruction to the *matchmaker*, not a client-side timeout. So the
+        server has to be the one that ends it.
+
+        Ending it truthfully matters more than ending it quickly. There is
+        genuinely no opponent on this server, so the result is SESSION_TIMED_OUT
+        and the game gets to say so.
+        """
+        with self.matchmaking_lock:
+            if self.matchmaking.get(state.connection_id) != session:
+                return  # cancelled, or replaced by a newer search
+            self.matchmaking.pop(state.connection_id, None)
+        frame = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_MATCHMAKING_FAILED,
+            encode_fields(
+                [
+                    Field("MAXF", INTEGER, 0),
+                    Field("MSID", INTEGER, session),
+                    Field("RSLT", INTEGER, MATCHMAKING_SESSION_TIMED_OUT),
+                    Field("USID", INTEGER, state.xuid),
+                ]
+            ),
+        )
+        delivered = state.push(frame)
+        if delivered:
+            self.logger.frame("notification", state, frame)
+        self.logger.event(
+            "matchmaking_timed_out",
+            connection=state.connection_id,
+            session=session,
+            delivered=delivered,
+        )
+
+    def schedule_matchmaking_timeout(
+        self, state: ClientState, session: int, duration_ms: int
+    ) -> threading.Timer:
+        # A floor, because a client that asked for a very short search would
+        # otherwise be told "no opponent" before its own screen had drawn.
+        seconds = max(2.0, float(duration_ms or 20000) / 1000.0)
+        timer = threading.Timer(seconds, self.expire_matchmaking, (state, session))
+        timer.daemon = True
+        timer.start()
+        return timer
+
     def start_matchmaking(self, request: bytes, state: ClientState) -> list[bytes]:
         """The first thing FIFA 14 ever said to GameManager on this server.
 
@@ -1546,6 +1614,7 @@ class Fifa14Protocol:
             game_version=value("GVER"),
             network=json_value(network) if network is not None else None,
         )
+        self.schedule_matchmaking_timeout(state, session, value("DUR", 20000))
         return [
             response_frame(request, encode_fields([Field("MSID", INTEGER, session)])),
             notification_frame(
@@ -4382,6 +4451,10 @@ class BlazeService:
                 return
 
         client.settimeout(0.5)
+        # Bound here rather than at accept: on a TLS port the line above
+        # replaced `client` with the wrapped socket, and pushing through the
+        # raw one would put plaintext frames on an encrypted connection.
+        state.channel = client
         buffer = bytearray()
         try:
             while not self.stop_event.is_set():
@@ -4434,6 +4507,7 @@ class BlazeService:
                 buffered=bytes(buffer).hex().upper(),
             )
         finally:
+            state.channel = None
             try:
                 client.close()
             except OSError:
