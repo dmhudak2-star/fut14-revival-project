@@ -2083,3 +2083,111 @@ class RoutesTheTitleAsksForTests(unittest.TestCase):
         the day the online modes start asking to exist."""
         self.protocol.handle(request(4, 60), self.state)
         self.assertEqual(self.unknown_routes(), [(4, 60)])
+
+
+class MatchmakingTests(unittest.TestCase):
+    """GameManager, from the day the game first spoke to it.
+
+    Component 4 was advertised from the start and never used. On 21 August
+    2026 a console was taken into Face-à-Face and sent `startMatchmaking`
+    carrying NTOP 130 -- PEER_TO_PEER_FULL_MESH -- which says the match runs
+    console to console and this server is the matchmaker, not a game host.
+
+    What is pinned here is the smallest reply that turns a silent hang into a
+    search the client is running: a non-zero session id, and a cancellation
+    that ends it cleanly.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.authenticated = True
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def search(self) -> list[bytes]:
+        """The frame the console actually sent, trimmed to what is read."""
+        return self.protocol.handle(
+            request(4, 13, [
+                Field("DUR", INTEGER, 20000),
+                Field("GVER", STRING, "qa-only-day45"),
+                Field("MODE", INTEGER, 3),
+                Field("NTOP", INTEGER, 130),
+                Field("PNET", SERVER.UNION, (0, Field("VALU", STRUCT, [
+                    Field("MACI", INTEGER, 1780144225),
+                    Field("XDDR", BINARY, bytes.fromhex("C0A80119020B639A")),
+                    Field("XUID", INTEGER, 2535469248587161),
+                ]))),
+            ]),
+            self.state,
+        )
+
+    def journal_events(self, kind: str) -> list[dict]:
+        path = Path(self.temp.name) / "journal.jsonl"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if json.loads(line).get("event") == kind
+        ]
+
+    def test_a_search_comes_back_with_a_session_the_client_can_name(self) -> None:
+        """A fieldless success decodes MSID as 0, and the client then has no
+        session to wait on and none to cancel. That was the silent hang."""
+        answered = self.search()
+        session = by_label(decode_frame(answered[0]), "MSID").value
+        self.assertNotEqual(session, 0)
+
+    def test_the_search_is_followed_by_an_async_status_on_the_same_session(self) -> None:
+        """Proof the push path works, before anything is built on it."""
+        answered = self.search()
+        self.assertEqual(len(answered), 2)
+        status = decode_frame(answered[1])
+        self.assertEqual(status["component"], 4)
+        self.assertEqual(status["command"], 12)
+        self.assertEqual(
+            by_label(status, "MSID").value,
+            by_label(decode_frame(answered[0]), "MSID").value,
+        )
+        self.assertEqual(by_label(status, "USID").value, 2535469248587161)
+
+    def test_backing_out_ends_the_search_rather_than_leaving_it_running(self) -> None:
+        session = by_label(decode_frame(self.search()[0]), "MSID").value
+        answered = self.protocol.handle(request(4, 14), self.state)
+        failed = decode_frame(answered[1])
+        self.assertEqual(failed["command"], 10)
+        self.assertEqual(by_label(failed, "MSID").value, session)
+        # 4 is SESSION_CANCELED. Notification 10 is `NotifyMatchmakingFailed`
+        # in this build, not Blaze 2's `NotifyMatchmakingFinished`: it carries
+        # the failure path only, so it can end a search and never start a match.
+        self.assertEqual(by_label(failed, "RSLT").value, 4)
+
+    def test_two_searches_are_two_sessions(self) -> None:
+        first = by_label(decode_frame(self.search()[0]), "MSID").value
+        self.protocol.handle(request(4, 14), self.state)
+        second = by_label(decode_frame(self.search()[0]), "MSID").value
+        self.assertNotEqual(first, second)
+
+    def test_the_peer_address_is_written_down_because_it_is_what_gets_relayed(self) -> None:
+        """With a second console, the other side needs this blob verbatim to
+        dial back. There is no second console yet, so it goes in the journal."""
+        self.search()
+        started = self.journal_events("matchmaking_started")
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0]["topology"], 130)
+        self.assertEqual(started[0]["game_version"], "qa-only-day45")
+        self.assertIn("XDDR", json.dumps(started[0]["network"]))
+
+    def test_matchmaking_is_no_longer_written_down_as_unknown(self) -> None:
+        self.search()
+        path = Path(self.temp.name) / "journal.jsonl"
+        unknown = [
+            line for line in path.read_text().splitlines()
+            if json.loads(line).get("event") == "unknown_route"
+        ]
+        self.assertEqual(unknown, [])
