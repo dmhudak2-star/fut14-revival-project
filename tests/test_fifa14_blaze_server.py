@@ -2351,10 +2351,77 @@ class CreateGameTests(unittest.TestCase):
             if json.loads(line).get("event") == kind
         ]
 
-    def test_the_console_gets_a_game_number(self) -> None:
+    def test_the_console_gets_a_game_number_and_then_the_game(self) -> None:
+        """A number alone is not a game: the client waits to be told what it
+        is, and by whom it is hosted."""
         answered = self.protocol.handle(self.frame, self.state)
-        self.assertEqual(len(answered), 1)
-        self.assertNotEqual(by_label(decode_frame(answered[0]), "GID").value, 0)
+        self.assertEqual(len(answered), 3)
+        game_id = by_label(decode_frame(answered[0]), "GID").value
+        self.assertNotEqual(game_id, 0)
+
+        setup = decode_frame(answered[1])
+        self.assertEqual((setup["component"], setup["command"]), (4, 20))
+        # Five members, and LFPJ is in no published table for any other Blaze
+        # title -- it is a FIFA-14-era addition read out of this binary.
+        self.assertEqual(
+            [field.label for field in setup["fields"]],
+            ["GAME", "LFPJ", "PROS", "QUEU", "REAS"],
+        )
+
+        host = decode_frame(answered[2])
+        self.assertEqual((host["component"], host["command"]), (4, 71))
+        self.assertEqual(by_label(host, "GID").value, game_id)
+        self.assertEqual(by_label(host, "PHID").value, 2535469248587161)
+
+    def test_the_game_it_is_told_about_is_the_one_it_asked_for(self) -> None:
+        setup = decode_frame(self.protocol.handle(self.frame, self.state)[1])
+        game = {f.label: f.value for f in by_label(setup, "GAME").value}
+        self.assertEqual(game["NTOP"], 130)
+        self.assertEqual(game["GTYP"], "gameType0")
+        self.assertEqual(game["VSTR"], "qa-only-day45")
+        self.assertEqual(game["CAP"], (INTEGER, [2, 0, 0, 0]))
+        # The host's address, handed straight back. A second console dials
+        # this blob; a byte changed here is a match that never connects.
+        addresses = game["HNET"][1]
+        self.assertEqual(len(addresses), 1)
+        active, members = addresses[0]
+        self.assertEqual(active, 0)
+        self.assertEqual(
+            SERVER.find_field(members, "XDDR").value[:4], bytes([192, 168, 1, 25])
+        )
+
+    def test_the_roster_holds_the_host_with_its_own_address(self) -> None:
+        setup = decode_frame(self.protocol.handle(self.frame, self.state)[1])
+        item_type, roster = by_label(setup, "PROS").value
+        self.assertEqual(item_type, STRUCT)
+        self.assertEqual(len(roster), 1)
+        player = {f.label: f.value for f in roster[0]}
+        self.assertEqual(player["PID"], 2535469248587161)
+        self.assertEqual(player["STAT"], 4)  # ACTIVE_CONNECTED, not 2
+        # CONG, CSID and ROLE are in no published table for any other title.
+        self.assertIn("CONG", player)
+        self.assertIn("CSID", player)
+        # As a field rather than a list element, a union carries a VALU.
+        active, valu = player["PNET"]
+        self.assertEqual(active, 0)
+        self.assertEqual(valu.label, "VALU")
+
+    def test_the_reason_says_the_client_created_this_itself(self) -> None:
+        """CREATE_GAME_SETUP_CONTEXT is not a union index -- it is a value of
+        the DCTX enum inside index 0. Getting that round the wrong way would
+        tell the client it had joined something."""
+        setup = decode_frame(self.protocol.handle(self.frame, self.state)[1])
+        active, valu = by_label(setup, "REAS").value
+        self.assertEqual(active, 0)
+        self.assertEqual(valu.label, "VALU")
+        self.assertEqual(SERVER.find_field(valu.value, "DCTX").value, 0)
+
+    def test_the_game_data_goes_out_in_ascending_tag_order(self) -> None:
+        """What the client does with its own fields, so what it is given."""
+        from blaze_tdf import encode_tag
+        setup = decode_frame(self.protocol.handle(self.frame, self.state)[1])
+        labels = [f.label for f in by_label(setup, "GAME").value]
+        self.assertEqual(labels, sorted(labels, key=encode_tag))
 
     def test_two_games_are_two_numbers(self) -> None:
         first = by_label(decode_frame(self.protocol.handle(self.frame, self.state)[0]), "GID").value

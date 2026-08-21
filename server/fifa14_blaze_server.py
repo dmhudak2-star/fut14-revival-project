@@ -48,6 +48,7 @@ from blaze_tdf import (  # noqa: E402
     decode_frame,
     encode_fields,
     encode_frame,
+    encode_tag,
     json_value,
 )
 
@@ -63,6 +64,10 @@ STATS = 7
 # Advertised in COMPONENT_IDS since the beginning and never once used: until
 # 21 August 2026 this server had not seen a single frame on component 4. Then
 # a console was taken into Face-à-Face and sent `startMatchmaking`.
+# The four-byte locale the console reports, as an integer: "frFR". It was
+# written out as 1718765138 in three places before anything else needed it.
+LOCALE = 1718765138
+
 GAME_MANAGER = 4
 CENSUS_DATA = 10
 CLUBS = 11
@@ -149,10 +154,28 @@ GAME_MANAGER_CANCEL_MATCHMAKING = 14
 # carried both outcomes on it. In FIFA 14 it is `NotifyMatchmakingFailed` and
 # carries only the failure path -- success arrives as `NotifyGameSetup` (20)
 # instead. Sending 10 to announce a match would end the search, not start one.
+NOTIFY_GAME_SETUP = 20
+NOTIFY_PLATFORM_HOST_INITIALIZED = 71
 NOTIFY_MATCHMAKING_FAILED = 10
 NOTIFY_MATCHMAKING_ASYNC_STATUS = 12
 
 # Blaze's MatchmakingResult. Only the two ends of it are needed here.
+# Blaze's GameState, read from the binary's enum pool. The two that matter are
+# 130 and 131, not the 3 and 4 a reader would guess from the others.
+GAME_STATE_INITIALIZING = 1
+GAME_STATE_PRE_GAME = 130
+GAME_STATE_IN_GAME = 131
+
+# PlayerState. A player who is in the game and reachable is 4, not 2.
+PLAYER_STATE_ACTIVE_CONNECTED = 4
+
+# `GameSetupReason` is a union, and `CREATE_GAME_SETUP_CONTEXT` is not one of
+# its indices -- it is a value of the `DCTX` enum inside index 0's
+# DatalessSetupContext. A game the client asked for itself is therefore
+# union index 0 carrying {DCTX: 0}; a matchmade one would be index 3.
+SETUP_REASON_DATALESS = 0
+SETUP_CONTEXT_CREATE_GAME = 0
+
 MATCHMAKING_SESSION_TIMED_OUT = 3
 MATCHMAKING_SESSION_CANCELED = 4
 
@@ -299,6 +322,37 @@ class ClientState:
                 return True
             except OSError:
                 return False
+
+
+@dataclass
+class HostedGame:
+    """A game this server has agreed exists.
+
+    Most of it is the client's own `createGame` echoed back rather than
+    invented. That is not laziness: `ReplicatedGameData` is about 0x2e0 bytes
+    and only fourteen of its members could be read out of the title's own
+    reflection tables, so anything this server makes up is a guess where
+    anything it repeats is a fact. The host's address in particular has to
+    come back byte for byte -- it is what a second console will dial.
+    """
+
+    game_id: int
+    persona_id: int
+    gamertag: str
+    state: int = GAME_STATE_INITIALIZING
+    name: str = ""
+    game_type: str = ""
+    status_url: str = ""
+    protocol_version: str = ""
+    topology: int = 0
+    settings: int = 0
+    mod_register: int = 0
+    attributes: Field | None = None
+    criteria: Field | None = None
+    capacity: Field | None = None
+    host_addresses: Field | None = None
+    host_address: Any = None
+    connection_group: int = 0
 
 
 class PersistentAccountStore:
@@ -1048,6 +1102,7 @@ class Fifa14Protocol:
         # Games this server has handed out a number for. Non-zero for the
         # same reason a session id is: a fieldless success decodes as 0.
         self.next_game_id = 1
+        self.games: dict[int, HostedGame] = {}
 
     def stop(self) -> None:
         """Stop every timer this protocol still owns.
@@ -1558,6 +1613,132 @@ class Fifa14Protocol:
     def close_matchmaking_session(self, state: ClientState) -> int:
         return self.forget_matchmaking(state.connection_id)
 
+    def replicated_game_data(self, game: HostedGame) -> list[Field]:
+        """The game, as the client's own schema describes it.
+
+        Fourteen of these tags were read out of FIFA 14's reflection tables
+        and are certain. Four more -- NTOP, PSAS, VSTR, NQOS -- have certain
+        tags read from other classes in the same binary, but their membership
+        here could not be confirmed, so they are sent on the reasoning that a
+        TDF decoder skips members it does not know and defaults the ones it
+        does not receive. Nothing else is invented: the rest of this object,
+        which is roughly 0x2e0 bytes, is simply absent from the image.
+
+        XNNC and XSES are deliberately not here. They are the XNet nonce and
+        session, and they belong to the host, which hands them over in
+        `finalizeGameCreation`. Sending empty ones would be claiming to know
+        something this server cannot know yet.
+
+        Members go out in ascending tag order because that is what the client
+        does -- the captured `createGame` runs ATTR, BTPL, CRIT ... VOIP, VSTR
+        strictly ascending.
+        """
+        fields = [
+            Field("ADMN", LIST, (INTEGER, [game.persona_id])),
+            game.attributes or empty_map("ATTR"),
+            game.capacity or Field("CAP", LIST, (INTEGER, [2, 0, 0, 0])),
+            game.criteria or empty_map("CRIT"),
+            Field("GID", INTEGER, game.game_id),
+            Field("GMRG", INTEGER, game.mod_register),
+            Field("GNAM", STRING, game.name),
+            # The protocol version *hash*, which is not the string and is not
+            # recoverable from here. Zero rather than a made-up number.
+            Field("GPVH", INTEGER, 0),
+            Field("GSET", INTEGER, game.settings),
+            # The game-reporting id. The same number as the game is fine and
+            # is what makes a later report traceable to this game.
+            Field("GSID", INTEGER, game.game_id),
+            Field("GSTA", INTEGER, game.state),
+            Field("GTYP", STRING, game.game_type),
+            Field("GURL", STRING, game.status_url),
+            game.host_addresses or Field("HNET", LIST, (STRUCT, [])),
+            Field("NQOS", STRUCT, [
+                Field("DBPS", INTEGER, 0),
+                # NAT_TYPE_OPEN. The console reported exactly this in its own
+                # UserSessions data, so it is repeated rather than assumed.
+                Field("NATT", INTEGER, 0),
+                Field("UBPS", INTEGER, 0),
+            ]),
+            Field("NTOP", INTEGER, game.topology),
+            Field("PSAS", STRING, ""),
+            Field("VSTR", STRING, game.protocol_version),
+        ]
+        return sorted(fields, key=lambda field: encode_tag(field.label))
+
+    def replicated_game_player(self, game: HostedGame) -> list[Field]:
+        """The host, as a player in its own game.
+
+        All sixteen members of this one were read from the binary, and three
+        of them -- CONG, CSID, ROLE -- are in no published table for any other
+        Blaze title. Empty members are left out, which is what the client
+        does with its own.
+        """
+        fields = [
+            Field("CONG", INTEGER, game.connection_group),
+            Field("CSID", INTEGER, 0),
+            Field("EXID", INTEGER, game.persona_id),
+            Field("GID", INTEGER, game.game_id),
+            Field("LOC", INTEGER, LOCALE),
+            Field("NAME", STRING, game.gamertag),
+            Field("PID", INTEGER, game.persona_id),
+            Field("SID", INTEGER, 0),
+            Field("SLOT", INTEGER, 0),
+            Field("STAT", INTEGER, PLAYER_STATE_ACTIVE_CONNECTED),
+            Field("TIDX", INTEGER, 0),
+            Field("TIME", INTEGER, int(time.time())),
+        ]
+        if game.host_address is not None:
+            # The address the console gave for itself, handed straight back.
+            fields.append(Field("PNET", UNION, game.host_address))
+        return sorted(fields, key=lambda field: encode_tag(field.label))
+
+    def game_setup_notifications(self, game: HostedGame) -> list[bytes]:
+        """`NotifyGameSetup`, and then who the host is.
+
+        The five members of notification 20 are certain, including `LFPJ`,
+        which is in no published table -- it is a FIFA-14-era addition next to
+        the FIFA-only `preferredJoinOptOut` command.
+
+        Notification 71 follows because `ReplicatedGameData`'s own host
+        members could not be read, and 71's layout could. Rather than guess a
+        tag for the host inside the game, the host is stated separately in a
+        message whose shape is known.
+        """
+        setup = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_GAME_SETUP,
+            encode_fields(
+                [
+                    Field("GAME", STRUCT, self.replicated_game_data(game)),
+                    Field("LFPJ", INTEGER, 0),
+                    Field("PROS", LIST, (STRUCT, [self.replicated_game_player(game)])),
+                    Field("QUEU", LIST, (STRUCT, [])),
+                    Field(
+                        "REAS",
+                        UNION,
+                        (
+                            SETUP_REASON_DATALESS,
+                            Field("VALU", STRUCT, [
+                                Field("DCTX", INTEGER, SETUP_CONTEXT_CREATE_GAME),
+                            ]),
+                        ),
+                    ),
+                ]
+            ),
+        )
+        host = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLATFORM_HOST_INITIALIZED,
+            encode_fields(
+                [
+                    Field("GID", INTEGER, game.game_id),
+                    Field("PHID", INTEGER, game.persona_id),
+                    Field("PHST", INTEGER, 0),
+                ]
+            ),
+        )
+        return [setup, host]
+
     def create_game(self, request: bytes, state: ClientState) -> list[bytes]:
         """"Créer un match", once the search has found nobody.
 
@@ -1586,6 +1767,38 @@ class Fifa14Protocol:
             game_id = self.next_game_id
             self.next_game_id += 1
         host = find_field(fields, "HNET")
+        # The host's own address, lifted out of the list so the roster entry
+        # can carry it back. In a list a union has no VALU wrapper and its
+        # members sit inline, so it is rebuilt into the wrapped form a field
+        # needs -- the two spellings are the whole reason the decoder had to
+        # be taught the difference.
+        host_address = None
+        if host is not None and host.value[1]:
+            first = host.value[1][0]
+            if isinstance(first, tuple):
+                active, members = first
+                host_address = (active, Field("VALU", STRUCT, members))
+        game = HostedGame(
+            game_id=game_id,
+            persona_id=state.xuid,
+            gamertag=state.gamertag,
+            name=str(value("GNAM", "")),
+            game_type=str(value("GTYP", "")),
+            status_url=str(value("GURL", "")),
+            protocol_version=str(value("VSTR", "")),
+            topology=int(value("NTOP", 0) or 0),
+            settings=int(value("GSET", 0) or 0),
+            mod_register=int(value("GMRG", 0) or 0),
+            attributes=find_field(fields, "ATTR"),
+            criteria=find_field(fields, "CRIT"),
+            capacity=Field("CAP", LIST, find_field(fields, "PCAP").value)
+            if find_field(fields, "PCAP") is not None else None,
+            host_addresses=host,
+            host_address=host_address,
+            connection_group=state.connection_id,
+        )
+        with self.matchmaking_lock:
+            self.games[game_id] = game
         self.logger.event(
             "game_created",
             connection=state.connection_id,
@@ -1600,6 +1813,7 @@ class Fifa14Protocol:
         )
         return [
             response_frame(request, encode_fields([Field("GID", INTEGER, game_id)])),
+            *self.game_setup_notifications(game),
         ]
 
     def expire_matchmaking(self, state: ClientState, session: int) -> None:
@@ -1762,7 +1976,7 @@ class Fifa14Protocol:
         """
         return [
             Field("AID", INTEGER, xuid),
-            Field("ALOC", INTEGER, 1718765138),
+            Field("ALOC", INTEGER, LOCALE),
             Field("EXID", INTEGER, xuid),
             Field("ID", INTEGER, xuid),
             Field("NAME", STRING, name),
@@ -1862,7 +2076,7 @@ class Fifa14Protocol:
             8,
             encode_fields(
                 [
-                    Field("ALOC", INTEGER, 1718765138),
+                    Field("ALOC", INTEGER, LOCALE),
                     Field("BUID", INTEGER, state.xuid),
                     Field("DSNM", STRING, state.gamertag),
                     Field("FRST", INTEGER, 0),
