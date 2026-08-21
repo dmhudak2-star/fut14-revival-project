@@ -156,6 +156,7 @@ GAME_MANAGER_CANCEL_MATCHMAKING = 14
 # instead. Sending 10 to announce a match would end the search, not start one.
 NOTIFY_GAME_SETUP = 20
 NOTIFY_PLATFORM_HOST_INITIALIZED = 71
+NOTIFY_GAME_STATE_CHANGE = 100
 NOTIFY_MATCHMAKING_FAILED = 10
 NOTIFY_MATCHMAKING_ASYNC_STATUS = 12
 
@@ -1737,7 +1738,30 @@ class Fifa14Protocol:
                 ]
             ),
         )
-        return [setup, host]
+        # And then move it out of INITIALIZING.
+        #
+        # A game that has just been created is initialising, and a game
+        # waiting for an opponent is PRE_GAME. Sending the setup alone left
+        # the console back on the Face-à-Face settings screen: it had read the
+        # game and had no reason to sit in one, because as far as it knew the
+        # game was still being built.
+        #
+        # `{GID, GSTA}` is the whole of notification 100. The state values are
+        # certain -- 130 and 131 rather than the 3 and 4 the other members of
+        # that enum would suggest -- and `GSTA` is the tag ReplicatedGameData
+        # uses for the same member.
+        game.state = GAME_STATE_PRE_GAME
+        pre_game = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_GAME_STATE_CHANGE,
+            encode_fields(
+                [
+                    Field("GID", INTEGER, game.game_id),
+                    Field("GSTA", INTEGER, game.state),
+                ]
+            ),
+        )
+        return [setup, host, pre_game]
 
     def create_game(self, request: bytes, state: ClientState) -> list[bytes]:
         """"Créer un match", once the search has found nobody.
