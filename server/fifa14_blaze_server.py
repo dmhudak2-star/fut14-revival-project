@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import os
 import re
 import signal
 import socket
@@ -157,6 +158,7 @@ GAME_MANAGER_CANCEL_MATCHMAKING = 14
 # instead. Sending 10 to announce a match would end the search, not start one.
 NOTIFY_GAME_SETUP = 20
 NOTIFY_PLATFORM_HOST_INITIALIZED = 71
+NOTIFY_PLAYER_JOINING = 21
 NOTIFY_PLAYER_JOIN_COMPLETED = 30
 NOTIFY_GAME_STATE_CHANGE = 100
 NOTIFY_MATCHMAKING_FAILED = 10
@@ -177,8 +179,13 @@ PLAYER_STATE_ACTIVE_CONNECTED = 4
 # DatalessSetupContext. A game the client asked for itself is therefore
 # union index 0 carrying {DCTX: 0}; a matchmade one would be index 3.
 SETUP_REASON_DATALESS = 0
+SETUP_REASON_MATCHMAKING = 3
+
+# The made-up opponent's nucleus id. Far from any real one.
+SYNTHETIC_PERSONA = 1_000_002
 SETUP_CONTEXT_CREATE_GAME = 0
 
+MATCHMAKING_SUCCESS_CREATED_GAME = 0
 MATCHMAKING_SESSION_TIMED_OUT = 3
 MATCHMAKING_SESSION_CANCELED = 4
 
@@ -1071,6 +1078,25 @@ def response_frame(
     return bytes(result)
 
 
+def test_opponent() -> str:
+    """The name of an opponent this server will invent, or nothing.
+
+    There is nobody else here to be matched with, so a search honestly times
+    out. That leaves one question unanswerable with a single console: how far
+    does the title get into a match before it needs a peer that answers UDP?
+    Every Blaze-side layout -- the roster, the setup reason, the two join
+    notifications -- can be wrong in ways that look identical to a network
+    failure from the outside, and telling those two apart is the entire
+    reason this exists.
+
+    So it is deliberate, named, and off by default. `FIFA14_TEST_OPPONENT=Bob`
+    makes a search find Bob. Nothing about it pretends to be a real player:
+    the address it carries is not reachable and is not meant to be, and every
+    frame it causes is journalled as synthetic.
+    """
+    return os.environ.get("FIFA14_TEST_OPPONENT", "").strip()
+
+
 def notification_frame(component: int, command: int, payload: bytes) -> bytes:
     return encode_frame(component, command, 0, NOTIFICATION, 0, payload)
 
@@ -1117,6 +1143,10 @@ class Fifa14Protocol:
         # Who is connected, and who wants the census pushed to them.
         self.live: dict[int, ClientState] = {}
         self.census: dict[int, ClientState] = {}
+        # What each search asked for, kept so that a search which finds
+        # somebody can build the game out of the client's own parameters
+        # rather than out of invented ones.
+        self.searches: dict[int, HostedGame] = {}
         # The census is pushed on a heartbeat as well as on change. The
         # numbers were right the first time and the screen still read zero:
         # the one push went out at boot, seconds after the console connected
@@ -1211,7 +1241,10 @@ class Fifa14Protocol:
         """
         frame = self.census_notification()
         for state in list(self.census.values()):
-            state.push(frame)
+            if state.push(frame):
+                # Pushed frames were going out unrecorded, which made a
+                # heartbeat that was working look like one that had stopped.
+                self.logger.frame("notification", state, frame)
 
     def stop(self) -> None:
         """Stop every timer this protocol still owns.
@@ -1807,7 +1840,87 @@ class Fifa14Protocol:
             fields.append(Field("PNET", UNION, game.host_address))
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
-    def game_setup_notifications(self, game: HostedGame) -> list[bytes]:
+    def setup_reason(self, session: int) -> tuple:
+        """Why this game exists, in the shape the client asks for.
+
+        A game the console asked for itself is union index 0 -- a dataless
+        context whose one member says CREATE_GAME. A game a search found is
+        index 3, and carries the session it belongs to and a fit score.
+        `USID` is not in either, whatever the published tables say.
+        """
+        if not session:
+            return (
+                SETUP_REASON_DATALESS,
+                Field("VALU", STRUCT, [
+                    Field("DCTX", INTEGER, SETUP_CONTEXT_CREATE_GAME),
+                ]),
+            )
+        return (
+            SETUP_REASON_MATCHMAKING,
+            Field("VALU", STRUCT, [
+                Field("FIT", INTEGER, 100),
+                Field("MAXF", INTEGER, 100),
+                Field("MSID", INTEGER, session),
+                Field("RSLT", INTEGER, MATCHMAKING_SUCCESS_CREATED_GAME),
+            ]),
+        )
+
+    def synthetic_player(self, game: HostedGame) -> list[Field]:
+        """An opponent this server made up, and says so.
+
+        Its address is a well-formed XNADDR that leads nowhere: a LAN address
+        nothing answers on, port 3074, and a MAC in the locally-administered
+        range so it cannot collide with real hardware. If the console tries to
+        dial it, it will fail -- and *where* it fails is the measurement.
+        """
+        address = bytes([192, 168, 1, 200]) + bytes([0, 0, 0, 0]) + bytes([0x0C, 0x02])
+        address += bytes.fromhex("02005e000001") + bytes(20)
+        fields = [
+            Field("CONG", INTEGER, SYNTHETIC_PERSONA),
+            Field("CSID", INTEGER, 1),
+            Field("EXID", INTEGER, SYNTHETIC_PERSONA),
+            Field("GID", INTEGER, game.game_id),
+            Field("LOC", INTEGER, LOCALE),
+            Field("NAME", STRING, test_opponent() or "Sparring"),
+            Field("PID", INTEGER, SYNTHETIC_PERSONA),
+            Field("PNET", UNION, (0, Field("VALU", STRUCT, [
+                Field("MACI", INTEGER, 0),
+                Field("XDDR", BINARY, address),
+                Field("XUID", INTEGER, SYNTHETIC_PERSONA),
+            ]))),
+            Field("SID", INTEGER, 1),
+            Field("SLOT", INTEGER, 0),
+            Field("STAT", INTEGER, PLAYER_STATE_ACTIVE_CONNECTED),
+            Field("TIDX", INTEGER, 1),
+            Field("TIME", INTEGER, int(time.time())),
+        ]
+        return sorted(fields, key=lambda field: encode_tag(field.label))
+
+    def opponent_notifications(self, game: HostedGame) -> list[bytes]:
+        """Somebody joined. Told as two events, because that is how a client
+        tracks a player: one that it is happening, one that it is done."""
+        player = self.synthetic_player(game)
+        joining = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOINING,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PDAT", STRUCT, player),
+            ]),
+        )
+        joined = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOIN_COMPLETED,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PID", INTEGER, SYNTHETIC_PERSONA),
+            ]),
+        )
+        return [joining, joined]
+
+    def game_setup_notifications(
+        self, game: HostedGame, session: int = 0
+    ) -> list[bytes]:
         """`NotifyGameSetup`, and then who the host is.
 
         The five members of notification 20 are certain, including `LFPJ`,
@@ -1828,16 +1941,7 @@ class Fifa14Protocol:
                     Field("LFPJ", INTEGER, 0),
                     Field("PROS", LIST, (STRUCT, [self.replicated_game_player(game)])),
                     Field("QUEU", LIST, (STRUCT, [])),
-                    Field(
-                        "REAS",
-                        UNION,
-                        (
-                            SETUP_REASON_DATALESS,
-                            Field("VALU", STRUCT, [
-                                Field("DCTX", INTEGER, SETUP_CONTEXT_CREATE_GAME),
-                            ]),
-                        ),
-                    ),
+                    Field("REAS", UNION, self.setup_reason(session)),
                 ]
             ),
         )
@@ -1993,6 +2097,12 @@ class Fifa14Protocol:
                 return  # cancelled, or replaced by a newer search
             self.matchmaking.pop(state.connection_id, None)
             self.matchmaking_timers.pop(state.connection_id, None)
+            draft = self.searches.pop(state.connection_id, None)
+
+        opponent = test_opponent()
+        if opponent and draft is not None:
+            self.find_synthetic_opponent(state, session, draft, opponent)
+            return
         frame = notification_frame(
             GAME_MANAGER,
             NOTIFY_MATCHMAKING_FAILED,
@@ -2015,6 +2125,41 @@ class Fifa14Protocol:
             session=session,
             delivered=delivered,
         )
+
+    def find_synthetic_opponent(
+        self, state: ClientState, session: int, draft: HostedGame, opponent: str
+    ) -> None:
+        """End a search by finding somebody who does not exist.
+
+        Everything below the address is real protocol: the game is built from
+        the console's own search parameters, the setup reason says a search
+        found it, and the opponent arrives as the two events a client tracks
+        players by. Only the opponent is made up, and it is made up on purpose
+        -- until a second console exists, this is the only way to learn where
+        the title stops: in Blaze, or in the network underneath it.
+        """
+        with self.matchmaking_lock:
+            draft.game_id = self.next_game_id
+            self.next_game_id += 1
+            self.games[draft.game_id] = draft
+        frames = [
+            *self.game_setup_notifications(draft, session=session),
+            *self.opponent_notifications(draft),
+        ]
+        delivered = all(state.push(frame) for frame in frames)
+        for frame in frames:
+            self.logger.frame("notification", state, frame)
+        self.logger.event(
+            "matchmaking_found_synthetic_opponent",
+            connection=state.connection_id,
+            session=session,
+            game=draft.game_id,
+            opponent=opponent,
+            persona=SYNTHETIC_PERSONA,
+            delivered=delivered,
+            synthetic=True,
+        )
+        self.broadcast_census()
 
     def schedule_matchmaking_timeout(
         self, state: ClientState, session: int, duration_ms: int
@@ -2074,6 +2219,30 @@ class Fifa14Protocol:
             game_version=value("GVER"),
             network=json_value(network) if network is not None else None,
         )
+        # The search carries everything a game needs: the console's address,
+        # the topology, the protocol version, the settings. Kept against the
+        # session so that finding somebody does not mean inventing a game.
+        network = find_field(fields, "PNET")
+        draft = HostedGame(
+            game_id=0,
+            persona_id=state.xuid,
+            gamertag=state.gamertag,
+            protocol_version=str(value("GVER", "")),
+            topology=int(value("NTOP", 0) or 0),
+            settings=int(value("GSET", 0) or 0),
+            connection_group=state.connection_id,
+        )
+        if network is not None and isinstance(network.value, tuple):
+            active, valu = network.value
+            if valu is not None:
+                draft.host_address = (active, valu)
+                # In a list a union's members sit inline, with no VALU.
+                draft.host_addresses = Field(
+                    "HNET", LIST, (STRUCT, [(active, valu.value)])
+                )
+        with self.matchmaking_lock:
+            self.searches[state.connection_id] = draft
+
         self.schedule_matchmaking_timeout(state, session, value("DUR", 20000))
         self.broadcast_census()
         return [
