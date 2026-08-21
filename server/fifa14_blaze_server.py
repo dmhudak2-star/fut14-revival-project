@@ -42,6 +42,7 @@ from blaze_tdf import (  # noqa: E402
     LIST,
     MAP,
     STRING,
+    OBJECT_ID,
     STRUCT,
     UNION,
     VARIABLE,
@@ -358,6 +359,11 @@ class HostedGame:
     persona_id: int
     gamertag: str
     state: int = GAME_STATE_INITIALIZING
+    presence: int = 1
+    voip: int = 2
+    max_capacity: int = 2
+    queue_capacity: int = 0
+    teams: Field | None = None
     name: str = ""
     game_type: str = ""
     status_url: str = ""
@@ -1761,25 +1767,38 @@ class Fifa14Protocol:
     def close_matchmaking_session(self, state: ClientState) -> int:
         return self.forget_matchmaking(state.connection_id)
 
+    def host_info(self, game: HostedGame) -> list[Field]:
+        """Which session hosts, in the shape the game data carries it twice.
+
+        `PHST` is the platform host and `THST` the topology host, and on a
+        peer-to-peer game with one console they are the same player. With
+        neither of them present the client cannot tell whether it is the host
+        or a peer, which is one of the two ways this notification can be
+        received and quietly discarded.
+        """
+        return [
+            Field("CONG", INTEGER, game.connection_group),
+            Field("CSID", INTEGER, 0),
+            Field("HPID", INTEGER, game.persona_id),
+            Field("HSLT", INTEGER, 0),
+        ]
+
     def replicated_game_data(self, game: HostedGame) -> list[Field]:
-        """The game, as the client's own schema describes it.
+        """The game, all thirty-six members of it.
 
-        Fourteen of these tags were read out of FIFA 14's reflection tables
-        and are certain. Four more -- NTOP, PSAS, VSTR, NQOS -- have certain
-        tags read from other classes in the same binary, but their membership
-        here could not be confirmed, so they are sent on the reasoning that a
-        TDF decoder skips members it does not know and defaults the ones it
-        does not receive. Nothing else is invented: the rest of this object,
-        which is roughly 0x2e0 bytes, is simply absent from the image.
+        The first pass sent fourteen, because fourteen was all the title's
+        member table appeared to hold. It was not a partial table with the
+        rest in generated code: it is half baked into `.data` and half written
+        at startup by initialiser code that assembles each tag from a pair of
+        instructions. Searching the image for tag words could never have found
+        those, which is why `PGSC` and `RGID` looked absent while travelling
+        on the wire in this repo's own capture.
 
-        XNNC and XSES are deliberately not here. They are the XNet nonce and
-        session, and they belong to the host, which hands them over in
-        `finalizeGameCreation`. Sending empty ones would be claiming to know
-        something this server cannot know yet.
-
-        Members go out in ascending tag order because that is what the client
-        does -- the captured `createGame` runs ATTR, BTPL, CRIT ... VOIP, VSTR
-        strictly ascending.
+        Members go out in ascending tag order, which is the order the client
+        sends its own. `XNNC` and `XSES` are members and are still not sent:
+        they are the host's XNet nonce and session, and the host hands those
+        over later, in `finalizeGameCreation`. Empty ones would claim
+        knowledge this server does not have.
         """
         fields = [
             Field("ADMN", LIST, (INTEGER, [game.persona_id])),
@@ -1790,55 +1809,64 @@ class Fifa14Protocol:
             Field("GMRG", INTEGER, game.mod_register),
             Field("GNAM", STRING, game.name),
             # The protocol version *hash*, which is not the string and is not
-            # recoverable from here. Zero rather than a made-up number.
+            # recoverable from here.
             Field("GPVH", INTEGER, 0),
             Field("GSET", INTEGER, game.settings),
-            # The game-reporting id. The same number as the game is fine and
-            # is what makes a later report traceable to this game.
             Field("GSID", INTEGER, game.game_id),
             Field("GSTA", INTEGER, game.state),
             Field("GTYP", STRING, game.game_type),
             Field("GURL", STRING, game.status_url),
             game.host_addresses or Field("HNET", LIST, (STRUCT, [])),
+            # The session that hosts the topology.
+            Field("HSES", INTEGER, game.persona_id),
+            Field("IGNO", INTEGER, 0),
+            empty_map("MATR"),
+            Field("MCAP", INTEGER, game.max_capacity),
+            Field("NQOS", STRUCT, [
+                Field("DBPS", INTEGER, 0),
+                # NAT_TYPE_OPEN, which is what the console reported for itself.
+                Field("NATT", INTEGER, 0),
+                Field("UBPS", INTEGER, 0),
+            ]),
+            Field("NRES", INTEGER, 0),
+            Field("NTOP", INTEGER, game.topology),
+            Field("PGID", STRING, ""),
+            Field("PGSR", BINARY, b""),
+            Field("PHST", STRUCT, self.host_info(game)),
+            Field("PRES", INTEGER, game.presence),
+            Field("PSAS", STRING, ""),
+            Field("QCAP", INTEGER, game.queue_capacity),
+            Field("RNFO", STRUCT, [empty_map("CRIT"), empty_map("RCRT")]),
+            # The shared seed both sides randomise from. Derived from the game
+            # number so a replay of the same game is the same game.
+            Field("SEED", INTEGER, 0x5EED0000 | (game.game_id & 0xFFFF)),
+            Field("THST", STRUCT, self.host_info(game)),
+            game.teams or Field("TIDS", LIST, (INTEGER, [65534])),
+            Field("UUID", STRING, f"revival-{game.game_id:08x}"),
+            Field("VOIP", INTEGER, game.voip),
+            Field("VSTR", STRING, game.protocol_version),
         ]
-        # NQOS, NTOP, PSAS and VSTR were here, and are not any more.
-        #
-        # Their tags are certain -- read from other classes in the same binary
-        # -- but their *membership in this class* is not, and that turns out
-        # to be the dangerous half. An unknown tag is skipped harmlessly; a
-        # tag that really is a member of this class but whose type is not what
-        # was assumed desynchronises the whole struct, and a client that
-        # cannot parse the game silently drops the notification. Which is
-        # exactly the symptom: six frames delivered, no error, no
-        # disconnection, and the console still drawing "Recherche
-        # d'adversaire...".
-        #
-        # So this sends the fourteen members that were read out of the title's
-        # own reflection table and nothing else. If the console reacts, the
-        # extras were the problem and they can come back one at a time; if it
-        # does not, they never were and the missing members are.
-        if os.environ.get("FIFA14_GAME_EXTRAS", "").strip():
-            fields.extend([
-                Field("NQOS", STRUCT, [
-                    Field("DBPS", INTEGER, 0),
-                    Field("NATT", INTEGER, 0),
-                    Field("UBPS", INTEGER, 0),
-                ]),
-                Field("NTOP", INTEGER, game.topology),
-                Field("PSAS", STRING, ""),
-                Field("VSTR", STRING, game.protocol_version),
-            ])
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
     def replicated_game_player(self, game: HostedGame) -> list[Field]:
-        """The host, as a player in its own game.
+        """The host, as a player in its own game. Eighteen members, not sixteen.
 
-        All sixteen members of this one were read from the binary, and three
-        of them -- CONG, CSID, ROLE -- are in no published table for any other
-        Blaze title. Empty members are left out, which is what the client
-        does with its own.
+        The two that were missing are the ones that matter. `UID` is
+        `mPlayerSessionId` -- the user session id -- and it is how the client
+        recognises *itself* in a roster. A roster with no `UID` gives it no
+        way to match a slot to its own session, so it ends up with a game and
+        no local player in it, and drops the setup without an error and
+        without a word. Which was the symptom exactly: six frames delivered,
+        nothing wrong, nothing happening.
+
+        That reading of what `mPlayerSessionId` is for is a hypothesis, not
+        something read out of the client's dispatch. It is a hypothesis with a
+        one-field test.
         """
         fields = [
+            Field("UGID", OBJECT_ID, (0, 0, 0)),
+            # The same id the login notifications gave this session.
+            Field("UID", INTEGER, game.persona_id),
             Field("CONG", INTEGER, game.connection_group),
             Field("CSID", INTEGER, 0),
             Field("EXID", INTEGER, game.persona_id),
@@ -1864,16 +1892,13 @@ class Fifa14Protocol:
         context whose one member says CREATE_GAME. A game a search found is
         index 3, and carries the session it belongs to and a fit score.
         `USID` is not in either, whatever the published tables say.
+
+        Both halves are settled rather than inferred now: three candidate
+        member arrays sit together in the binary and the one at 0x83CDCA98 is
+        MatchmakingSetupContext, the six-member one is the indirect variant,
+        and the three-member one was never a setup context at all -- it is
+        NotifyMatchmakingFailed, which is why it looked like a candidate.
         """
-        # `FIFA14_SETUP_REASON=0` forces the dataless context onto a
-        # matchmade game. It is a probe, not a fix: the union index and the
-        # member set of MatchmakingSetupContext are the one part of this
-        # notification the binary could not settle -- three candidate tables
-        # sit in that region and nothing labels which class each belongs to --
-        # and a REAS the client cannot parse drops the whole notification just
-        # as surely as a bad GAME does. This tells the two apart.
-        if os.environ.get("FIFA14_SETUP_REASON", "").strip() == "0":
-            session = 0
         if not session:
             return (
                 SETUP_REASON_DATALESS,
@@ -1902,6 +1927,8 @@ class Fifa14Protocol:
         address = bytes([192, 168, 1, 200]) + bytes([0, 0, 0, 0]) + bytes([0x0C, 0x02])
         address += bytes.fromhex("02005e000001") + bytes(20)
         fields = [
+            Field("UGID", OBJECT_ID, (0, 0, 0)),
+            Field("UID", INTEGER, SYNTHETIC_PERSONA),
             Field("CONG", INTEGER, SYNTHETIC_PERSONA),
             Field("CSID", INTEGER, 1),
             Field("EXID", INTEGER, SYNTHETIC_PERSONA),
