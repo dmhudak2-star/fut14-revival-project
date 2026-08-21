@@ -73,6 +73,14 @@ GAME_REPORTING = 28
 
 GAME_REPORTING_SUBMIT_OFFLINE = 2
 USER_SESSIONS_RESUME = 35
+# The two lookups. Named from the payloads the title actually sends: command
+# 12 carries a single UserIdentification (AID/ALOC/EXBB/EXID/ID/NAME/ORIG/PIDI)
+# and command 13 carries LTYP plus a list of them. That is Blaze's lookupUser
+# and lookupUsers, and the reply shape is the client's own vocabulary --
+# NotifyUserAdded already pairs DATA with USER, so a looked-up user is that
+# same pair.
+USER_SESSIONS_LOOKUP_USER = 12
+USER_SESSIONS_LOOKUP_USERS = 13
 GAME_REPORTING_RESULT_NOTIFICATION = 114
 REDIRECTOR_GET_SERVER_INSTANCE = 1
 UTIL_FETCH_CONFIG = 1
@@ -92,6 +100,14 @@ AUTH_GET_ACCOUNT = 30
 AUTH_HAS_ENTITLEMENT = 33
 AUTH_LIST_ENTITLEMENTS = 32
 AUTH_LIST_USER_ENTITLEMENTS_2 = 29
+# Command 48 is command 32's payload with a PID and a fuller filter set, so
+# the same list for one named persona. Command 39 carries a whole entitlement
+# -- PJID 307354, TYPE 5, STAT 1 -- which is a grant. Both are acknowledged
+# without inventing an entitlement: this server has none to give, and
+# answering "granted" to a grant it did not perform is exactly the kind of
+# fake progress that costs a week to unpick later.
+AUTH_LIST_ENTITLEMENTS_FOR_PERSONA = 48
+AUTH_GRANT_ENTITLEMENT = 39
 AUTH_GET_TOS_INFO = 42
 AUTH_LOGOUT = 70
 AUTH_XBOX_LOGIN = 170
@@ -104,9 +120,18 @@ USER_UPDATE_NETWORK_INFO = 20
 
 STATS_GET_STAT_GROUP_LIST = 3
 STATS_GET_KEY_SCOPES_MAP = 15
+# Leaderboards. Command 10 arrives as LBID plus NAME ("SkillGame41"), which is
+# a request for one leaderboard's descriptor; command 13 arrives as CENT (the
+# persona to centre on), COUN 100, BOTT, POFF, TIME -- a centred leaderboard
+# page. Both are acknowledged and nothing more: the row and column structures
+# are not known, and a guessed one reads no better than an empty reply while
+# risking a mis-parse. Settling them needs a capture of a retail response.
+STATS_GET_LEADERBOARD_GROUP = 10
+STATS_GET_CENTERED_LEADERBOARD = 13
 STATS_GET_PERIOD_IDS = 20
 
 CENSUS_SUBSCRIBE = 1
+CENSUS_UNSUBSCRIBE = 2
 
 CLUBS_GET_INVITATIONS = 1600
 CLUBS_GET_COMPONENT_SETTINGS = 2600
@@ -115,6 +140,13 @@ MESSAGING_FETCH_MESSAGES = 2
 MESSAGING_GET_MESSAGES = 5
 
 ROOMS_SELECT_VIEW_UPDATES = 10
+# VWID -- the same shape as SELECT_VIEW_UPDATES one command earlier, so a
+# category subscription rather than a view one.
+ROOMS_SELECT_CATEGORY_UPDATES = 11
+# A single ENBL flag. Which switch it is, is not established; what is
+# established is that the title sends it on its way to the main menu and
+# carries on regardless of the answer.
+ROOMS_SET_ENABLED = 150
 
 ASSOCIATION_GET_LISTS = 6
 
@@ -1329,13 +1361,7 @@ class Fifa14Protocol:
             ]
         )
 
-        user_identification = [
-            Field("AID", INTEGER, state.xuid),
-            Field("ALOC", INTEGER, 1718765138),
-            Field("EXID", INTEGER, state.xuid),
-            Field("ID", INTEGER, state.xuid),
-            Field("NAME", STRING, state.gamertag),
-        ]
+        user_identification = self.user_identification(state.xuid, state.gamertag)
 
         user_added = notification_frame(
             USER_SESSIONS,
@@ -1346,10 +1372,7 @@ class Fifa14Protocol:
                         "DATA",
                         STRUCT,
                         [
-                            Field("BPS", STRING, "ams"),
-                            Field("CTY", STRING, "FR"),
-                            Field("HWFG", INTEGER, 0),
-                            Field("UATT", INTEGER, 0),
+                            *self.session_extended_data(),
                         ],
                     ),
                     Field("USER", STRUCT, user_identification),
@@ -1428,6 +1451,95 @@ class Fifa14Protocol:
         )
         return [response_frame(request, login), *notifications]
 
+    def user_identification(self, xuid: int, name: str) -> list[Field]:
+        """One player, in the shape both sides of this protocol use for them.
+
+        The Xbox login and the session notifications each built this inline,
+        and the two lookups below need the same thing. Two spellings of one
+        player drifting apart is how a squad screen came back with eleven
+        blank cards once already, so there is one.
+        """
+        return [
+            Field("AID", INTEGER, xuid),
+            Field("ALOC", INTEGER, 1718765138),
+            Field("EXID", INTEGER, xuid),
+            Field("ID", INTEGER, xuid),
+            Field("NAME", STRING, name),
+        ]
+
+    def session_extended_data(self) -> list[Field]:
+        """The extended session data that rides along with a user."""
+        return [
+            Field("BPS", STRING, "ams"),
+            Field("CTY", STRING, "FR"),
+            Field("HWFG", INTEGER, 0),
+            Field("UATT", INTEGER, 0),
+        ]
+
+    def user_data(self, xuid: int, name: str) -> list[Field]:
+        """A looked-up player: the pair NotifyUserAdded already sends."""
+        return [
+            Field("DATA", STRUCT, self.session_extended_data()),
+            Field("USER", STRUCT, self.user_identification(xuid, name)),
+        ]
+
+    def resolve_persona(self, persona_id: int, state: ClientState) -> tuple[int, str]:
+        """Who a nucleus id belongs to, or the asking connection itself.
+
+        A lookup for id 0 -- what the title sends when it is asking about
+        itself -- resolves to the connection making it. A real id is read
+        from the account store that persona owns, so that with a second
+        player on this server their name comes back theirs rather than
+        whoever logged in last.
+        """
+        if not persona_id or persona_id == state.xuid:
+            return state.xuid, state.gamertag
+        stored_id, stored_name = self.accounts.get(persona_id).load_identity()
+        if stored_id == persona_id and stored_name:
+            return stored_id, stored_name
+        return 0, ""
+
+    def lookup_user(self, request: bytes, state: ClientState) -> bytes:
+        """One user, by identification.
+
+        The title sends a UserIdentification with everything zeroed but the
+        name: it is asking about itself, on the way to a screen that wants to
+        print its own gamertag. Of the nine routes this server was answering
+        with a fieldless success, this is the one where the empty reply
+        plainly threw away something the server had in hand.
+        """
+        decoded = decode_frame(request)
+        asked = find_field(decoded["fields"], "ID")
+        persona = int(asked.value) if asked is not None else 0
+        xuid, name = self.resolve_persona(persona, state)
+        if not xuid:
+            return response_frame(request)
+        return response_frame(request, encode_fields(self.user_data(xuid, name)))
+
+    def lookup_users(self, request: bytes, state: ClientState) -> bytes:
+        """The same, in bulk.
+
+        `ULST` on the way in is a list of identifications, so it is `ULST` on
+        the way back carrying user data. Entries this server cannot name are
+        left out rather than answered with somebody else's identity: a lookup
+        that quietly returns the wrong player is worse than one that returns
+        nobody.
+        """
+        decoded = decode_frame(request)
+        requested = find_field(decoded["fields"], "ULST")
+        listed = requested.value[1] if requested is not None else []
+        entries: list[list[Field]] = []
+        for entry in listed or []:
+            identifier = find_field(entry, "ID") if isinstance(entry, list) else None
+            persona = int(identifier.value) if identifier is not None else 0
+            xuid, name = self.resolve_persona(persona, state)
+            if xuid:
+                entries.append(self.user_data(xuid, name))
+        return response_frame(
+            request,
+            encode_fields([Field("ULST", LIST, (STRUCT, entries))]),
+        )
+
     def session_notifications(self, state: ClientState) -> list[bytes]:
         """The three notifications that tell a connection whose it is.
 
@@ -1438,13 +1550,7 @@ class Fifa14Protocol:
         what "EAS FC non connecté" means from its side.
         """
         now = int(time.time())
-        user_identification = [
-            Field("AID", INTEGER, state.xuid),
-            Field("ALOC", INTEGER, 1718765138),
-            Field("EXID", INTEGER, state.xuid),
-            Field("ID", INTEGER, state.xuid),
-            Field("NAME", STRING, state.gamertag),
-        ]
+        user_identification = self.user_identification(state.xuid, state.gamertag)
         # FIFA 14 maps notification 8 to UserAuthenticated, but its payload is
         # the executable's 0x88-byte UserSessionLoginInfo, not the smaller
         # SUBS/BUID shape found in another legacy Blaze schema.  The native
@@ -1485,10 +1591,7 @@ class Fifa14Protocol:
                         "DATA",
                         STRUCT,
                         [
-                            Field("BPS", STRING, "ams"),
-                            Field("CTY", STRING, "FR"),
-                            Field("HWFG", INTEGER, 0),
-                            Field("UATT", INTEGER, 0),
+                            *self.session_extended_data(),
                         ],
                     ),
                     Field("USER", STRUCT, user_identification),
@@ -1504,10 +1607,7 @@ class Fifa14Protocol:
                         "DATA",
                         STRUCT,
                         [
-                            Field("BPS", STRING, "ams"),
-                            Field("CTY", STRING, "FR"),
-                            Field("HWFG", INTEGER, 0),
-                            Field("UATT", INTEGER, 0),
+                            *self.session_extended_data(),
                         ],
                     ),
                     # FIFA 14's retail UserSessionExtendedDataUpdate is a
@@ -1808,9 +1908,30 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (USER_SESSIONS, USER_SESSIONS_LOOKUP_USER):
+            return [self.lookup_user(request, state)]
+        if route == (USER_SESSIONS, USER_SESSIONS_LOOKUP_USERS):
+            return [self.lookup_users(request, state)]
+        # Routes the title sends and then carries on from whatever comes back.
+        #
+        # They were already answered exactly like this: the fallback at the
+        # bottom of this method returns the same fieldless success. So nothing
+        # about the game changes by naming them here. What changes is the
+        # journal -- each was written as `unknown_route` several times a
+        # session, and that list is meant to be what is left to build. Nine
+        # known-and-harmless routes sitting at the top of it would bury the
+        # first GameManager line the day it finally appears, and that line is
+        # the entire reason for looking at the list.
         if route in {
             (CENSUS_DATA, CENSUS_SUBSCRIBE),
+            (CENSUS_DATA, CENSUS_UNSUBSCRIBE),
             (ROOMS, ROOMS_SELECT_VIEW_UPDATES),
+            (ROOMS, ROOMS_SELECT_CATEGORY_UPDATES),
+            (ROOMS, ROOMS_SET_ENABLED),
+            (STATS, STATS_GET_LEADERBOARD_GROUP),
+            (STATS, STATS_GET_CENTERED_LEADERBOARD),
+            (AUTHENTICATION, AUTH_LIST_ENTITLEMENTS_FOR_PERSONA),
+            (AUTHENTICATION, AUTH_GRANT_ENTITLEMENT),
         }:
             return [response_frame(request)]
         if route == (OSDK_SETTINGS, OSDK_SETTINGS_FETCH_SETTINGS):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import json
 import importlib.util
 import os
 import socket
@@ -1953,3 +1954,132 @@ class AccountStoreTenancyTests(unittest.TestCase):
         accounts = SERVER.AccountStores()
         self.assertIs(accounts.get(111), accounts.get(111))
         self.assertIsNot(accounts.get(111), accounts.get(222))
+
+
+class RoutesTheTitleAsksForTests(unittest.TestCase):
+    """The nine routes the journal kept writing down as unknown.
+
+    They were found the way they should be found: the server writes
+    `unknown_route` every time the title sends a component and command it has
+    no handler for, so between that and the 404s on the identity port the game
+    keeps its own list of what is missing. These are what was on it.
+
+    Seven of them are acknowledged and nothing more, which is exactly what the
+    fallback already did -- naming them is about the list, not the game. The
+    two lookups are different: the server knew the answer and was throwing it
+    away.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.accounts = SERVER.AccountStores(Path(self.temp.name) / "account.json")
+        self.protocol = SERVER.Fifa14Protocol(
+            "192.0.2.35", 10041, self.journal, accounts=self.accounts
+        )
+        self.state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.gamertag = "Imskobogota6z"
+        self.state.authenticated = True
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def unknown_routes(self) -> list[tuple[int, int]]:
+        # The journal is opened on the first line written, so no file at all
+        # is the strongest form of "nothing was unknown".
+        path = Path(self.temp.name) / "journal.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text().splitlines()
+        return [
+            (json.loads(line)["component"], json.loads(line)["command"])
+            for line in lines
+            if json.loads(line).get("event") == "unknown_route"
+        ]
+
+    def test_a_user_looks_itself_up_and_gets_its_own_name(self) -> None:
+        """The title asks with everything zeroed: it means itself."""
+        response = self.protocol.handle(
+            request(0x7802, 12, [
+                Field("ID", INTEGER, 0),
+                Field("NAME", STRING, "Imskobogota6z"),
+            ]),
+            self.state,
+        )[0]
+        decoded = decode_frame(response)
+        user = by_label(decoded, "USER")
+        self.assertEqual(SERVER.find_field(user.value, "NAME").value, "Imskobogota6z")
+        self.assertEqual(
+            SERVER.find_field(user.value, "ID").value, 2535469248587161
+        )
+        # And the extended data the client pairs with a user everywhere else.
+        self.assertIsNotNone(by_label(decoded, "DATA"))
+
+    def test_a_bulk_lookup_answers_in_the_label_it_was_asked_in(self) -> None:
+        response = self.protocol.handle(
+            request(0x7802, 13, [
+                Field("LTYP", INTEGER, 1),
+                Field("ULST", LIST, (STRUCT, [
+                    [Field("ID", INTEGER, 0), Field("NAME", STRING, "")],
+                ])),
+            ]),
+            self.state,
+        )[0]
+        decoded = decode_frame(response)
+        item_type, entries = by_label(decoded, "ULST").value
+        self.assertEqual(item_type, STRUCT)
+        self.assertEqual(len(entries), 1)
+        user = SERVER.find_field(entries[0], "USER")
+        self.assertEqual(
+            SERVER.find_field(user.value, "NAME").value, "Imskobogota6z"
+        )
+
+    def test_a_lookup_for_a_stranger_returns_nobody_rather_than_the_asker(self) -> None:
+        """Answering "that is me" to a question about someone else is worse
+        than answering nothing: it would make two clubs one player."""
+        response = self.protocol.handle(
+            request(0x7802, 13, [
+                Field("ULST", LIST, (STRUCT, [
+                    [Field("ID", INTEGER, 999_000_111)],
+                ])),
+            ]),
+            self.state,
+        )[0]
+        _, entries = by_label(decode_frame(response), "ULST").value
+        self.assertEqual(entries, [])
+
+    def test_a_lookup_finds_the_other_player_on_this_server(self) -> None:
+        """With a second club present, its own name comes back -- not the
+        name of whoever logged in last, which is what one shared store did."""
+        self.accounts.get(700_100).save_identity(700_100, "Racim")
+        response = self.protocol.handle(
+            request(0x7802, 12, [Field("ID", INTEGER, 700_100)]),
+            self.state,
+        )[0]
+        user = by_label(decode_frame(response), "USER")
+        self.assertEqual(SERVER.find_field(user.value, "NAME").value, "Racim")
+
+    def test_the_seven_quiet_routes_stop_being_written_down_as_unknown(self) -> None:
+        quiet = [
+            (10, 2),    # CensusData, unsubscribe
+            (21, 11),   # Rooms, category updates
+            (21, 150),  # Rooms, an ENBL toggle
+            (7, 10),    # Stats, a leaderboard descriptor
+            (7, 13),    # Stats, a centred leaderboard page
+            (1, 48),    # Authentication, entitlements for one persona
+            (1, 39),    # Authentication, an entitlement grant
+        ]
+        for component, command in quiet:
+            answered = self.protocol.handle(request(component, command), self.state)
+            self.assertEqual(len(answered), 1, (component, command))
+            # Still a success, and still carrying nothing -- the point is the
+            # journal, not the payload.
+            self.assertEqual(decode_frame(answered[0])["error"], 0)
+        self.assertEqual(self.unknown_routes(), [])
+
+    def test_a_route_nobody_has_implemented_is_still_written_down(self) -> None:
+        """GameManager is component 4, and the day it appears in this list is
+        the day the online modes start asking to exist."""
+        self.protocol.handle(request(4, 60), self.state)
+        self.assertEqual(self.unknown_routes(), [(4, 60)])
