@@ -43,6 +43,7 @@ from blaze_tdf import (  # noqa: E402
     STRING,
     STRUCT,
     UNION,
+    VARIABLE,
     Decoder,
     Field,
     decode_frame,
@@ -180,6 +181,14 @@ SETUP_CONTEXT_CREATE_GAME = 0
 
 MATCHMAKING_SESSION_TIMED_OUT = 3
 MATCHMAKING_SESSION_CANCELED = 4
+
+# Census. The two counters at the top of the Face-à-Face screen -- "Joueurs en
+# ligne" and "En cours de partie" -- read zero because this server answered the
+# subscription with a fieldless success and then never pushed anything. The
+# names below are the title's own compiled-in member names, not a reading of
+# what a field might mean.
+NOTIFY_SERVER_CENSUS_DATA = 1
+GAME_MANAGER_CENSUS_TDF_ID = 0x21239231
 
 CENSUS_SUBSCRIBE = 1
 CENSUS_UNSUBSCRIBE = 2
@@ -1105,6 +1114,79 @@ class Fifa14Protocol:
         # same reason a session id is: a fieldless success decodes as 0.
         self.next_game_id = 1
         self.games: dict[int, HostedGame] = {}
+        # Who is connected, and who wants the census pushed to them.
+        self.live: dict[int, ClientState] = {}
+        self.census: dict[int, ClientState] = {}
+
+    def remember_connection(self, state: ClientState) -> None:
+        self.live[state.connection_id] = state
+
+    def forget_connection(self, state: ClientState) -> None:
+        """A connection has gone: it is not online, not searching, not a
+        census subscriber, and its games are nobody's."""
+        self.live.pop(state.connection_id, None)
+        self.census.pop(state.connection_id, None)
+        self.forget_matchmaking(state.connection_id)
+        with self.matchmaking_lock:
+            gone = [
+                game_id for game_id, game in self.games.items()
+                if game.connection_group == state.connection_id
+            ]
+            for game_id in gone:
+                self.games.pop(game_id, None)
+        if gone:
+            self.broadcast_census()
+
+    def census_snapshot(self) -> list[Field]:
+        """What this server can honestly say about itself.
+
+        Every number here is counted, not invented. With one console online
+        `LSN` is 1, and 1 is the truth -- which is the whole difference from
+        the 0 the screen has been showing.
+        """
+        players = {
+            state.xuid for state in self.live.values()
+            if state.authenticated and state.xuid
+        }
+        return [
+            Field("AGN", INTEGER, len(self.games)),
+            Field("GACD", LIST, (STRUCT, [])),
+            Field("JPN", INTEGER, sum(1 for _ in self.games)),
+            Field("LSN", INTEGER, len(players)),
+            Field("MMSN", INTEGER, len(self.matchmaking)),
+        ]
+
+    def census_notification(self) -> bytes:
+        """`NotifyServerCensusData`, which is a list of variable TDFs.
+
+        The outer list is `TDFL` and each element holds one `TDF` -- a
+        variable, meaning it carries the class id of whatever census payload
+        it is. Several classes register one: the user manager, the clubs
+        component. This one is GameManager's, id 0x21239231, and it is the one
+        holding the two numbers the screen shows.
+        """
+        item = [
+            Field(
+                "TDF",
+                VARIABLE,
+                (GAME_MANAGER_CENSUS_TDF_ID, self.census_snapshot()),
+            )
+        ]
+        return notification_frame(
+            CENSUS_DATA,
+            NOTIFY_SERVER_CENSUS_DATA,
+            encode_fields([Field("TDFL", LIST, (STRUCT, [item]))]),
+        )
+
+    def broadcast_census(self) -> None:
+        """Tell every subscriber the numbers moved.
+
+        The screen is push-refreshed -- the title has a census-update UI event
+        -- so a number that changes has to be sent, not waited for.
+        """
+        frame = self.census_notification()
+        for state in list(self.census.values()):
+            state.push(frame)
 
     def stop(self) -> None:
         """Stop every timer this protocol still owns.
@@ -1844,6 +1926,7 @@ class Fifa14Protocol:
         )
         with self.matchmaking_lock:
             self.games[game_id] = game
+        self.broadcast_census()
         self.logger.event(
             "game_created",
             connection=state.connection_id,
@@ -1894,6 +1977,7 @@ class Fifa14Protocol:
         delivered = state.push(frame)
         if delivered:
             self.logger.frame("notification", state, frame)
+        self.broadcast_census()
         self.logger.event(
             "matchmaking_timed_out",
             connection=state.connection_id,
@@ -1960,6 +2044,7 @@ class Fifa14Protocol:
             network=json_value(network) if network is not None else None,
         )
         self.schedule_matchmaking_timeout(state, session, value("DUR", 20000))
+        self.broadcast_census()
         return [
             response_frame(request, encode_fields([Field("MSID", INTEGER, session)])),
             notification_frame(
@@ -1989,6 +2074,7 @@ class Fifa14Protocol:
         by either returning to the menu or hanging.
         """
         session = self.close_matchmaking_session(state)
+        self.broadcast_census()
         self.logger.event(
             "matchmaking_cancelled",
             connection=state.connection_id,
@@ -2488,9 +2574,14 @@ class Fifa14Protocol:
         # known-and-harmless routes sitting at the top of it would bury the
         # first GameManager line the day it finally appears, and that line is
         # the entire reason for looking at the list.
+        if route == (CENSUS_DATA, CENSUS_SUBSCRIBE):
+            self.census[state.connection_id] = state
+            # Pushed with the reply so the first paint already has numbers.
+            return [response_frame(request), self.census_notification()]
+        if route == (CENSUS_DATA, CENSUS_UNSUBSCRIBE):
+            self.census.pop(state.connection_id, None)
+            return [response_frame(request)]
         if route in {
-            (CENSUS_DATA, CENSUS_SUBSCRIBE),
-            (CENSUS_DATA, CENSUS_UNSUBSCRIBE),
             (ROOMS, ROOMS_SELECT_VIEW_UPDATES),
             (ROOMS, ROOMS_SELECT_CATEGORY_UPDATES),
             (ROOMS, ROOMS_SET_ENABLED),
@@ -4806,6 +4897,7 @@ class BlazeService:
         # replaced `client` with the wrapped socket, and pushing through the
         # raw one would put plaintext frames on an encrypted connection.
         state.channel = client
+        self.protocol.remember_connection(state)
         buffer = bytearray()
         try:
             while not self.stop_event.is_set():
@@ -4859,6 +4951,7 @@ class BlazeService:
             )
         finally:
             state.channel = None
+            self.protocol.forget_connection(state)
             try:
                 client.close()
             except OSError:
