@@ -369,12 +369,19 @@ class HostedGame:
     game_id: int
     persona_id: int
     gamertag: str
+    # The connection the host is on, so the server can tell it about anybody
+    # who joins later.
+    host_state: Any = None
     # Who is in this game, by connection group, and which of them have said
     # they can see the mesh. Both are needed: "everything reported is
     # connected" is true of a game with one player in it and nobody to play,
     # which started a match against nobody the first time it was written.
     roster: list = field(default_factory=list)
     mesh: dict = field(default_factory=dict)
+    # Everybody in the game, in join order, and the connection each is on so
+    # the server can tell one player about another. A peer-to-peer game needs
+    # exactly this and nothing more from a server: introductions.
+    members: list = field(default_factory=list)
     # Handed over by the host in finalizeGameCreation once its console has
     # built the session. This is the blob a second console needs to dial in.
     xnet_nonce: bytes = b""
@@ -1869,6 +1876,43 @@ class Fifa14Protocol:
         ]
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
+    def member(self, game: HostedGame, persona: int, gamertag: str,
+               group: int, address: Any, slot: int, team: int,
+               state: ClientState | None = None) -> dict:
+        """One player in a game, and how to reach them."""
+        return {
+            "persona": int(persona),
+            "gamertag": str(gamertag),
+            "group": int(group),
+            "address": address,
+            "slot": int(slot),
+            "team": int(team),
+            "state": state,
+        }
+
+    def member_player(self, game: HostedGame, member: dict) -> list[Field]:
+        """A roster entry, from a member record."""
+        fields = [
+            Field("CONG", INTEGER, member["group"]),
+            Field("CSID", INTEGER, member["slot"]),
+            Field("EXID", INTEGER, member["persona"]),
+            Field("GID", INTEGER, game.game_id),
+            Field("LOC", INTEGER, LOCALE),
+            Field("NAME", STRING, member["gamertag"]),
+            Field("PID", INTEGER, member["persona"]),
+            Field("SID", INTEGER, member["slot"]),
+            Field("SLOT", INTEGER, 0),
+            Field("STAT", INTEGER, PLAYER_STATE_ACTIVE_CONNECTED),
+            Field("TIDX", INTEGER, member["team"]),
+            Field("TIME", INTEGER, int(time.time())),
+            Field("UGID", OBJECT_ID, (0, 0, 0)),
+            # mPlayerSessionId: how a client recognises itself in a roster.
+            Field("UID", INTEGER, member["persona"]),
+        ]
+        if member["address"] is not None:
+            fields.append(Field("PNET", UNION, member["address"]))
+        return sorted(fields, key=lambda field: encode_tag(field.label))
+
     def replicated_game_player(self, game: HostedGame) -> list[Field]:
         """The host, as a player in its own game. Eighteen members, not sixteen.
 
@@ -1937,6 +1981,22 @@ class Fifa14Protocol:
             ]),
         )
 
+    def synthetic_address(self) -> tuple:
+        """A well-formed XNADDR that leads nowhere.
+
+        A LAN address nothing answers on, port 3074, and a MAC in the
+        locally-administered range so it cannot collide with real hardware.
+        If the console dials it, it fails -- and where it fails is the
+        measurement.
+        """
+        address = bytes([192, 168, 1, 200]) + bytes(4) + bytes([0x0C, 0x02])
+        address += bytes.fromhex("02005e000001") + bytes(20)
+        return (0, Field("VALU", STRUCT, [
+            Field("MACI", INTEGER, 0),
+            Field("XDDR", BINARY, address),
+            Field("XUID", INTEGER, SYNTHETIC_PERSONA),
+        ]))
+
     def synthetic_player(self, game: HostedGame) -> list[Field]:
         """An opponent this server made up, and says so.
 
@@ -1945,8 +2005,6 @@ class Fifa14Protocol:
         range so it cannot collide with real hardware. If the console tries to
         dial it, it will fail -- and *where* it fails is the measurement.
         """
-        address = bytes([192, 168, 1, 200]) + bytes([0, 0, 0, 0]) + bytes([0x0C, 0x02])
-        address += bytes.fromhex("02005e000001") + bytes(20)
         fields = [
             Field("UGID", OBJECT_ID, (0, 0, 0)),
             Field("UID", INTEGER, SYNTHETIC_PERSONA),
@@ -1957,11 +2015,7 @@ class Fifa14Protocol:
             Field("LOC", INTEGER, LOCALE),
             Field("NAME", STRING, test_opponent() or "Sparring"),
             Field("PID", INTEGER, SYNTHETIC_PERSONA),
-            Field("PNET", UNION, (0, Field("VALU", STRUCT, [
-                Field("MACI", INTEGER, 0),
-                Field("XDDR", BINARY, address),
-                Field("XUID", INTEGER, SYNTHETIC_PERSONA),
-            ]))),
+            Field("PNET", UNION, self.synthetic_address()),
             Field("SID", INTEGER, 1),
             Field("SLOT", INTEGER, 0),
             Field("STAT", INTEGER, PLAYER_STATE_ACTIVE_CONNECTED),
@@ -2013,7 +2067,9 @@ class Fifa14Protocol:
                 [
                     Field("GAME", STRUCT, self.replicated_game_data(game)),
                     Field("LFPJ", INTEGER, 0),
-                    Field("PROS", LIST, (STRUCT, [self.replicated_game_player(game)])),
+                    Field("PROS", LIST, (STRUCT, [
+                        self.member_player(game, member) for member in game.members
+                    ] or [self.replicated_game_player(game)])),
                     Field("QUEU", LIST, (STRUCT, [])),
                     Field("REAS", UNION, self.setup_reason(session)),
                 ]
@@ -2134,6 +2190,11 @@ class Fifa14Protocol:
             connection_group=state.connection_id,
         )
         game.roster = [state.connection_id]
+        game.host_state = state
+        game.members = [self.member(
+            game, state.xuid, state.gamertag, state.connection_id,
+            host_address, slot=0, team=0, state=state,
+        )]
         with self.matchmaking_lock:
             self.games[game_id] = game
         self.broadcast_census()
@@ -2336,6 +2397,14 @@ class Fifa14Protocol:
         the title stops: in Blaze, or in the network underneath it.
         """
         draft.roster = [draft.connection_group, SYNTHETIC_PERSONA]
+        draft.host_state = state
+        draft.members = [
+            self.member(draft, state.xuid, state.gamertag,
+                        draft.connection_group, draft.host_address,
+                        slot=0, team=0, state=state),
+            self.member(draft, SYNTHETIC_PERSONA, opponent, SYNTHETIC_PERSONA,
+                        self.synthetic_address(), slot=1, team=1),
+        ]
         with self.matchmaking_lock:
             draft.game_id = self.next_game_id
             self.next_game_id += 1
