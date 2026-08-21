@@ -1865,6 +1865,15 @@ class Fifa14Protocol:
         index 3, and carries the session it belongs to and a fit score.
         `USID` is not in either, whatever the published tables say.
         """
+        # `FIFA14_SETUP_REASON=0` forces the dataless context onto a
+        # matchmade game. It is a probe, not a fix: the union index and the
+        # member set of MatchmakingSetupContext are the one part of this
+        # notification the binary could not settle -- three candidate tables
+        # sit in that region and nothing labels which class each belongs to --
+        # and a REAS the client cannot parse drops the whole notification just
+        # as surely as a bad GAME does. This tells the two apart.
+        if os.environ.get("FIFA14_SETUP_REASON", "").strip() == "0":
+            session = 0
         if not session:
             return (
                 SETUP_REASON_DATALESS,
