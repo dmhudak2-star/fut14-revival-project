@@ -1,0 +1,35 @@
+# Le tableau de bord, en unité séparée du serveur de jeu -- et c'est le point.
+#
+# Redémarrer fifa14-revival.service éjecte qui est en session FUT à cet
+# instant : le titre retombe au menu principal de FIFA. Le dashboard, lui, est
+# la chose qu'on redémarre vingt fois dans un après-midi. Les deux ne peuvent
+# donc pas partager un processus, et cette unité peut être arrêtée, relancée
+# ou mise à jour pendant qu'une partie tourne, sans rien lui faire.
+#
+#   sudo cp fifa14-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fifa14-dashboard
+#   journalctl -u fifa14-dashboard -f    # le code d'accès est dans la 2e ligne
+#
+# Il ne lit que runtime/ ; il n'écrit qu'un fichier, le code d'accès.
+
+[Unit]
+Description=FUT 14 Revival — tableau de bord
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fifa14
+WorkingDirectory=/opt/fifa14-revival
+ExecStart=/usr/bin/python3 /opt/fifa14-revival/server/dashboard.py --root /opt/fifa14-revival --listen 0.0.0.0 --port 8099
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+# Le code d'accès est écrit une fois dans runtime/dashboard-token.txt ; rien
+# d'autre n'est écrit.
+ReadWritePaths=/opt/fifa14-revival/runtime
+
+[Install]
+WantedBy=multi-user.target
