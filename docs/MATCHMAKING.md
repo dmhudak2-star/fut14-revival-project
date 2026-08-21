@@ -144,6 +144,68 @@ C'est donc l'architecture qui a déjà fonctionné ailleurs sur du matériel
 retail : **LIVE réel pour la couche console, serveur privé pour la couche EA
 morte.**
 
+## Deux consoles, sans navigateur de parties
+
+Le plus court chemin pour un vrai match n'est pas la liste des parties
+disponibles : c'est **deux recherches simultanées**. Les deux consoles envoient
+`startMatchmaking` avec leur propre XNADDR, donc le serveur a les deux
+adresses et n'a plus qu'à les mettre dans une partie et donner à chacune celle
+de l'autre.
+
+**Celle qui attendait déjà héberge.** Ce n'est pas arbitraire : l'hôte est
+celui dont l'autre compose la session XNet, et celui qui attendait attendait
+parce qu'il n'y avait personne — c'est donc lui qu'il faut appeler.
+
+L'autre reçoit la notification **22** au lieu de la **20**. Les deux portent la
+même classe de charge utile — ce binaire ne contient qu'un seul
+`NotifyGameSetup` — mais 22 est ce qui fait *composer* un client au lieu
+d'attendre qu'on l'appelle. Ce routage est la convention de la famille, pas
+une lecture du code de dispatch du client : **si un seul côté se connecte, les
+inverser est la première chose à essayer.**
+
+La compatibilité se juge sur `GVER`. Deux versions qui ne s'accordent pas
+échoueraient dans la couche réseau pour une raison qui n'a rien à voir avec le
+réseau.
+
+### `joinGame` (commande 9)
+
+L'autre porte d'entrée. Le joueur qui rejoint apporte tout : son `PNET` et son
+`XSES` voyagent dans la requête, donc rien de la deuxième console n'a besoin
+d'avoir été mis en cache. La réponse fait **quatre** membres — `GID`, `JEX`,
+`JGS`, `REX` — et non les deux des tables publiées.
+
+### Le navigateur de parties, et pourquoi il attend
+
+`getGameListSnapshot` (100) et `getGameListSubscription` (101) ne renvoient
+**aucune partie** : seulement un identifiant de liste et un nombre. Les parties
+arrivent par la notification 201. Et leurs entrées ne sont pas des
+`ReplicatedGameData` mais des **`GameBrowserGameData`**, une classe distincte
+de 27 membres qui ajoute `HOST`, `PCNT`, `ROST`, `TINF` et omet tout ce qu'un
+joueur n'a besoin de connaître qu'après s'être engagé.
+
+Rien de tout ça n'est nécessaire à deux consoles qui cherchent en même temps.
+
+## Les modes FUT en ligne
+
+Ils passent **par le même composant 4**, à travers une couche d'adaptation
+générique : `OSDK_MatchupAdaptor` expose `QuickMatch`, `CustomMatch`,
+`CreateSession`, `JoinSessionByRowIndex`. Les exports de CardsDLL correspondent
+un pour un — `ServiceQuickMatch`, `ServiceCreateSession`, `CancelMatch` — et
+`AddFUTMatchmaking` est la couche FUT qui **ajoute ses propres critères à une
+requête générique**. C'est-à-dire `ATTR` et `CRIT`, exactement les attributs
+`gameType0` / `fifaMatchupHash` / `fifaTeamLevel` que notre propre capture de
+`createGame` porte déjà.
+
+**Donc tout le travail sur le composant 4 est ce sur quoi tourneront les
+saisons et les tournois FUT en ligne.**
+
+Un composant reste entièrement à écrire pour les tournois FUT,
+`OSDKTournaments`, dont la table de commandes est connue : `getTournaments`,
+`getAllTournaments`, `getMemberCounts`, `getTrophies`, `getMyTournamentId`,
+`joinTournament`, `leaveTournament`, `resetTournament`,
+`getMyTournamentDetails`, `resetAllTournamentMembers`. Son numéro de composant,
+lui, n'est pas encore établi.
+
 ## Ce qui reste
 
 - **Deux vraies consoles.** Tout ce qui précède a été obtenu avec une seule et
