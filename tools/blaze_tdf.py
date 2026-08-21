@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 
+# The smallest first byte any TDF tag can have. `encode_tag` puts
+# (0x20 | c & 0x1F) in the top six bits of a 24-bit value, so the leading byte
+# is never below 0x20 << 2. Everything below this is therefore not a tag, which
+# is what makes a union inside a list of structs decodable -- see `list_item`.
+TAG_FIRST_BYTE = 0x80
+
 INTEGER = 0
 STRING = 1
 BINARY = 2
@@ -112,6 +118,32 @@ class Decoder:
         if item_type == STRING:
             return self.string()
         if item_type == STRUCT:
+            # A list of unions is declared on the wire as a list of structs,
+            # and each element then begins with one byte naming the active
+            # member. `createGame` carries exactly that in `HNET`, its list of
+            # NetworkAddress: item type 3, count 1, and then 0x00 for
+            # XboxClientAddress before MACI/XDDR/XUID.
+            #
+            # Read as a plain struct, that 0x00 is a terminator -- so the
+            # element decoded as empty, the union's own fields were read as
+            # siblings of HNET, and the real terminator forty bytes later
+            # became a nonsense tag. The frame took the Blaze connection down
+            # with it on 21 August, which is how this was found.
+            #
+            # The two cases are disjoint rather than guessed at. A tag's first
+            # byte is at least 0x80: the first character contributes
+            # (0x20 | c & 0x1F) << 18, whose smallest value is 0x20 << 18. An
+            # active-member index is a small number. So a struct element
+            # always starts >= 0x80 and a union element always starts below
+            # it, and 852 struct lists across this repo's captures decode
+            # identically either way.
+            #
+            # The one shape this cannot tell apart is an empty struct element,
+            # which is also a lone 0x00. None has ever appeared here, and a
+            # union with no members would be indistinguishable from it on the
+            # wire in any decoder.
+            if self.position < len(self.data) and self.data[self.position] < TAG_FIRST_BYTE:
+                return (self.byte(), self.struct())
             return self.struct()
         if item_type == OBJECT_TYPE:
             return (self.integer(), self.integer())
@@ -205,6 +237,10 @@ def encode_item(item_type: int, value: Any) -> bytes:
     if item_type == STRING:
         return encode_string(str(value))
     if item_type == STRUCT:
+        # `(active, fields)` is a union element -- see `Decoder.list_item`.
+        if isinstance(value, tuple):
+            active, fields = value
+            return bytes((active,)) + encode_fields(fields) + b"\0"
         return encode_fields(value) + b"\0"
     if item_type == OBJECT_TYPE:
         return encode_integer(value[0]) + encode_integer(value[1])

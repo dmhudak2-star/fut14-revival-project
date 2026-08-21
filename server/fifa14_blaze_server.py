@@ -1034,8 +1034,41 @@ class Fifa14Protocol:
         # an id and refers to it afterwards -- cancelling names the session it
         # is cancelling -- so something has to remember which is whose.
         self.matchmaking: dict[int, int] = {}
+        # And the timer that will end each one. A search that is cancelled or
+        # replaced must take its timer with it: left running it wakes up
+        # twenty seconds later holding a session that no longer exists, and
+        # the whole point of the id check inside `expire_matchmaking` is that
+        # it then finds nothing to do. Cancelling is better than relying on
+        # that -- the test suite caught six of these firing after their own
+        # journals had been deleted.
+        self.matchmaking_timers: dict[int, threading.Timer] = {}
         self.matchmaking_lock = threading.Lock()
         self.matchmaking_next = 1
+
+    def stop(self) -> None:
+        """Stop every timer this protocol still owns.
+
+        It owns threads, so it needs a way to be put down. Without one a
+        search armed seconds before shutdown wakes up afterwards and writes
+        to a journal whose directory has gone -- which is exactly what the
+        test suite saw, seven times, attributed each run to whichever test
+        happened to be running when the timer went off.
+        """
+        with self.matchmaking_lock:
+            timers = list(self.matchmaking_timers.values())
+            self.matchmaking_timers.clear()
+            self.matchmaking.clear()
+        for timer in timers:
+            timer.cancel()
+
+    def forget_matchmaking(self, connection_id: int) -> int:
+        """Drop a connection's search and stop its timer. Returns the id."""
+        with self.matchmaking_lock:
+            session = self.matchmaking.pop(connection_id, 0)
+            timer = self.matchmaking_timers.pop(connection_id, None)
+        if timer is not None:
+            timer.cancel()
+        return session
 
     @property
     def identity_base(self) -> str:
@@ -1509,6 +1542,9 @@ class Fifa14Protocol:
         to wait on, no session to cancel, and sits on the search screen with
         nothing to say about it.
         """
+        # A search already in flight on this connection is over the moment a
+        # new one starts, and its timer goes with it.
+        self.forget_matchmaking(state.connection_id)
         with self.matchmaking_lock:
             session = self.matchmaking_next
             self.matchmaking_next += 1
@@ -1516,8 +1552,7 @@ class Fifa14Protocol:
         return session
 
     def close_matchmaking_session(self, state: ClientState) -> int:
-        with self.matchmaking_lock:
-            return self.matchmaking.pop(state.connection_id, 0)
+        return self.forget_matchmaking(state.connection_id)
 
     def expire_matchmaking(self, state: ClientState, session: int) -> None:
         """End a search nobody could be found for.
@@ -1536,6 +1571,7 @@ class Fifa14Protocol:
             if self.matchmaking.get(state.connection_id) != session:
                 return  # cancelled, or replaced by a newer search
             self.matchmaking.pop(state.connection_id, None)
+            self.matchmaking_timers.pop(state.connection_id, None)
         frame = notification_frame(
             GAME_MANAGER,
             NOTIFY_MATCHMAKING_FAILED,
@@ -1566,6 +1602,8 @@ class Fifa14Protocol:
         seconds = max(2.0, float(duration_ms or 20000) / 1000.0)
         timer = threading.Timer(seconds, self.expire_matchmaking, (state, session))
         timer.daemon = True
+        with self.matchmaking_lock:
+            self.matchmaking_timers[state.connection_id] = timer
         timer.start()
         return timer
 
@@ -4384,6 +4422,10 @@ class BlazeService:
 
     def stop(self) -> None:
         self.stop_event.set()
+        # The protocol owns timers of its own -- a matchmaking search armed
+        # seconds ago will otherwise wake up after everything it needs is
+        # gone.
+        self.protocol.stop()
         for listener in self.listeners:
             try:
                 listener.close()

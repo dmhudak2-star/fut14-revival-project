@@ -49,6 +49,7 @@ class ProtocolTests(unittest.TestCase):
         self.state = SERVER.ClientState(1, ("192.0.2.25", 12345), 10041)
 
     def tearDown(self) -> None:
+        self.protocol.stop()
         self.temp.cleanup()
 
     def test_redirector_points_to_local_core(self) -> None:
@@ -1983,6 +1984,7 @@ class RoutesTheTitleAsksForTests(unittest.TestCase):
         self.state.authenticated = True
 
     def tearDown(self) -> None:
+        self.protocol.stop()
         self.temp.cleanup()
 
     def unknown_routes(self) -> list[tuple[int, int]]:
@@ -2107,6 +2109,7 @@ class MatchmakingTests(unittest.TestCase):
         self.state.authenticated = True
 
     def tearDown(self) -> None:
+        self.protocol.stop()
         self.temp.cleanup()
 
     def search(self) -> list[bytes]:
@@ -2225,6 +2228,7 @@ class MatchmakingTimeoutTests(unittest.TestCase):
         self.state.channel = self.channel
 
     def tearDown(self) -> None:
+        self.protocol.stop()
         self.temp.cleanup()
 
     def start(self, duration_ms: int = 20000) -> int:
@@ -2292,3 +2296,23 @@ class MatchmakingTimeoutTests(unittest.TestCase):
             self.assertAlmostEqual(timer.interval, 2.0, places=3)
         finally:
             timer.cancel()
+
+    def test_a_search_takes_its_timer_with_it_when_it_ends(self) -> None:
+        """Six of these fired after their own journals had been deleted.
+
+        A cancelled search left its timer running for the full twenty
+        seconds. Nothing broke on the console -- `expire_matchmaking` checks
+        the session id and finds nothing to do -- but a timer that outlives
+        its reason is a thread waiting to touch state that has gone.
+        """
+        self.start()
+        self.protocol.handle(request(4, 14), self.state)
+        self.assertEqual(self.protocol.matchmaking_timers, {})
+
+    def test_starting_again_replaces_the_previous_timer(self) -> None:
+        self.start()
+        first = self.protocol.matchmaking_timers[self.state.connection_id]
+        self.start()
+        second = self.protocol.matchmaking_timers[self.state.connection_id]
+        self.assertIsNot(first, second)
+        self.assertFalse(first.is_alive())
