@@ -1117,6 +1117,14 @@ class Fifa14Protocol:
         # Who is connected, and who wants the census pushed to them.
         self.live: dict[int, ClientState] = {}
         self.census: dict[int, ClientState] = {}
+        # The census is pushed on a heartbeat as well as on change. The
+        # numbers were right the first time and the screen still read zero:
+        # the one push went out at boot, seconds after the console connected
+        # and long before anybody walked into the screen that draws them. A
+        # client that caches the last thing it was told needs to be told
+        # again while it is looking.
+        self.census_pulse: threading.Timer | None = None
+        self.census_interval = 10.0
 
     def remember_connection(self, state: ClientState) -> None:
         self.live[state.connection_id] = state
@@ -1178,6 +1186,23 @@ class Fifa14Protocol:
             encode_fields([Field("TDFL", LIST, (STRUCT, [item]))]),
         )
 
+    def pulse_census(self) -> None:
+        """Push the census, then arrange to do it again."""
+        self.broadcast_census()
+        self.schedule_census_pulse()
+
+    def schedule_census_pulse(self) -> None:
+        with self.matchmaking_lock:
+            if self.census_pulse is not None:
+                self.census_pulse.cancel()
+                self.census_pulse = None
+            if not self.census:
+                return
+            timer = threading.Timer(self.census_interval, self.pulse_census)
+            timer.daemon = True
+            self.census_pulse = timer
+        timer.start()
+
     def broadcast_census(self) -> None:
         """Tell every subscriber the numbers moved.
 
@@ -1201,6 +1226,10 @@ class Fifa14Protocol:
             timers = list(self.matchmaking_timers.values())
             self.matchmaking_timers.clear()
             self.matchmaking.clear()
+            if self.census_pulse is not None:
+                timers.append(self.census_pulse)
+                self.census_pulse = None
+            self.census.clear()
         for timer in timers:
             timer.cancel()
 
@@ -1674,6 +1703,8 @@ class Fifa14Protocol:
             connection=state.connection_id,
             external_id=state.xuid,
         )
+        # This console is now one of the players online, so say so.
+        self.broadcast_census()
         return [response_frame(request, login), *notifications]
 
     def open_matchmaking_session(self, state: ClientState) -> int:
@@ -2576,10 +2607,12 @@ class Fifa14Protocol:
         # the entire reason for looking at the list.
         if route == (CENSUS_DATA, CENSUS_SUBSCRIBE):
             self.census[state.connection_id] = state
+            self.schedule_census_pulse()
             # Pushed with the reply so the first paint already has numbers.
             return [response_frame(request), self.census_notification()]
         if route == (CENSUS_DATA, CENSUS_UNSUBSCRIBE):
             self.census.pop(state.connection_id, None)
+            self.schedule_census_pulse()
             return [response_frame(request)]
         if route in {
             (ROOMS, ROOMS_SELECT_VIEW_UPDATES),

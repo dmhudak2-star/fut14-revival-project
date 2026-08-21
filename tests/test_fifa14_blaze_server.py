@@ -2572,3 +2572,25 @@ class CensusTests(unittest.TestCase):
         self.protocol.forget_connection(self.state)
         self.assertEqual(self.protocol.games, {})
         self.assertEqual(self.protocol.live, {})
+
+    def test_the_census_keeps_being_pushed_while_somebody_is_subscribed(self) -> None:
+        """The numbers were right the first time and the screen still read
+        zero: the one push went out at boot, long before anybody walked into
+        the screen that draws them."""
+        self.protocol.census_interval = 0.05
+        self.protocol.handle(request(10, 1), self.state)
+        self.channel.sent.clear()
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if [f for f in self.channel.sent if decode_frame(f)["component"] == 10]:
+                break
+            time.sleep(0.02)
+        pushed = [f for f in self.channel.sent if decode_frame(f)["component"] == 10]
+        self.assertTrue(pushed, "rien poussé sans changement d'état")
+        self.assertEqual(self.numbers(pushed[-1])["LSN"], 1)
+
+    def test_the_heartbeat_stops_when_the_last_subscriber_leaves(self) -> None:
+        self.protocol.handle(request(10, 1), self.state)
+        self.assertIsNotNone(self.protocol.census_pulse)
+        self.protocol.handle(request(10, 2), self.state)
+        self.assertIsNone(self.protocol.census_pulse)
