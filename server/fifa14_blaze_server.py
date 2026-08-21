@@ -177,6 +177,11 @@ GAME_MANAGER_CREATE_GAME = 1
 # whether it can see them.
 GAME_MANAGER_DESTROY_GAME = 2
 GAME_MANAGER_JOIN_GAME = 9
+GAME_MANAGER_REMOVE_PLAYER_CMD = 11
+# Command 22 in the request direction, which is not notification 22. The
+# console sends it after "votre adversaire a quitté la partie" -- it is how a
+# player leaves, and it carries the reason it left in `REAS`.
+GAME_MANAGER_LEAVE_GAME_BY_GROUP = 22
 GAME_MANAGER_ADVANCE_GAME_STATE = 3
 GAME_MANAGER_REMOVE_PLAYER = 11
 GAME_MANAGER_FINALIZE_GAME_CREATION = 15
@@ -2410,6 +2415,51 @@ class Fifa14Protocol:
                 self.logger.frame("notification", other, frame)
         return []
 
+    def leave_game(self, request: bytes, state: ClientState) -> list[bytes]:
+        """A player walking out.
+
+        Sent straight after "votre adversaire a quitté la partie", which is
+        the console drawing the conclusion that the peer it was given never
+        answered. `REAS` says why it left; the values of that enum are not
+        read yet, so it is recorded rather than interpreted.
+
+        A game nobody is in is not a game. The last one out takes it with
+        them, which is also what keeps "En cours de partie" from climbing by
+        one every time somebody tries.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        game_id = find_field(fields, "GID")
+        reason = find_field(fields, "REAS")
+        game = self.games.get(int(game_id.value) if game_id is not None else 0)
+        if game is None:
+            return [response_frame(request)]
+
+        before = len(game.members)
+        game.members = [
+            member for member in game.members if member["persona"] != state.xuid
+        ]
+        game.roster = [
+            peer for peer in game.roster if peer != state.connection_id
+        ]
+        game.mesh.pop(state.connection_id, None)
+        remaining = [m for m in game.members if m.get("state") is not None]
+        self.logger.event(
+            "player_left",
+            connection=state.connection_id,
+            game=game.game_id,
+            persona=state.xuid,
+            reason=int(reason.value) if reason is not None else None,
+            was=before,
+            now=len(game.members),
+        )
+        if not remaining:
+            with self.matchmaking_lock:
+                self.games.pop(game.game_id, None)
+            self.logger.event("game_emptied", game=game.game_id)
+        self.broadcast_census()
+        return [response_frame(request)]
+
     def destroy_game(self, request: bytes, state: ClientState) -> list[bytes]:
         """The host leaves, so the game does."""
         decoded = decode_frame(request)
@@ -3342,6 +3392,11 @@ class Fifa14Protocol:
             return self.join_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_ADVANCE_GAME_STATE):
             return self.advance_game_state(request, state)
+        if route in {
+            (GAME_MANAGER, GAME_MANAGER_LEAVE_GAME_BY_GROUP),
+            (GAME_MANAGER, GAME_MANAGER_REMOVE_PLAYER_CMD),
+        }:
+            return self.leave_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_DESTROY_GAME):
             return self.destroy_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_FINALIZE_GAME_CREATION):
