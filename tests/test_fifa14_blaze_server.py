@@ -2836,3 +2836,62 @@ class SyntheticOpponentTests(unittest.TestCase):
             for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
         ]
         self.assertEqual([e for e in events if e.get("event") == "unknown_route"], [])
+
+    def mesh(self, target: int, status: int) -> list:
+        return self.protocol.handle(
+            request(4, 29, [
+                Field("FLGS", INTEGER, 0),
+                Field("GID", INTEGER, 1),
+                Field("SCG", SERVER.OBJECT_ID, (0, 0, 0)),
+                Field("STAT", INTEGER, status),
+                Field("TCG", SERVER.OBJECT_ID, (30722, 2, target)),
+            ]),
+            self.state,
+        )
+
+    def test_the_match_starts_once_everybody_can_see_everybody(self) -> None:
+        """The server's one job in a peer-to-peer game: it is not in the data
+        path, it only decides when the players have found each other."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        answered = self.mesh(self.state.connection_id, 2)
+        started = [decode_frame(f) for f in answered[1:]]
+        self.assertEqual([(f["component"], f["command"]) for f in started], [(4, 100)])
+        # 131 is IN_GAME. 130 was PRE_GAME, which is where the setup left it.
+        self.assertEqual(by_label(started[0], "GSTA").value, 131)
+
+    def test_a_peer_that_cannot_be_seen_holds_the_match_back(self) -> None:
+        """Without the invented opponent counted as present, a DISCONNECTED
+        peer is the truth and the game stays where it is."""
+        session = self.search()          # no flag: no synthetic opponent
+        self.protocol.expire_matchmaking(self.state, session)
+        self.protocol.games[1] = SERVER.HostedGame(
+            game_id=1, persona_id=self.state.xuid, gamertag="x",
+            state=SERVER.GAME_STATE_PRE_GAME,
+            roster=[2, SERVER.SYNTHETIC_PERSONA],
+        )
+        answered = self.mesh(2, 2)
+        self.assertEqual(len(answered), 1)          # acknowledged, nothing more
+        answered = self.mesh(SERVER.SYNTHETIC_PERSONA, 0)
+        self.assertEqual(len(answered), 1)
+        self.assertEqual(self.protocol.games[1].state, SERVER.GAME_STATE_PRE_GAME)
+
+    def test_a_match_already_started_is_not_started_again(self) -> None:
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        host = self.state.connection_id
+        self.assertEqual(len(self.mesh(host, 2)), 2)
+        self.assertEqual(len(self.mesh(host, 2)), 1)
+
+    def test_a_game_with_nobody_to_play_never_starts(self) -> None:
+        """A host connected to itself is not a match. "Everything reported is
+        connected" was true of a one-player game, and started one."""
+        self.protocol.games[1] = SERVER.HostedGame(
+            game_id=1, persona_id=self.state.xuid, gamertag="x",
+            state=SERVER.GAME_STATE_PRE_GAME,
+            roster=[2],
+        )
+        self.assertEqual(len(self.mesh(2, 2)), 1)
+        self.assertEqual(self.protocol.games[1].state, SERVER.GAME_STATE_PRE_GAME)
