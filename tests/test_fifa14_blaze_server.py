@@ -2481,3 +2481,94 @@ class CreateGameTests(unittest.TestCase):
             by_label(joined, "GID").value,
             by_label(decode_frame(answered[0]), "GID").value,
         )
+
+
+class CensusTests(unittest.TestCase):
+    """The two counters at the top of the Face-à-Face screen.
+
+    "Joueurs en ligne : 0 — En cours de partie : 0" was not a bug in the
+    title. It subscribes to the census and this server answered with a
+    fieldless success and then never pushed anything, so zero was all it had.
+
+    The tags are the title's own compiled-in member names: `LSN` is
+    mNumOfLoggedSession and `AGN` is mNumOfActiveGame, in a
+    GameManagerCensusData whose class id rides in the variable TDF that
+    carries it.
+    """
+
+    class Channel:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        def sendall(self, data: bytes) -> None:
+            self.sent.append(data)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.168.1.25", 1040), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.authenticated = True
+        self.channel = self.Channel()
+        self.state.channel = self.channel
+        self.protocol.remember_connection(self.state)
+
+    def tearDown(self) -> None:
+        self.protocol.stop()
+        self.temp.cleanup()
+
+    def numbers(self, frame: bytes) -> dict:
+        decoded = decode_frame(frame)
+        self.assertEqual((decoded["component"], decoded["command"]), (10, 1))
+        _, items = by_label(decoded, "TDFL").value
+        variable = SERVER.find_field(items[0], "TDF")
+        tdf_id, fields = variable.value
+        self.assertEqual(tdf_id, 0x21239231)
+        return {field.label: field.value for field in fields}
+
+    def test_subscribing_gets_the_numbers_with_the_reply(self) -> None:
+        """So the first paint already has them rather than a zero that is
+        later corrected."""
+        answered = self.protocol.handle(request(10, 1), self.state)
+        self.assertEqual(len(answered), 2)
+        counts = self.numbers(answered[1])
+        self.assertEqual(counts["LSN"], 1)   # one console, and 1 is the truth
+        self.assertEqual(counts["AGN"], 0)
+
+    def test_creating_a_game_pushes_a_new_count(self) -> None:
+        self.protocol.handle(request(10, 1), self.state)
+        self.channel.sent.clear()
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_blaze_tdf_union_lists import CREATE_GAME
+        self.protocol.handle(CREATE_GAME, self.state)
+        pushed = [f for f in self.channel.sent if decode_frame(f)["component"] == 10]
+        self.assertTrue(pushed)
+        self.assertEqual(self.numbers(pushed[-1])["AGN"], 1)
+
+    def test_searching_shows_up_as_a_matchmaking_session(self) -> None:
+        self.protocol.handle(request(10, 1), self.state)
+        self.channel.sent.clear()
+        self.protocol.handle(request(4, 13, [Field("DUR", INTEGER, 20000)]), self.state)
+        pushed = [f for f in self.channel.sent if decode_frame(f)["component"] == 10]
+        self.assertEqual(self.numbers(pushed[-1])["MMSN"], 1)
+
+    def test_unsubscribing_stops_the_pushes(self) -> None:
+        self.protocol.handle(request(10, 1), self.state)
+        self.protocol.handle(request(10, 2), self.state)
+        self.channel.sent.clear()
+        self.protocol.handle(request(4, 13, [Field("DUR", INTEGER, 20000)]), self.state)
+        self.assertEqual(
+            [f for f in self.channel.sent if decode_frame(f)["component"] == 10], []
+        )
+
+    def test_a_console_that_leaves_takes_its_game_with_it(self) -> None:
+        """Otherwise the count only ever goes up, and "En cours de partie"
+        would climb every time somebody pressed create and walked away."""
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_blaze_tdf_union_lists import CREATE_GAME
+        self.protocol.handle(CREATE_GAME, self.state)
+        self.assertEqual(len(self.protocol.games), 1)
+        self.protocol.forget_connection(self.state)
+        self.assertEqual(self.protocol.games, {})
+        self.assertEqual(self.protocol.live, {})
