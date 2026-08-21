@@ -369,6 +369,12 @@ class HostedGame:
     game_id: int
     persona_id: int
     gamertag: str
+    # Who is in this game, by connection group, and which of them have said
+    # they can see the mesh. Both are needed: "everything reported is
+    # connected" is true of a game with one player in it and nobody to play,
+    # which started a match against nobody the first time it was written.
+    roster: list = field(default_factory=list)
+    mesh: dict = field(default_factory=dict)
     # Handed over by the host in finalizeGameCreation once its console has
     # built the session. This is the blob a second console needs to dial in.
     xnet_nonce: bytes = b""
@@ -2127,6 +2133,7 @@ class Fifa14Protocol:
             host_address=host_address,
             connection_group=state.connection_id,
         )
+        game.roster = [state.connection_id]
         with self.matchmaking_lock:
             self.games[game_id] = game
         self.broadcast_census()
@@ -2207,16 +2214,67 @@ class Fifa14Protocol:
         target = find_field(fields, "TCG")
         status = find_field(fields, "STAT")
         game_id = find_field(fields, "GID")
+        game = self.games.get(int(game_id.value) if game_id is not None else 0)
+        peer = int(target.value[2]) if target is not None else 0
+        reported = int(status.value) if status is not None else MESH_DISCONNECTED
+        if game is not None and peer:
+            game.mesh[peer] = reported
         self.logger.event(
             "mesh_connection",
             connection=state.connection_id,
-            game=int(game_id.value) if game_id is not None else 0,
+            game=game.game_id if game is not None else 0,
             # The value alone: the connection group as (component, type, id),
             # which is what a reader wants to compare against a persona.
             target=json_value(target.value) if target is not None else None,
-            status=int(status.value) if status is not None else None,
+            status=reported,
         )
-        return [response_frame(request)]
+        replies = [response_frame(request)]
+        if game is not None:
+            replies.extend(self.mesh_progress(game))
+        return replies
+
+    def mesh_progress(self, game: HostedGame) -> list[bytes]:
+        """Start the match once everybody can see everybody.
+
+        This is the server's one job in a peer-to-peer game: it is not in the
+        data path, it only decides when the players have found each other. The
+        real rule is that every peer has reported CONNECTED.
+
+        Against an opponent this server invented, that can never happen -- the
+        console correctly reports DISCONNECTED, because there is nothing at
+        that address. So under the test-opponent flag the invented peer is
+        counted as present, purely to find out what the title does next: a
+        game it believes is playable is the only way to see whether it goes to
+        the pitch, and that is the last thing Blaze can be asked.
+        """
+        if game.state != GAME_STATE_PRE_GAME:
+            return []
+        seen = dict(game.mesh)
+        if test_opponent():
+            seen[SYNTHETIC_PERSONA] = MESH_CONNECTED
+        expected = [peer for peer in game.roster if peer]
+        if len(expected) < 2:
+            return []  # nobody to play against
+        if any(seen.get(peer) != MESH_CONNECTED for peer in expected):
+            return []
+        peers = expected
+        game.state = GAME_STATE_IN_GAME
+        self.logger.event(
+            "mesh_complete",
+            game=game.game_id,
+            peers=sorted(peers),
+            synthetic=bool(test_opponent()),
+        )
+        return [
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_GAME_STATE_CHANGE,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("GSTA", INTEGER, game.state),
+                ]),
+            )
+        ]
 
     def expire_matchmaking(self, state: ClientState, session: int) -> None:
         """End a search nobody could be found for.
@@ -2277,6 +2335,7 @@ class Fifa14Protocol:
         -- until a second console exists, this is the only way to learn where
         the title stops: in Blaze, or in the network underneath it.
         """
+        draft.roster = [draft.connection_group, SYNTHETIC_PERSONA]
         with self.matchmaking_lock:
             draft.game_id = self.next_game_id
             self.next_game_id += 1
