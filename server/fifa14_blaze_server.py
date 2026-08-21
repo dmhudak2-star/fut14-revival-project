@@ -1157,6 +1157,29 @@ def response_frame(
     return bytes(result)
 
 
+def search_window() -> float:
+    """Combien de temps garder une recherche ouverte, en secondes.
+
+    Le client demande vingt secondes dans `DUR`, et ces vingt secondes sont
+    une consigne au matchmaker, pas un délai de son côté : la console du 21
+    août a attendu des minutes sans rien dire tant que le serveur ne lui
+    disait rien. C'est ce qui rend ceci possible.
+
+    Deux amis sur deux consoles ne peuvent pas appuyer dans la même fenêtre de
+    vingt secondes. Avec `FIFA14_SEARCH_WINDOW=180` la recherche du premier
+    reste ouverte trois minutes, et le second est apparié dès qu'il arrive --
+    sans que rien ne mente : il n'y a toujours pas d'adversaire tant qu'il n'y
+    en a pas, et l'échec finit par être annoncé s'il n'en vient aucun.
+
+    Zéro ou rien du tout : la durée que le client a demandée.
+    """
+    raw = os.environ.get("FIFA14_SEARCH_WINDOW", "").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
 def test_opponent() -> str:
     """The name of an opponent this server will invent, or nothing.
 
@@ -2794,6 +2817,10 @@ class Fifa14Protocol:
         # A floor, because a client that asked for a very short search would
         # otherwise be told "no opponent" before its own screen had drawn.
         seconds = max(2.0, float(duration_ms or 20000) / 1000.0)
+        # And a window that can outlast what the client asked for, so two
+        # people on two consoles do not have to press within the same twenty
+        # seconds of each other.
+        seconds = max(seconds, search_window())
         timer = threading.Timer(seconds, self.expire_matchmaking, (state, session))
         timer.daemon = True
         with self.matchmaking_lock:
