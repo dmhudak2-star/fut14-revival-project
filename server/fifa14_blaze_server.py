@@ -61,6 +61,20 @@ UTIL = 9
 AUTHENTICATION = 1
 AUTHENTICATION2 = 35
 USER_SESSIONS = 0x7802
+# FIFA 14 has no CardHouse client component, and this is not an inference.
+# Four checks agree: no Blaze component constructor for it anywhere in
+# default.xex or in CardsDLLzf, no `CardHouse` or `gamerGetInfo` string in
+# either module, no vtable, and -- the one that settles it -- **component 2148
+# has never appeared in a single frame** across every journal this repo has
+# ever written. Its only occurrences are inside the advertised CIDS list,
+# which the client ignores anyway: it hammers 2076 by the hundred thousand and
+# 2076 is not in that list either.
+#
+# So the CARDHOUSE_* commands below came from NHL's HUT by way of the Zamboni
+# BlazeSDK dump, exactly as this module's own docstring says its layouts did.
+# The handlers for them are dead code. They are left in place because removing
+# them would prove nothing and cost a diff, but nobody should read them as
+# knowledge about this game.
 CARDHOUSE = 2148
 SPONSORED_EVENTS = 0x081C
 STATS = 7
@@ -79,6 +93,15 @@ ROOMS = 21
 ASSOCIATION_LISTS = 25
 OSDK_SETTINGS = 2249
 OSDK_ONLINE_PASS = 2268
+# Read out of the client's own component constructors. OSDKTournaments is
+# implemented by the title and has never sent this server a frame: FUT
+# tournaments go through the HTTP route at /ut/game/fifa14/tournament/user
+# that this server already serves, and 2271 holds only the bracket. Not worth
+# building until a console asks for it.
+OSDK_TOURNAMENTS = 2271
+FIFA_CUPS = 2069
+COOP_SEASON = 2070
+EASFC_COMPONENT = 2077
 # The offline game report a match end submits, and the asynchronous result the
 # post-match screen waits on before it will leave.
 GAME_REPORTING = 28

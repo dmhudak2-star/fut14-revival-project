@@ -199,12 +199,64 @@ requête générique**. C'est-à-dire `ATTR` et `CRIT`, exactement les attributs
 **Donc tout le travail sur le composant 4 est ce sur quoi tourneront les
 saisons et les tournois FUT en ligne.**
 
-Un composant reste entièrement à écrire pour les tournois FUT,
-`OSDKTournaments`, dont la table de commandes est connue : `getTournaments`,
-`getAllTournaments`, `getMemberCounts`, `getTrophies`, `getMyTournamentId`,
-`joinTournament`, `leaveTournament`, `resetTournament`,
-`getMyTournamentDetails`, `resetAllTournamentMembers`. Son numéro de composant,
-lui, n'est pas encore établi.
+### Les saisons en ligne n'ajoutent rien
+
+Il n'y a **ni composant ni adaptateur de saisons**. Le jeu a
+`OSDK_MatchupAdaptor` et `OSDK_TournamentAdaptor`, et rien d'autre. Une saison
+en ligne FUT, c'est donc **la couche de matchup partagée pour le match** —
+celle qu'on vient de construire — **et l'API HTTP de FUT pour le classement**,
+que ce serveur sert déjà à `/ut/game/fifa14/season/user`.
+
+### Les tournois non plus, ou presque
+
+`OSDKTournaments` est le composant **2271**, et le titre l'implémente. Mais
+`OSDK_TournamentAdaptor` expose `CancelQuickMatch` à côté de `GetMemberTree`,
+et le binaire porte une clé de configuration `OSDK_TOURNAMENT_QUICKMATCH_TIMEOUT`.
+Autrement dit : **les matchs de tournoi passent par le même chemin quickmatch**,
+et 2271 ne tient que le tableau.
+
+Et 2271 n'a **jamais envoyé une seule trame** à ce serveur. FUT utilise la
+route HTTP `/ut/game/fifa14/tournament/user`, déjà servie. À ne pas construire
+tant qu'une console ne la demande pas.
+
+## Les composants, par leur numéro
+
+Lus dans les constructeurs du client — chacun fait `li rD,<id>` puis
+`sth rD,8(r3)` à côté de son vtable. Les seize que ce dépôt connaissait déjà
+sont tous ressortis justes.
+
+| | | | |
+|---|---|---|---|
+| 1 Authentication | 10 CensusData | 25 AssociationLists | 2249 OSDKSettings |
+| 4 GameManager | 11 Clubs | 27 GpsContentController | 2252 OsdkArena |
+| 5 Redirector | 14 Mail | 28 GameReporting | 2268 OsdkOnlinePass |
+| 6 Playgroups | 15 Messaging | 35 Authentication2 | 2270 OSDKDigitalDownloadPreview |
+| 7 Stats | 21 Rooms | 2069 FifaCups | 2271 OSDKTournaments |
+| 9 Util | 24 CommerceInfo | 2070 CoopSeason | 30722 UserSessions |
+| | | 2076 SponsoredEvents | |
+| | | 2077 Easfc | |
+
+`20`, `2000`, `2148`, `30720`, `30721`, `30723`, `30725` et `30726` sont
+**annoncés et pourtant absents du client** — pas de constructeur, pas de vtable,
+pas de nom, pas de trafic. C'étaient des composants du serveur d'EA.
+
+Et la liste annoncée n'est pas une barrière : le client martèle 2076 cent mille
+fois, et 2076 n'y figure pas.
+
+### CardHouse (2148) n'existe pas dans ce jeu
+
+Ce dépôt porte des constantes `CARDHOUSE_*` et leurs gestionnaires depuis le
+début. Ils viennent de HUT, le mode de NHL, via le dump BlazeSDK de Zamboni —
+comme le dit d'ailleurs la docstring du module à propos de ses formats.
+
+Quatre vérifications concordent : aucun constructeur de composant Blaze dans
+`default.xex` ni dans `CardsDLLzf`, aucune chaîne `CardHouse` ou
+`gamerGetInfo` dans l'un ou l'autre, aucun vtable — et surtout, **le composant
+2148 n'est jamais apparu dans une seule trame** de tous les journaux de ce
+dépôt. Ses seules occurrences sont dans la liste annoncée.
+
+C'est du code mort. Il est laissé en place — le retirer ne prouverait rien —
+mais personne ne devrait le lire comme une connaissance sur ce jeu.
 
 ## Ce qui reste
 
