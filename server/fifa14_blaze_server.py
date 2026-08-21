@@ -152,6 +152,9 @@ GAME_MANAGER_CREATE_GAME = 1
 # The two the console started sending the moment it could find itself in the
 # roster. 15 hands over the XNet session it just built; 29 reports, per peer,
 # whether it can see them.
+GAME_MANAGER_DESTROY_GAME = 2
+GAME_MANAGER_ADVANCE_GAME_STATE = 3
+GAME_MANAGER_REMOVE_PLAYER = 11
 GAME_MANAGER_FINALIZE_GAME_CREATION = 15
 GAME_MANAGER_UPDATE_MESH_CONNECTION = 29
 GAME_MANAGER_START_MATCHMAKING = 13
@@ -165,6 +168,14 @@ GAME_MANAGER_CANCEL_MATCHMAKING = 14
 NOTIFY_GAME_SETUP = 20
 NOTIFY_PLATFORM_HOST_INITIALIZED = 71
 NOTIFY_PLAYER_JOINING = 21
+# Same payload class as notification 20 -- the 557-class index holds exactly
+# one NotifyGameSetup. The difference is who it goes to: 20 to the player the
+# game is being set up for, 22 to a player joining a game that already exists,
+# so it starts dialling the mesh rather than waiting to be dialled. That
+# routing is the family convention rather than something read out of the
+# client's dispatch, so it is the first thing to swap if only one side
+# connects.
+NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS = 22
 NOTIFY_PLAYER_JOIN_COMPLETED = 30
 NOTIFY_GAME_STATE_CHANGE = 100
 NOTIFY_GAME_SESSION_UPDATED = 115
@@ -198,6 +209,7 @@ SYNTHETIC_PERSONA = 1_000_002
 SETUP_CONTEXT_CREATE_GAME = 0
 
 MATCHMAKING_SUCCESS_CREATED_GAME = 0
+MATCHMAKING_SUCCESS_JOINED_NEW_GAME = 1
 MATCHMAKING_SESSION_TIMED_OUT = 3
 MATCHMAKING_SESSION_CANCELED = 4
 
@@ -1950,7 +1962,8 @@ class Fifa14Protocol:
             fields.append(Field("PNET", UNION, game.host_address))
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
-    def setup_reason(self, session: int) -> tuple:
+    def setup_reason(self, session: int,
+                     result: int = MATCHMAKING_SUCCESS_CREATED_GAME) -> tuple:
         """Why this game exists, in the shape the client asks for.
 
         A game the console asked for itself is union index 0 -- a dataless
@@ -1977,7 +1990,7 @@ class Fifa14Protocol:
                 Field("FIT", INTEGER, 100),
                 Field("MAXF", INTEGER, 100),
                 Field("MSID", INTEGER, session),
-                Field("RSLT", INTEGER, MATCHMAKING_SUCCESS_CREATED_GAME),
+                Field("RSLT", INTEGER, result),
             ]),
         )
 
@@ -2046,6 +2059,25 @@ class Fifa14Protocol:
         )
         return [joining, joined]
 
+    def game_setup_payload(self, game: HostedGame, session: int = 0,
+                           result: int = MATCHMAKING_SUCCESS_CREATED_GAME) -> list[Field]:
+        """The five members of NotifyGameSetup.
+
+        Shared by notification 20 and notification 22, because the 557-class
+        index of this binary holds exactly one class by that name -- the two
+        notifications differ in who they go to and what they make that client
+        do, not in what they carry.
+        """
+        return [
+            Field("GAME", STRUCT, self.replicated_game_data(game)),
+            Field("LFPJ", INTEGER, 0),
+            Field("PROS", LIST, (STRUCT, [
+                self.member_player(game, member) for member in game.members
+            ] or [self.replicated_game_player(game)])),
+            Field("QUEU", LIST, (STRUCT, [])),
+            Field("REAS", UNION, self.setup_reason(session, result)),
+        ]
+
     def game_setup_notifications(
         self, game: HostedGame, session: int = 0
     ) -> list[bytes]:
@@ -2063,17 +2095,7 @@ class Fifa14Protocol:
         setup = notification_frame(
             GAME_MANAGER,
             NOTIFY_GAME_SETUP,
-            encode_fields(
-                [
-                    Field("GAME", STRUCT, self.replicated_game_data(game)),
-                    Field("LFPJ", INTEGER, 0),
-                    Field("PROS", LIST, (STRUCT, [
-                        self.member_player(game, member) for member in game.members
-                    ] or [self.replicated_game_player(game)])),
-                    Field("QUEU", LIST, (STRUCT, [])),
-                    Field("REAS", UNION, self.setup_reason(session)),
-                ]
-            ),
+            encode_fields(self.game_setup_payload(game, session)),
         )
         host = notification_frame(
             GAME_MANAGER,
@@ -2195,6 +2217,16 @@ class Fifa14Protocol:
             game, state.xuid, state.gamertag, state.connection_id,
             host_address, slot=0, team=0, state=state,
         )]
+        # A game created by hand needs an opponent as much as a matchmade one
+        # does, and for the same reason: with one player it can never start,
+        # so the path cannot be walked to its end.
+        opponent = test_opponent()
+        if opponent:
+            game.members.append(self.member(
+                game, SYNTHETIC_PERSONA, opponent, SYNTHETIC_PERSONA,
+                self.synthetic_address(), slot=1, team=1,
+            ))
+            game.roster.append(SYNTHETIC_PERSONA)
         with self.matchmaking_lock:
             self.games[game_id] = game
         self.broadcast_census()
@@ -2214,6 +2246,72 @@ class Fifa14Protocol:
             response_frame(request, encode_fields([Field("GID", INTEGER, game_id)])),
             *self.game_setup_notifications(game),
         ]
+
+    def advance_game_state(self, request: bytes, state: ClientState) -> list[bytes]:
+        """The host moves the game on by itself.
+
+        Same shape as notification 100 -- `{GID, GSTA}` -- because it is the
+        same change said in the other direction. The server records it and
+        tells everybody, which on a peer-to-peer game is the whole of its
+        involvement.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        game_id = find_field(fields, "GID")
+        wanted = find_field(fields, "GSTA")
+        game = self.games.get(int(game_id.value) if game_id is not None else 0)
+        if game is None or wanted is None:
+            return [response_frame(request)]
+        game.state = int(wanted.value)
+        self.logger.event(
+            "game_state_advanced",
+            connection=state.connection_id,
+            game=game.game_id,
+            state=game.state,
+        )
+        return [
+            response_frame(request),
+            *self.tell_members(game, notification_frame(
+                GAME_MANAGER,
+                NOTIFY_GAME_STATE_CHANGE,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("GSTA", INTEGER, game.state),
+                ]),
+            ), skip=state),
+        ]
+
+    def tell_members(self, game: HostedGame, frame: bytes,
+                     skip: ClientState | None = None) -> list[bytes]:
+        """Push a frame to everybody in a game except the one who caused it.
+
+        The one who caused it gets it in their reply instead, which keeps a
+        client from being told twice about something it already knows.
+        """
+        for member in game.members:
+            other = member.get("state")
+            if other is None or other is skip:
+                continue
+            if other.push(frame):
+                self.logger.frame("notification", other, frame)
+        return []
+
+    def destroy_game(self, request: bytes, state: ClientState) -> list[bytes]:
+        """The host leaves, so the game does."""
+        decoded = decode_frame(request)
+        game_id = find_field(decoded["fields"], "GID")
+        key = int(game_id.value) if game_id is not None else 0
+        with self.matchmaking_lock:
+            game = self.games.pop(key, None)
+        if game is not None:
+            self.logger.event(
+                "game_destroyed",
+                connection=state.connection_id,
+                game=key,
+                players=len(game.members),
+            )
+            self.broadcast_census()
+        return [response_frame(request)]
 
     def finalize_game_creation(self, request: bytes, state: ClientState) -> list[bytes]:
         """The host hands over the XNet session it has just built.
@@ -2355,7 +2453,8 @@ class Fifa14Protocol:
                 return  # cancelled, or replaced by a newer search
             self.matchmaking.pop(state.connection_id, None)
             self.matchmaking_timers.pop(state.connection_id, None)
-            draft = self.searches.pop(state.connection_id, None)
+            pending = self.searches.pop(state.connection_id, None)
+            draft = pending["draft"] if pending else None
 
         opponent = test_opponent()
         if opponent and draft is not None:
@@ -2383,6 +2482,103 @@ class Fifa14Protocol:
             session=session,
             delivered=delivered,
         )
+
+    def pair_searches(self, state: ClientState) -> list[bytes]:
+        """Two consoles looking for a game at the same time are each other's.
+
+        This is the whole of real matchmaking here, and it needs nothing that
+        has not already been proved on hardware: both consoles sent
+        `startMatchmaking` carrying their own address, so the server has both
+        addresses and can put them in one game and hand each the other's.
+
+        The one who was already waiting hosts. That is not arbitrary -- the
+        host is the one whose XNet session the other will dial, and the one
+        who has been waiting has been waiting because nobody was there, so it
+        is the one that has to be dialled *into*.
+
+        Compatibility is `GVER`, the game protocol version string. Two builds
+        that disagree on it cannot play each other, and letting them try would
+        produce a match that fails in the network layer for a reason that has
+        nothing to do with the network.
+        """
+        with self.matchmaking_lock:
+            mine = self.searches.get(state.connection_id)
+            if mine is None:
+                return []
+            partner = None
+            for connection, other in self.searches.items():
+                if connection == state.connection_id:
+                    continue
+                if other["state"].xuid == state.xuid:
+                    continue  # the same player on a second connection
+                if other["draft"].protocol_version != mine["draft"].protocol_version:
+                    continue
+                partner = other
+                break
+            if partner is None:
+                return []
+            for entry in (mine, partner):
+                self.searches.pop(entry["state"].connection_id, None)
+            host, guest = partner, mine       # whoever was waiting hosts
+            game = host["draft"]
+            game.game_id = self.next_game_id
+            self.next_game_id += 1
+            self.games[game.game_id] = game
+
+        for entry in (host, guest):
+            self.forget_matchmaking(entry["state"].connection_id)
+
+        game.host_state = host["state"]
+        game.roster = [host["state"].connection_id, guest["state"].connection_id]
+        game.members = [
+            self.member(game, host["state"].xuid, host["state"].gamertag,
+                        host["state"].connection_id, host["draft"].host_address,
+                        slot=0, team=0, state=host["state"]),
+            self.member(game, guest["state"].xuid, guest["state"].gamertag,
+                        guest["state"].connection_id, guest["draft"].host_address,
+                        slot=1, team=1, state=guest["state"]),
+        ]
+        self.logger.event(
+            "matchmaking_paired",
+            game=game.game_id,
+            host=host["state"].xuid,
+            guest=guest["state"].xuid,
+            protocol_version=game.protocol_version,
+        )
+
+        # The host is told it created the game; the guest is told it is
+        # joining one that exists, which is what makes it dial rather than
+        # wait.
+        for frame in self.game_setup_notifications(game, session=host["session"]):
+            if host["state"].push(frame):
+                self.logger.frame("notification", host["state"], frame)
+        joining = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS,
+            encode_fields(self.game_setup_payload(game, session=guest["session"],
+                                                  result=MATCHMAKING_SUCCESS_JOINED_NEW_GAME)),
+        )
+        for frame in (joining, notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOIN_COMPLETED,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PID", INTEGER, guest["state"].xuid),
+            ]),
+        )):
+            if guest["state"].push(frame):
+                self.logger.frame("notification", guest["state"], frame)
+        # And the host hears that somebody arrived.
+        self.tell_members(game, notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOINING,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("PDAT", STRUCT, self.member_player(game, game.members[1])),
+            ]),
+        ), skip=guest["state"])
+        self.broadcast_census()
+        return []
 
     def find_synthetic_opponent(
         self, state: ClientState, session: int, draft: HostedGame, opponent: str
@@ -2508,10 +2704,17 @@ class Fifa14Protocol:
                     "HNET", LIST, (STRUCT, [(active, valu.value)])
                 )
         with self.matchmaking_lock:
-            self.searches[state.connection_id] = draft
+            self.searches[state.connection_id] = {
+                "state": state,
+                "session": session,
+                "draft": draft,
+            }
 
         self.schedule_matchmaking_timeout(state, session, value("DUR", 20000))
         self.broadcast_census()
+        # Somebody else may already be waiting, in which case neither of them
+        # has to wait any longer.
+        paired = self.pair_searches(state)
         return [
             response_frame(request, encode_fields([Field("MSID", INTEGER, session)])),
             notification_frame(
@@ -3021,6 +3224,10 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (GAME_MANAGER, GAME_MANAGER_ADVANCE_GAME_STATE):
+            return self.advance_game_state(request, state)
+        if route == (GAME_MANAGER, GAME_MANAGER_DESTROY_GAME):
+            return self.destroy_game(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_FINALIZE_GAME_CREATION):
             return self.finalize_game_creation(request, state)
         if route == (GAME_MANAGER, GAME_MANAGER_UPDATE_MESH_CONNECTION):
