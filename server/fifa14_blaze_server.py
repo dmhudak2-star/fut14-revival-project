@@ -60,6 +60,10 @@ USER_SESSIONS = 0x7802
 CARDHOUSE = 2148
 SPONSORED_EVENTS = 0x081C
 STATS = 7
+# Advertised in COMPONENT_IDS since the beginning and never once used: until
+# 21 August 2026 this server had not seen a single frame on component 4. Then
+# a console was taken into Face-à-Face and sent `startMatchmaking`.
+GAME_MANAGER = 4
 CENSUS_DATA = 10
 CLUBS = 11
 MESSAGING = 15
@@ -129,6 +133,27 @@ STATS_GET_KEY_SCOPES_MAP = 15
 STATS_GET_LEADERBOARD_GROUP = 10
 STATS_GET_CENTERED_LEADERBOARD = 13
 STATS_GET_PERIOD_IDS = 20
+
+# Command ids read out of FIFA 14's own `getCommandName` jump table, so they
+# are this build's, not another Blaze title's -- and FIFA 14's table does
+# differ from the widely published Battlefield 3 one (it has no `listGames` at
+# 17, and it adds `joinGameByUserList` at 30). The dozen that matter happen to
+# agree, and 13 is confirmed twice over: by the table, and by the payload the
+# console actually sent, which carries matchmaking criteria and a duration.
+GAME_MANAGER_START_MATCHMAKING = 13
+GAME_MANAGER_CANCEL_MATCHMAKING = 14
+
+# Notification ids from the same binary, and the first of these is a trap
+# worth naming. Blaze 2 called notification 10 `NotifyMatchmakingFinished` and
+# carried both outcomes on it. In FIFA 14 it is `NotifyMatchmakingFailed` and
+# carries only the failure path -- success arrives as `NotifyGameSetup` (20)
+# instead. Sending 10 to announce a match would end the search, not start one.
+NOTIFY_MATCHMAKING_FAILED = 10
+NOTIFY_MATCHMAKING_ASYNC_STATUS = 12
+
+# Blaze's MatchmakingResult. Only the two ends of it are needed here.
+MATCHMAKING_SESSION_TIMED_OUT = 3
+MATCHMAKING_SESSION_CANCELED = 4
 
 CENSUS_SUBSCRIBE = 1
 CENSUS_UNSUBSCRIBE = 2
@@ -987,6 +1012,12 @@ class Fifa14Protocol:
         # the console that has not named itself, which is what every caller
         # without a persona in hand means.
         self.accounts = accounts if accounts is not None else AccountStores()
+        # Matchmaking sessions in flight, by connection. The client is handed
+        # an id and refers to it afterwards -- cancelling names the session it
+        # is cancelling -- so something has to remember which is whose.
+        self.matchmaking: dict[int, int] = {}
+        self.matchmaking_lock = threading.Lock()
+        self.matchmaking_next = 1
 
     @property
     def identity_base(self) -> str:
@@ -1451,6 +1482,121 @@ class Fifa14Protocol:
         )
         return [response_frame(request, login), *notifications]
 
+    def open_matchmaking_session(self, state: ClientState) -> int:
+        """Hand out a matchmaking session id.
+
+        Non-zero is the whole point. `StartMatchmakingResponse` is a single
+        field, `MSID`, and a fieldless success -- which is what this server
+        answered on 21 August -- decodes as 0. The client then has no session
+        to wait on, no session to cancel, and sits on the search screen with
+        nothing to say about it.
+        """
+        with self.matchmaking_lock:
+            session = self.matchmaking_next
+            self.matchmaking_next += 1
+            self.matchmaking[state.connection_id] = session
+        return session
+
+    def close_matchmaking_session(self, state: ClientState) -> int:
+        with self.matchmaking_lock:
+            return self.matchmaking.pop(state.connection_id, 0)
+
+    def start_matchmaking(self, request: bytes, state: ClientState) -> list[bytes]:
+        """The first thing FIFA 14 ever said to GameManager on this server.
+
+        Captured 21 August 2026 from Face-à-Face, and it volunteers nearly
+        everything a matchmaker needs to know:
+
+            NTOP 130    PEER_TO_PEER_FULL_MESH -- the match itself runs
+                        console to console. This server is the matchmaker and
+                        an address relay; it is not in the game's data path.
+            GVER        the game protocol version string both consoles must
+                        agree on before they will play each other.
+            DUR 20000   the client gives the search twenty seconds.
+            PNET        an XboxClientAddress union carrying the console's
+                        XNADDR -- LAN address, online address, port 3074 and
+                        the machine's MAC -- which is precisely the blob the
+                        other console will need, verbatim, to dial it.
+
+        None of that is acted on yet. What is answered here is the session id
+        and an async status, which is the smallest reply that turns a silent
+        hang into a search the client is actually running -- and it is what
+        proves the notification path works before anything is built on it.
+        """
+        decoded = decode_frame(request)
+        fields = decoded["fields"]
+        session = self.open_matchmaking_session(state)
+
+        def value(label: str, fallback: Any = None) -> Any:
+            found = find_field(fields, label)
+            return found.value if found is not None else fallback
+
+        # The address is kept in the journal rather than in memory on purpose:
+        # relaying it needs a second console, and there is not one yet. When
+        # there is, this line is the record of what has to be relayed.
+        network = find_field(fields, "PNET")
+        self.logger.event(
+            "matchmaking_started",
+            connection=state.connection_id,
+            session=session,
+            persona=state.xuid,
+            topology=value("NTOP"),
+            mode=value("MODE"),
+            duration_ms=value("DUR"),
+            game_version=value("GVER"),
+            network=json_value(network) if network is not None else None,
+        )
+        return [
+            response_frame(request, encode_fields([Field("MSID", INTEGER, session)])),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_MATCHMAKING_ASYNC_STATUS,
+                encode_fields(
+                    [
+                        # No estimates to report -- there is nobody else on
+                        # this server to be matched against, so the list of
+                        # per-rule status is genuinely empty rather than
+                        # omitted.
+                        Field("ASIL", LIST, (STRUCT, [])),
+                        Field("MSID", INTEGER, session),
+                        Field("USID", INTEGER, state.xuid),
+                    ]
+                ),
+            ),
+        ]
+
+    def cancel_matchmaking(self, request: bytes, state: ClientState) -> list[bytes]:
+        """Back out of the search screen.
+
+        This is the half that can be proved with one console and no opponent.
+        A search that starts and then ends cleanly when the player backs out
+        exercises the session id, the notification id, the enum encoding and
+        the push path all at once -- and the console says whether it worked
+        by either returning to the menu or hanging.
+        """
+        session = self.close_matchmaking_session(state)
+        self.logger.event(
+            "matchmaking_cancelled",
+            connection=state.connection_id,
+            session=session,
+            persona=state.xuid,
+        )
+        return [
+            response_frame(request),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_MATCHMAKING_FAILED,
+                encode_fields(
+                    [
+                        Field("MAXF", INTEGER, 0),
+                        Field("MSID", INTEGER, session),
+                        Field("RSLT", INTEGER, MATCHMAKING_SESSION_CANCELED),
+                        Field("USID", INTEGER, state.xuid),
+                    ]
+                ),
+            ),
+        ]
+
     def user_identification(self, xuid: int, name: str) -> list[Field]:
         """One player, in the shape both sides of this protocol use for them.
 
@@ -1908,6 +2054,10 @@ class Fifa14Protocol:
             ]
         if route == (STATS, STATS_GET_PERIOD_IDS):
             return [self.period_ids(request)]
+        if route == (GAME_MANAGER, GAME_MANAGER_START_MATCHMAKING):
+            return self.start_matchmaking(request, state)
+        if route == (GAME_MANAGER, GAME_MANAGER_CANCEL_MATCHMAKING):
+            return self.cancel_matchmaking(request, state)
         if route == (USER_SESSIONS, USER_SESSIONS_LOOKUP_USER):
             return [self.lookup_user(request, state)]
         if route == (USER_SESSIONS, USER_SESSIONS_LOOKUP_USERS):
