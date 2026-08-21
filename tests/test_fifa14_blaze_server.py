@@ -2378,15 +2378,29 @@ class CreateGameTests(unittest.TestCase):
         game = {f.label: f.value for f in by_label(setup, "GAME").value}
         self.assertEqual(game["GTYP"], "gameType0")
         self.assertEqual(game["CAP"], (INTEGER, [2, 0, 0, 0]))
-        # Only the members read out of the title's own reflection table go
-        # out. A tag that really belongs to this class but whose type was
-        # assumed wrongly desynchronises the whole struct, and a client that
-        # cannot parse the game drops the notification without a word.
+        # All thirty-six members, less the two the host has not handed over
+        # yet. The first pass sent fourteen, because fourteen was all the
+        # member table appeared to hold -- the other twenty-two are written
+        # into that table at startup, each tag assembled from a pair of
+        # instructions, which is why searching the image for them found
+        # nothing while they travelled on the wire the whole time.
         self.assertEqual(
             sorted(game),
             ["ADMN", "ATTR", "CAP", "CRIT", "GID", "GMRG", "GNAM", "GPVH",
-             "GSET", "GSID", "GSTA", "GTYP", "GURL", "HNET"],
+             "GSET", "GSID", "GSTA", "GTYP", "GURL", "HNET", "HSES", "IGNO",
+             "MATR", "MCAP", "NQOS", "NRES", "NTOP", "PGID", "PGSR", "PHST",
+             "PRES", "PSAS", "QCAP", "RNFO", "SEED", "THST", "TIDS", "UUID",
+             "VOIP", "VSTR"],
         )
+        # XNNC and XSES are members and are deliberately absent: they are the
+        # host's XNet nonce and session, which arrive in finalizeGameCreation.
+        self.assertNotIn("XNNC", game)
+        self.assertNotIn("XSES", game)
+        # Which session hosts, said twice because the game data carries it
+        # twice -- platform host and topology host.
+        for label in ("PHST", "THST"):
+            host = {f.label: f.value for f in game[label]}
+            self.assertEqual(host["HPID"], 2535469248587161)
         # The host's address, handed straight back. A second console dials
         # this blob; a byte changed here is a match that never connects.
         addresses = game["HNET"][1]
@@ -2733,3 +2747,26 @@ class SyntheticOpponentTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIs(found[0]["synthetic"], True)
         self.assertEqual(found[0]["opponent"], "Sparring")
+
+    def test_the_roster_carries_the_session_id_the_client_knows_itself_by(self) -> None:
+        """`UID` is mPlayerSessionId, and it is how the client recognises
+        itself in a roster. Without it there is a game with no local player in
+        it, and the setup is dropped without an error and without a word --
+        which is what six delivered frames and a spinning console looked like.
+        """
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        _, roster = by_label(self.pushed()[0], "PROS").value
+        player = {f.label: f.value for f in roster[0]}
+        self.assertEqual(player["UID"], 2535469248587161)
+        self.assertEqual(player["UGID"], (0, 0, 0))
+        # Fifteen of the eighteen: BLOB, PATT and ROLE are empty and left out,
+        # which is what the client does with its own -- its 611-byte
+        # createGame is thirty-four members less seven empty containers.
+        self.assertEqual(len(player), 15)
+        # And the opponent knows itself by its own session too.
+        joining = next(f for f in self.pushed() if f["command"] == 21)
+        other = {f.label: f.value for f in by_label(joining, "PDAT").value}
+        self.assertEqual(other["UID"], SERVER.SYNTHETIC_PERSONA)
