@@ -2594,3 +2594,134 @@ class CensusTests(unittest.TestCase):
         self.assertIsNotNone(self.protocol.census_pulse)
         self.protocol.handle(request(10, 2), self.state)
         self.assertIsNone(self.protocol.census_pulse)
+
+
+class SyntheticOpponentTests(unittest.TestCase):
+    """Finding somebody who does not exist, on purpose.
+
+    There is nobody else here, so a search honestly times out. That leaves one
+    question unanswerable with a single console: how far does the title get
+    into a match before it needs a peer that answers UDP? Every Blaze-side
+    layout can be wrong in ways that look identical to a network failure from
+    the outside, and telling those apart is the whole point.
+    """
+
+    class Channel:
+        def __init__(self) -> None:
+            self.sent: list[bytes] = []
+
+        def sendall(self, data: bytes) -> None:
+            self.sent.append(data)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.journal = SERVER.Journal(Path(self.temp.name) / "journal.jsonl")
+        self.protocol = SERVER.Fifa14Protocol("192.0.2.35", 10041, self.journal)
+        self.state = SERVER.ClientState(1, ("192.168.1.25", 1040), 10041)
+        self.state.xuid = 2535469248587161
+        self.state.gamertag = "Imskobogota6z"
+        self.state.authenticated = True
+        self.channel = self.Channel()
+        self.state.channel = self.channel
+
+    def tearDown(self) -> None:
+        os.environ.pop("FIFA14_TEST_OPPONENT", None)
+        self.protocol.stop()
+        self.temp.cleanup()
+
+    def search(self) -> int:
+        answered = self.protocol.handle(
+            request(4, 13, [
+                Field("DUR", INTEGER, 20000),
+                Field("GVER", STRING, "qa-only-day45"),
+                Field("NTOP", INTEGER, 130),
+                Field("PNET", SERVER.UNION, (0, Field("VALU", STRUCT, [
+                    Field("MACI", INTEGER, 839678451),
+                    Field("XDDR", BINARY, bytes([192, 168, 1, 25]) + bytes(32)),
+                    Field("XUID", INTEGER, 2535469248587161),
+                ]))),
+            ]),
+            self.state,
+        )
+        return by_label(decode_frame(answered[0]), "MSID").value
+
+    def pushed(self) -> list[dict]:
+        return [decode_frame(frame) for frame in self.channel.sent]
+
+    def test_without_the_flag_a_search_still_honestly_times_out(self) -> None:
+        """Off by default. A server that invented opponents on its own would
+        be lying to whoever ran it."""
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        commands = [(f["component"], f["command"]) for f in self.pushed()]
+        self.assertEqual(commands, [(4, 10)])
+
+    def test_with_the_flag_the_search_finds_somebody(self) -> None:
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        commands = [(f["component"], f["command"]) for f in self.pushed()]
+        self.assertEqual(
+            commands,
+            [(4, 20), (4, 71), (4, 30), (4, 100), (4, 21), (4, 30)],
+        )
+
+    def test_the_setup_reason_says_a_search_found_it(self) -> None:
+        """Not the dataless CREATE_GAME context -- this game was matchmade,
+        which is union index 3 and carries the session it belongs to."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        setup = self.pushed()[0]
+        active, valu = by_label(setup, "REAS").value
+        self.assertEqual(active, 3)
+        members = {f.label: f.value for f in valu.value}
+        self.assertEqual(members["MSID"], session)
+        self.assertEqual(members["RSLT"], 0)
+        self.assertNotIn("USID", members)
+
+    def test_the_game_is_built_from_what_the_console_asked_for(self) -> None:
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        game = {f.label: f.value for f in by_label(self.pushed()[0], "GAME").value}
+        self.assertEqual(game["NTOP"], 130)
+        self.assertEqual(game["VSTR"], "qa-only-day45")
+        addresses = game["HNET"][1]
+        active, members = addresses[0]
+        self.assertEqual(active, 0)
+        self.assertEqual(
+            SERVER.find_field(members, "XDDR").value[:4], bytes([192, 168, 1, 25])
+        )
+
+    def test_the_opponent_arrives_as_two_events(self) -> None:
+        """One that it is happening and one that it is done, because that is
+        how a client tracks a player."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.channel.sent.clear()
+        self.protocol.expire_matchmaking(self.state, session)
+        joining = next(f for f in self.pushed() if f["command"] == 21)
+        player = {f.label: f.value for f in by_label(joining, "PDAT").value}
+        self.assertEqual(player["NAME"], "Sparring")
+        self.assertEqual(player["PID"], SERVER.SYNTHETIC_PERSONA)
+        self.assertEqual(player["TIDX"], 1)  # the other team
+
+    def test_the_journal_says_it_was_made_up(self) -> None:
+        """A server that invented an opponent and did not say so would be a
+        server nobody could trust the rest of."""
+        os.environ["FIFA14_TEST_OPPONENT"] = "Sparring"
+        session = self.search()
+        self.protocol.expire_matchmaking(self.state, session)
+        events = [
+            json.loads(line)
+            for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
+        ]
+        found = [e for e in events if e.get("event") == "matchmaking_found_synthetic_opponent"]
+        self.assertEqual(len(found), 1)
+        self.assertIs(found[0]["synthetic"], True)
+        self.assertEqual(found[0]["opponent"], "Sparring")
