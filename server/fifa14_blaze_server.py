@@ -156,6 +156,7 @@ GAME_MANAGER_CANCEL_MATCHMAKING = 14
 # instead. Sending 10 to announce a match would end the search, not start one.
 NOTIFY_GAME_SETUP = 20
 NOTIFY_PLATFORM_HOST_INITIALIZED = 71
+NOTIFY_PLAYER_JOIN_COMPLETED = 30
 NOTIFY_GAME_STATE_CHANGE = 100
 NOTIFY_MATCHMAKING_FAILED = 10
 NOTIFY_MATCHMAKING_ASYNC_STATUS = 12
@@ -1750,6 +1751,26 @@ class Fifa14Protocol:
         # certain -- 130 and 131 rather than the 3 and 4 the other members of
         # that enum would suggest -- and `GSTA` is the tag ReplicatedGameData
         # uses for the same member.
+        # And say that the host is in.
+        #
+        # The roster already carries it as ACTIVE_CONNECTED, but a roster is a
+        # description and this is an event. Pressing "Créer un match" makes
+        # the console drop its A/B prompts -- so it does act on the setup --
+        # and then wait, which is what a client does when it is holding a
+        # player it has not been told finished joining.
+        #
+        # `{GID, PID}` is the whole of notification 30 and both tags are
+        # certain.
+        joined = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_PLAYER_JOIN_COMPLETED,
+            encode_fields(
+                [
+                    Field("GID", INTEGER, game.game_id),
+                    Field("PID", INTEGER, game.persona_id),
+                ]
+            ),
+        )
         game.state = GAME_STATE_PRE_GAME
         pre_game = notification_frame(
             GAME_MANAGER,
@@ -1761,7 +1782,7 @@ class Fifa14Protocol:
                 ]
             ),
         )
-        return [setup, host, pre_game]
+        return [setup, host, joined, pre_game]
 
     def create_game(self, request: bytes, state: ClientState) -> list[bytes]:
         """"Créer un match", once the search has found nobody.
