@@ -2376,10 +2376,17 @@ class CreateGameTests(unittest.TestCase):
     def test_the_game_it_is_told_about_is_the_one_it_asked_for(self) -> None:
         setup = decode_frame(self.protocol.handle(self.frame, self.state)[1])
         game = {f.label: f.value for f in by_label(setup, "GAME").value}
-        self.assertEqual(game["NTOP"], 130)
         self.assertEqual(game["GTYP"], "gameType0")
-        self.assertEqual(game["VSTR"], "qa-only-day45")
         self.assertEqual(game["CAP"], (INTEGER, [2, 0, 0, 0]))
+        # Only the members read out of the title's own reflection table go
+        # out. A tag that really belongs to this class but whose type was
+        # assumed wrongly desynchronises the whole struct, and a client that
+        # cannot parse the game drops the notification without a word.
+        self.assertEqual(
+            sorted(game),
+            ["ADMN", "ATTR", "CAP", "CRIT", "GID", "GMRG", "GNAM", "GPVH",
+             "GSET", "GSID", "GSTA", "GTYP", "GURL", "HNET"],
+        )
         # The host's address, handed straight back. A second console dials
         # this blob; a byte changed here is a match that never connects.
         addresses = game["HNET"][1]
@@ -2689,8 +2696,9 @@ class SyntheticOpponentTests(unittest.TestCase):
         self.channel.sent.clear()
         self.protocol.expire_matchmaking(self.state, session)
         game = {f.label: f.value for f in by_label(self.pushed()[0], "GAME").value}
-        self.assertEqual(game["NTOP"], 130)
-        self.assertEqual(game["VSTR"], "qa-only-day45")
+        # Still INITIALIZING in the setup itself; notification 100 moves it to
+        # PRE_GAME a frame later.
+        self.assertEqual(game["GSTA"], 1)
         addresses = game["HNET"][1]
         active, members = addresses[0]
         self.assertEqual(active, 0)

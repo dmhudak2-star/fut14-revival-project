@@ -1800,17 +1800,34 @@ class Fifa14Protocol:
             Field("GTYP", STRING, game.game_type),
             Field("GURL", STRING, game.status_url),
             game.host_addresses or Field("HNET", LIST, (STRUCT, [])),
-            Field("NQOS", STRUCT, [
-                Field("DBPS", INTEGER, 0),
-                # NAT_TYPE_OPEN. The console reported exactly this in its own
-                # UserSessions data, so it is repeated rather than assumed.
-                Field("NATT", INTEGER, 0),
-                Field("UBPS", INTEGER, 0),
-            ]),
-            Field("NTOP", INTEGER, game.topology),
-            Field("PSAS", STRING, ""),
-            Field("VSTR", STRING, game.protocol_version),
         ]
+        # NQOS, NTOP, PSAS and VSTR were here, and are not any more.
+        #
+        # Their tags are certain -- read from other classes in the same binary
+        # -- but their *membership in this class* is not, and that turns out
+        # to be the dangerous half. An unknown tag is skipped harmlessly; a
+        # tag that really is a member of this class but whose type is not what
+        # was assumed desynchronises the whole struct, and a client that
+        # cannot parse the game silently drops the notification. Which is
+        # exactly the symptom: six frames delivered, no error, no
+        # disconnection, and the console still drawing "Recherche
+        # d'adversaire...".
+        #
+        # So this sends the fourteen members that were read out of the title's
+        # own reflection table and nothing else. If the console reacts, the
+        # extras were the problem and they can come back one at a time; if it
+        # does not, they never were and the missing members are.
+        if os.environ.get("FIFA14_GAME_EXTRAS", "").strip():
+            fields.extend([
+                Field("NQOS", STRUCT, [
+                    Field("DBPS", INTEGER, 0),
+                    Field("NATT", INTEGER, 0),
+                    Field("UBPS", INTEGER, 0),
+                ]),
+                Field("NTOP", INTEGER, game.topology),
+                Field("PSAS", STRING, ""),
+                Field("VSTR", STRING, game.protocol_version),
+            ])
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
     def replicated_game_player(self, game: HostedGame) -> list[Field]:
