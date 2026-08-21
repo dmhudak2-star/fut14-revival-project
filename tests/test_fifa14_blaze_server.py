@@ -2355,7 +2355,7 @@ class CreateGameTests(unittest.TestCase):
         """A number alone is not a game: the client waits to be told what it
         is, and by whom it is hosted."""
         answered = self.protocol.handle(self.frame, self.state)
-        self.assertEqual(len(answered), 3)
+        self.assertEqual(len(answered), 4)
         game_id = by_label(decode_frame(answered[0]), "GID").value
         self.assertNotEqual(game_id, 0)
 
@@ -2443,3 +2443,28 @@ class CreateGameTests(unittest.TestCase):
     def test_creating_a_game_is_no_longer_an_unknown_route(self) -> None:
         self.protocol.handle(self.frame, self.state)
         self.assertEqual(self.events("unknown_route"), [])
+
+
+    def test_the_game_is_moved_out_of_initialising(self) -> None:
+        """The setup alone left the console back on the settings screen.
+
+        A game that has just been created is INITIALIZING; a game waiting for
+        an opponent is PRE_GAME. The client had read the game and had no
+        reason to sit in one, because as far as it knew it was still being
+        built.
+        """
+        answered = self.protocol.handle(self.frame, self.state)
+        state_change = decode_frame(answered[3])
+        self.assertEqual((state_change["component"], state_change["command"]), (4, 100))
+        # 130, not 3 -- the two GameState values that matter are the two that
+        # look least like the rest of the enum.
+        self.assertEqual(by_label(state_change, "GSTA").value, 130)
+        self.assertEqual(
+            by_label(state_change, "GID").value,
+            by_label(decode_frame(answered[0]), "GID").value,
+        )
+
+    def test_the_game_the_server_remembers_says_pre_game_too(self) -> None:
+        self.protocol.handle(self.frame, self.state)
+        game = next(iter(self.protocol.games.values()))
+        self.assertEqual(game.state, 130)
