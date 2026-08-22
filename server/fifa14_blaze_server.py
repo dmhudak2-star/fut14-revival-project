@@ -1369,10 +1369,17 @@ class Fifa14Protocol:
             timer.cancel()
 
     def forget_matchmaking(self, connection_id: int) -> int:
-        """Drop a connection's search and stop its timer. Returns the id."""
+        """Drop a connection's search and stop its timer. Returns the id.
+
+        The pending search goes too. It did not, and a cancelled search stayed
+        in the pool for ever: on 22 August a player backed out of a search at
+        00:53:55 to let the other host instead, and was paired as host anyway
+        a minute later, from an entry that should not have existed.
+        """
         with self.matchmaking_lock:
             session = self.matchmaking.pop(connection_id, 0)
             timer = self.matchmaking_timers.pop(connection_id, None)
+            self.searches.pop(connection_id, None)
         if timer is not None:
             timer.cancel()
         return session
@@ -2532,18 +2539,33 @@ class Fifa14Protocol:
             session_bytes=len(game.xnet_session) if game else 0,
         )
         replies = [response_frame(request)]
-        if game is not None:
-            replies.append(
-                notification_frame(
-                    GAME_MANAGER,
-                    NOTIFY_GAME_SESSION_UPDATED,
-                    encode_fields([
-                        Field("GID", INTEGER, game.game_id),
-                        Field("XNNC", BINARY, game.xnet_nonce),
-                        Field("XSES", BINARY, game.xnet_session),
-                    ]),
-                )
-            )
+        if game is None:
+            return replies
+
+        updated = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_GAME_SESSION_UPDATED,
+            encode_fields([
+                Field("GID", INTEGER, game.game_id),
+                Field("XNNC", BINARY, game.xnet_nonce),
+                Field("XSES", BINARY, game.xnet_session),
+            ]),
+        )
+        # To everybody, not just back to the host that sent it.
+        #
+        # The host already has these -- it built them. The one who needs them
+        # is the guest: XSES is the session key its console dials the host
+        # with, and without it there is nothing it can do but wait. On 22
+        # August a guest sat through three pairings saying nothing, and the
+        # journal showed it leaving game 1 cleanly at the end -- so it had
+        # registered the game perfectly well. It simply had no way to reach
+        # the other console.
+        #
+        # And a guest never sends finalizeGameCreation of its own: creating
+        # the session is the host's job. Its silence there was correct all
+        # along, and was read as a fault for an hour.
+        self.tell_members(game, updated, skip=state)
+        replies.append(updated)
         return replies
 
     def update_mesh_connection(self, request: bytes, state: ClientState) -> list[bytes]:
@@ -2738,9 +2760,19 @@ class Fifa14Protocol:
             protocol_version=game.protocol_version,
         )
 
-        # The host is told it created the game; the guest is told it is
-        # joining one that exists, which is what makes it dial rather than
-        # wait.
+        # The guest's setup is built *before* the host's notifications, because
+        # building the host's advances the game to PRE_GAME. Built after, the
+        # guest was handed a game already in the state it was about to be told
+        # to enter, while the host saw it in INITIALIZING and watched it move.
+        # Two clients given different games is not a symmetry worth having,
+        # whether or not it is what stopped the guest.
+        guest_setup = notification_frame(
+            GAME_MANAGER,
+            NOTIFY_GAME_SETUP,
+            encode_fields(self.game_setup_payload(
+                game, session=guest["session"],
+                result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME)),
+        )
         for frame in self.game_setup_notifications(game, session=host["session"]):
             if host["state"].push(frame):
                 self.logger.frame("notification", host["state"], frame)
@@ -2757,13 +2789,7 @@ class Fifa14Protocol:
         # So both sides are set up the same way and differ only in their
         # setup reason, which is the thing that actually says who joined what.
         for frame in (
-            notification_frame(
-                GAME_MANAGER,
-                NOTIFY_GAME_SETUP,
-                encode_fields(self.game_setup_payload(
-                    game, session=guest["session"],
-                    result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME)),
-            ),
+            guest_setup,
             notification_frame(
                 GAME_MANAGER,
                 NOTIFY_PLATFORM_HOST_INITIALIZED,

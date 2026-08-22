@@ -3268,3 +3268,46 @@ class TwoConsolesTests(unittest.TestCase):
             self.assertEqual(len(self.protocol.games), 1)
         finally:
             os.environ.pop("FIFA14_SEARCH_WINDOW", None)
+
+    def test_a_cancelled_search_leaves_the_pool(self) -> None:
+        """Backing out to let the other player host has to actually work.
+
+        A cancelled search stayed in the pool and could still be paired --
+        which is how somebody who had deliberately stood down was made host
+        anyway, a minute after standing down.
+        """
+        self.search(self.one, ip=25)
+        self.protocol.handle(request(4, 14), self.one)
+        self.assertEqual(self.protocol.searches, {})
+        self.search(self.two, ip=26)
+        self.settle(0.8)
+        self.assertEqual(self.protocol.games, {})
+
+    def test_the_host_key_reaches_the_guest(self) -> None:
+        """XSES is the session key the guest's console dials the host with.
+
+        It was sent back only to the host, which had built it. The guest sat
+        through pairing after pairing saying nothing -- and the journal showed
+        it leaving the game cleanly at the end, so it had registered the game
+        perfectly well. It simply had no way to reach the other console.
+        """
+        self.search(self.one, ip=25)
+        self.search(self.two, ip=26)
+        self.settle()
+        game_id = next(iter(self.protocol.games))
+        host = self.one if self.protocol.games[game_id].persona_id == self.one.xuid else self.two
+        guest = self.two if host is self.one else self.one
+        guest.channel.sent.clear()
+        nonce = bytes.fromhex("C9B3ECE69B85C5B4DC8000000006BBDD")
+        self.protocol.handle(
+            request(4, 15, [
+                Field("GID", INTEGER, game_id),
+                Field("XNNC", BINARY, nonce),
+                Field("XSES", BINARY, b"\xAB" * 256),
+            ]),
+            host,
+        )
+        updated = [f for f in self.pushed(guest) if f["command"] == 115]
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(by_label(updated[0], "XNNC").value, nonce)
+        self.assertEqual(len(by_label(updated[0], "XSES").value), 256)
