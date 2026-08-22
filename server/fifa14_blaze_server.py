@@ -219,6 +219,7 @@ GAME_STATE_PRE_GAME = 130
 GAME_STATE_IN_GAME = 131
 
 # PlayerState. A player who is in the game and reachable is 4, not 2.
+PLAYER_STATE_ACTIVE_CONNECTING = 2
 PLAYER_STATE_ACTIVE_CONNECTED = 4
 
 # PlayerNetConnectionStatus, as reported by updateMeshConnection.
@@ -1977,7 +1978,22 @@ class Fifa14Protocol:
             Field("PID", INTEGER, member["persona"]),
             Field("SID", INTEGER, member["slot"]),
             Field("SLOT", INTEGER, 0),
-            Field("STAT", INTEGER, PLAYER_STATE_ACTIVE_CONNECTED),
+            # Connected only if they have said so.
+            #
+            # Every player went out as ACTIVE_CONNECTED, which for a guest
+            # that has not reached anybody is not true and is the kind of
+            # untrue that stops things happening: a client told the link is
+            # already up has no reason to go and put it up. It waits, which is
+            # what a guest did through five pairings tonight while receiving
+            # the game, the host, the state and the session key and answering
+            # none of it.
+            #
+            # The host is connected to itself by definition. Everybody else
+            # starts connecting and is promoted when their mesh says so.
+            Field("STAT", INTEGER,
+                  PLAYER_STATE_ACTIVE_CONNECTED
+                  if member["persona"] == game.persona_id
+                  else PLAYER_STATE_ACTIVE_CONNECTING),
             Field("TIDX", INTEGER, member["team"]),
             Field("TIME", INTEGER, int(time.time())),
             Field("UGID", OBJECT_ID, (0, 0, 0)),
