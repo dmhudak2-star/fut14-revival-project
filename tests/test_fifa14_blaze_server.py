@@ -3415,3 +3415,40 @@ class TwoConsolesTests(unittest.TestCase):
             self.assertEqual(
                 SERVER.find_field(valu.value, "XDDR").value[4:8], bytes(4)
             )
+
+    def test_the_pairs_file_names_the_two_public_addresses(self) -> None:
+        """The relay sees packets and a source address, nothing more. This
+        server is what knows who was paired with whom, so it is what has to
+        say so -- guessing from traffic alone works with two players and
+        breaks at the third."""
+        pairs = Path(self.temp.name) / "relay-pairs.json"
+        os.environ["FIFA14_RELAY_PAIRS"] = str(pairs)
+        try:
+            self.search(self.one, ip=25)
+            self.search(self.two, ip=26)
+            self.settle()
+            written = json.loads(pairs.read_text())
+            self.assertEqual(
+                [sorted(p) for p in written["pairs"]],
+                [["192.168.1.25", "192.168.1.26"]],
+            )
+        finally:
+            os.environ.pop("FIFA14_RELAY_PAIRS", None)
+
+    def test_a_game_that_empties_leaves_no_pair_behind(self) -> None:
+        """Otherwise the relay keeps forwarding one stranger's traffic to
+        another long after the game is over."""
+        pairs = Path(self.temp.name) / "relay-pairs.json"
+        os.environ["FIFA14_RELAY_PAIRS"] = str(pairs)
+        try:
+            self.search(self.one, ip=25)
+            self.search(self.two, ip=26)
+            self.settle()
+            game_id = next(iter(self.protocol.games))
+            for who in (self.two, self.one):
+                self.protocol.handle(
+                    request(4, 22, [Field("GID", INTEGER, game_id)]), who
+                )
+            self.assertEqual(json.loads(pairs.read_text())["pairs"], [])
+        finally:
+            os.environ.pop("FIFA14_RELAY_PAIRS", None)
