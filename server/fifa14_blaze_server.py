@@ -1181,6 +1181,33 @@ def search_window() -> float:
         return 0.0
 
 
+def test_host() -> str:
+    """Le nom d'un hôte que ce serveur fait attendre dans la file, ou rien.
+
+    `FIFA14_TEST_OPPONENT` met l'adversaire inventé du côté *invité* : la
+    console cherche, personne ne vient, et c'est elle qui héberge. Elle joue
+    donc toujours le rôle qui fonctionne.
+
+    Le rôle qui ne fonctionne pas est l'autre. Le 22 août, deux consoles ont
+    été appariées cinq fois de suite : celle qui hébergeait construisait sa
+    session XNet en deux secondes, celle qui rejoignait recevait la partie,
+    l'hôte, l'état, la clé -- et ne répondait rien. Elle comprenait tout : à
+    00 h 54 elle a quitté la partie proprement. Elle n'avait simplement rien à
+    faire de ce qu'on lui donnait.
+
+    Impossible de regarder à l'intérieur de cette console-là : elle est à six
+    mille kilomètres et sans débogueur. `FIFA14_TEST_HOST=Sparring` met donc
+    l'inventé du côté *hôte*, en le faisant attendre dans la file avant que
+    la vraie console n'arrive. Elle arrive seconde, devient invitée, et reçoit
+    exactement ce que l'autre recevait -- sur du matériel qu'on peut ouvrir.
+
+    Ça ne donnera jamais un vrai match : personne ne répond à l'adresse de
+    l'hôte inventé. Ce n'est pas la question posée. La question est de savoir
+    si un invité *essaie*.
+    """
+    return os.environ.get("FIFA14_TEST_HOST", "").strip()
+
+
 def test_opponent() -> str:
     """The name of an opponent this server will invent, or nothing.
 
@@ -2708,6 +2735,42 @@ class Fifa14Protocol:
             delivered=delivered,
         )
 
+    def waiting_test_host(self, arriving: HostedGame) -> dict | None:
+        """Un hôte inventé, déjà dans la file quand la vraie console arrive.
+
+        Il porte la version de protocole de celui qui arrive -- sans quoi ils
+        ne seraient pas compatibles et rien ne se passerait -- et une adresse
+        bien formée qui ne mène nulle part. Son `since` est antérieur, donc
+        c'est lui qui héberge, et la vraie console est l'invitée.
+        """
+        name = test_host()
+        if not name:
+            return None
+        pretend = ClientState(-1, ("0.0.0.0", 0), 0)
+        pretend.xuid = SYNTHETIC_PERSONA
+        pretend.gamertag = name
+        pretend.authenticated = True
+        # Pas de canal : tout ce qu'on lui pousse tombe dans le vide, ce qui
+        # est exactement ce qu'il faut.
+        draft = HostedGame(
+            game_id=0,
+            persona_id=SYNTHETIC_PERSONA,
+            gamertag=name,
+            protocol_version=arriving.protocol_version,
+            topology=arriving.topology,
+            settings=arriving.settings,
+            connection_group=SYNTHETIC_PERSONA,
+        )
+        active, valu = self.synthetic_address()
+        draft.host_address = (active, valu)
+        draft.host_addresses = Field("HNET", LIST, (STRUCT, [(active, valu.value)]))
+        return {
+            "state": pretend,
+            "session": 0,
+            "draft": draft,
+            "since": time.monotonic() - 1.0,
+        }
+
     def pair_searches(self, state: ClientState) -> list[bytes]:
         """Two consoles looking for a game at the same time are each other's.
 
@@ -2730,6 +2793,12 @@ class Fifa14Protocol:
             mine = self.searches.get(state.connection_id)
             if mine is None:
                 return []
+            # Un hôte de test attend déjà, s'il y en a un et qu'il n'y a
+            # personne d'autre.
+            if len(self.searches) == 1:
+                pretend = self.waiting_test_host(mine["draft"])
+                if pretend is not None:
+                    self.searches[pretend["state"].connection_id] = pretend
             partner = None
             for connection, other in self.searches.items():
                 if connection == state.connection_id:
@@ -2843,6 +2912,30 @@ class Fifa14Protocol:
                 Field("PDAT", STRUCT, self.member_player(game, game.members[1])),
             ]),
         ), skip=guest["state"])
+
+        # Un hôte inventé n'enverra jamais son finalizeGameCreation, puisqu'il
+        # n'a pas de console pour fabriquer une session. Le serveur la pose à
+        # sa place, sinon l'invité ne recevrait pas la notification 115 et la
+        # reproduction serait incomplète là où ça compte le plus.
+        if host["state"].xuid == SYNTHETIC_PERSONA:
+            game.xnet_nonce = bytes(range(16))
+            game.xnet_session = bytes(range(256))
+            updated = notification_frame(
+                GAME_MANAGER,
+                NOTIFY_GAME_SESSION_UPDATED,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("XNNC", BINARY, game.xnet_nonce),
+                    Field("XSES", BINARY, game.xnet_session),
+                ]),
+            )
+            self.tell_members(game, updated)
+            self.logger.event(
+                "synthetic_host_session",
+                game=game.game_id,
+                synthetic=True,
+            )
+
         self.broadcast_census()
         return []
 

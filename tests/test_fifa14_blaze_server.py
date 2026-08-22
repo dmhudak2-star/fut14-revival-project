@@ -3311,3 +3311,51 @@ class TwoConsolesTests(unittest.TestCase):
         self.assertEqual(len(updated), 1)
         self.assertEqual(by_label(updated[0], "XNNC").value, nonce)
         self.assertEqual(len(by_label(updated[0], "XSES").value), 256)
+
+    def test_a_waiting_test_host_makes_the_real_console_the_guest(self) -> None:
+        """The role that fails, put on hardware that can be watched.
+
+        FIFA14_TEST_OPPONENT puts the invented player on the guest side, so
+        the console always plays the role that works. This puts it on the host
+        side instead, already waiting, so the console arrives second and
+        receives exactly what the far-away console was receiving.
+        """
+        os.environ["FIFA14_TEST_HOST"] = "Sparring"
+        try:
+            self.search(self.one, ip=25)
+            self.settle()
+            self.assertEqual(len(self.protocol.games), 1)
+            game = next(iter(self.protocol.games.values()))
+            # The invented one hosts; the real console joined it.
+            self.assertEqual(game.persona_id, SERVER.SYNTHETIC_PERSONA)
+            self.assertEqual(
+                [m["gamertag"] for m in game.members], ["Sparring", "Imskobogota6z"]
+            )
+            commands = [f["command"] for f in self.pushed(self.one)]
+            # Everything a guest gets, including the session key -- which the
+            # invented host cannot produce, so the server posts it for it.
+            self.assertEqual(commands, [20, 71, 30, 100, 115])
+        finally:
+            os.environ.pop("FIFA14_TEST_HOST", None)
+
+    def test_the_guest_is_told_it_is_still_connecting(self) -> None:
+        """Its own roster entry has to say what is true of it."""
+        os.environ["FIFA14_TEST_HOST"] = "Sparring"
+        try:
+            self.search(self.one, ip=25)
+            self.settle()
+            setup = next(f for f in self.pushed(self.one) if f["command"] == 20)
+            _, roster = by_label(setup, "PROS").value
+            players = {
+                SERVER.find_field(e, "NAME").value:
+                SERVER.find_field(e, "STAT").value for e in roster
+            }
+            self.assertEqual(players["Sparring"], 4)          # ACTIVE_CONNECTED
+            self.assertEqual(players["Imskobogota6z"], 2)     # ACTIVE_CONNECTING
+        finally:
+            os.environ.pop("FIFA14_TEST_HOST", None)
+
+    def test_without_the_flag_nobody_is_waiting(self) -> None:
+        self.search(self.one, ip=25)
+        self.settle(0.8)
+        self.assertEqual(self.protocol.games, {})
