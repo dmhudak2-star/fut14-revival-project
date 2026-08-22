@@ -88,3 +88,38 @@ def test_the_probe_records_what_arrives() -> None:
         probe.wait(timeout=5)
         if journal.exists():
             journal.unlink()
+
+
+def mirrored():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "blaze_server_mirror", REPO / "server" / "fifa14_blaze_server.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.mirrored_address
+
+
+def test_the_borrowed_address_keeps_the_part_nobody_can_read() -> None:
+    """abOnline is the whole point of borrowing it.
+
+    The first probe gave a clean but confounded result: the invented host
+    carried a fabricated XNADDR with twenty zero bytes where the Xbox LIVE
+    gateway writes its own, and the console sent nothing at all -- which is
+    what a kernel refusing a malformed address looks like, and says nothing
+    about whether a rewritten *real* one would be used.
+    """
+    out = mirrored()(REAL)
+    assert len(out) == 36
+    assert out[16:] == REAL[16:]          # abOnline, authentique
+    assert out[0:10] == REAL[0:10]        # adresses et port, inchangés ici
+
+
+def test_the_borrowed_address_does_not_claim_the_same_hardware() -> None:
+    """Two machines announcing one MAC on one network is a confusion worth
+    avoiding. The locally-administered bit makes an address no sold hardware
+    can have."""
+    out = mirrored()(REAL)
+    assert out[10:16] != REAL[10:16]
+    assert out[10] & 0x02                 # administrée localement

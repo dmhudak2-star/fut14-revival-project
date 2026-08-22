@@ -1230,6 +1230,46 @@ def relayed_address(address: bytes, relay: tuple[str, int]) -> bytes:
     return address[:4] + packed + port.to_bytes(2, "big") + address[10:]
 
 
+def mirror_test_host_address() -> bool:
+    """Faut-il donner à l'hôte inventé une adresse authentique ?
+
+    Le premier essai a donné un résultat net et biaisé : l'hôte inventé
+    portait un XNADDR fabriqué, avec ses vingt octets d'`abOnline` à zéro, et
+    la console n'a envoyé aucun paquet -- pas même un. C'est exactement ce
+    qu'on attend d'un noyau qui rejette une adresse malformée avant d'ouvrir
+    une socket. Ça ne dit rien de la question posée.
+
+    Avec `FIFA14_TEST_HOST_ADDRESS=mirror`, l'hôte inventé emprunte le XNADDR
+    de la console qui arrive : `abOnline` authentique, celui que la passerelle
+    Xbox LIVE a rempli, et seule l'adresse publique change ensuite par le
+    relais. Une seule variable bouge alors.
+
+    C'est une approximation, et il faut le dire : ce matériel-là appartient à
+    un compte machine, et le réutiliser sous un autre XUID peut être refusé
+    pour cette raison-là plutôt que pour l'adresse. Mais c'est le seul vrai
+    `abOnline` disponible, et un résultat avec une variable de moins vaut
+    mieux qu'un résultat avec deux.
+    """
+    return os.environ.get("FIFA14_TEST_HOST_ADDRESS", "").strip().lower() == "mirror"
+
+
+def mirrored_address(real: bytes) -> bytes:
+    """Le XNADDR d'une console, porté par quelqu'un d'autre.
+
+    `abOnline` est recopié tel quel -- c'est tout l'intérêt. La MAC, elle,
+    est modifiée : deux machines qui annoncent la même sur un même réseau,
+    c'est une confusion qu'on peut s'éviter. Le bit d'administration locale
+    est levé, ce qui donne une adresse qui ne peut appartenir à aucun
+    matériel vendu.
+    """
+    if len(real) < 36:
+        return real
+    mac = bytearray(real[10:16])
+    mac[0] |= 0x02
+    mac[5] ^= 0x01
+    return real[:10] + bytes(mac) + real[16:]
+
+
 def test_host() -> str:
     """Le nom d'un hôte que ce serveur fait attendre dans la file, ou rien.
 
@@ -2834,6 +2874,24 @@ class Fifa14Protocol:
             connection_group=SYNTHETIC_PERSONA,
         )
         active, valu = self.synthetic_address()
+        if mirror_test_host_address() and arriving.host_address is not None:
+            _, real = arriving.host_address
+            borrowed = []
+            for entry in real.value:
+                if entry.label == "XDDR":
+                    borrowed.append(Field(
+                        "XDDR", BINARY, mirrored_address(bytes(entry.value))
+                    ))
+                elif entry.label == "XUID":
+                    borrowed.append(Field("XUID", INTEGER, SYNTHETIC_PERSONA))
+                else:
+                    borrowed.append(entry)
+            valu = Field("VALU", STRUCT, borrowed)
+            self.logger.event(
+                "test_host_borrowed_address",
+                persona=arriving.persona_id,
+                synthetic=True,
+            )
         draft.host_address = (active, valu)
         draft.host_addresses = Field("HNET", LIST, (STRUCT, [(active, valu.value)]))
         return {
