@@ -100,6 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     endpoint: dict[str, tuple[str, int]] = {}
     counts: dict[str, int] = {}
     dropped: dict[str, int] = {}
+    # Ce qu'un joueur a envoyé avant que son partenaire n'ait parlé.
+    #
+    # La première version jetait ces paquets-là : on ne savait pas encore où
+    # joindre l'autre. Le 22 août, le tout premier paquet d'une console est
+    # parti à la poubelle pour cette raison -- et s'il portait l'ouverture de
+    # l'échange de clés, tout ce qui a suivi était des relances sans espoir.
+    # Les deux consoles se sont parlé pendant dix paquets sans jamais
+    # s'entendre.
+    #
+    # Ils attendent maintenant. Une poignée suffit : ce qui compte est le
+    # début de la conversation, pas son milieu.
+    waiting: dict[str, list[bytes]] = {}
+    HELD = 16
 
     def note(kind: str, **values: object) -> None:
         record = {
@@ -141,12 +154,30 @@ def main(argv: list[str] | None = None) -> int:
             continue
         target = endpoint.get(partner)
         if target is None:
-            # L'autre n'a pas encore parlé : on ne sait pas encore où il est.
-            dropped[source] = dropped.get(source, 0) + 1
-            if dropped[source] in (1, 100, 1000):
-                note("relay_partner_silent", peer=source, partner=partner,
-                     packets=dropped[source])
+            # L'autre n'a pas encore parlé : on garde, on ne jette pas.
+            held = waiting.setdefault(source, [])
+            if len(held) < HELD:
+                held.append(payload)
+                if len(held) == 1:
+                    note("relay_holding", peer=source, partner=partner)
+            else:
+                dropped[source] = dropped.get(source, 0) + 1
+                if dropped[source] in (1, 100, 1000):
+                    note("relay_hold_full", peer=source, partner=partner,
+                         packets=dropped[source])
             continue
+
+        # Le partenaire vient d'être localisé : on délivre d'abord ce qu'on
+        # gardait, dans l'ordre, avant le paquet du moment.
+        held = waiting.pop(partner, None)
+        if held:
+            note("relay_flushed", peer=partner, target=f"{source}:{port}",
+                 packets=len(held))
+            for kept in held:
+                try:
+                    sock.sendto(kept, (source, port))
+                except OSError:
+                    break
         try:
             sock.sendto(payload, target)
         except OSError as error:
