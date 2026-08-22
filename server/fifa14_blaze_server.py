@@ -1181,6 +1181,55 @@ def search_window() -> float:
         return 0.0
 
 
+def peer_relay() -> tuple[str, int] | None:
+    """Où faire pointer l'adresse des adversaires, ou rien.
+
+    `FIFA14_PEER_RELAY=87.106.7.87:3074` réécrit, dans le XNADDR que chaque
+    console reçoit pour l'autre, l'adresse publique et le port -- de sorte que
+    le trafic de match parte vers cette adresse-là au lieu du domicile de
+    l'autre joueur.
+
+    C'est le montage classique d'un relais : le trafic pair-à-pair est chiffré
+    de bout en bout entre les deux consoles, avec des clés qui voyagent dans
+    `XSES`, donc un intermédiaire n'a rien à déchiffrer -- il transporte des
+    paquets opaques et croise les flux.
+
+    Ce qui n'est pas établi, c'est si le noyau de la console honore cette
+    réécriture. Un XNADDR porte aussi vingt octets d'`abOnline`, la structure
+    d'adresse que remplit la passerelle Xbox LIVE, et personne n'a documenté
+    si l'association de sécurité s'en sert pour router. D'où la sonde avant le
+    relais : réécrire, écouter, et voir s'il arrive quoi que ce soit.
+    """
+    raw = os.environ.get("FIFA14_PEER_RELAY", "").strip()
+    if not raw:
+        return None
+    host, _, port = raw.partition(":")
+    try:
+        return host, int(port or 3074)
+    except ValueError:
+        return None
+
+
+def relayed_address(address: bytes, relay: tuple[str, int]) -> bytes:
+    """Un XNADDR dont l'adresse publique et le port mènent au relais.
+
+    Les 36 octets sont : ina (4), inaOnline (4), wPortOnline (2), abEnet (6),
+    abOnline (20). Seuls les deux du milieu changent. Le reste -- la MAC, et
+    surtout les vingt octets d'abOnline -- est laissé tel quel : c'est de la
+    matière que la console a fabriquée et qu'on ne sait pas lire.
+    """
+    if len(address) < 10:
+        return address
+    host, port = relay
+    try:
+        packed = bytes(int(part) for part in host.split("."))
+    except ValueError:
+        return address
+    if len(packed) != 4:
+        return address
+    return address[:4] + packed + port.to_bytes(2, "big") + address[10:]
+
+
 def test_host() -> str:
     """Le nom d'un hôte que ce serveur fait attendre dans la file, ou rien.
 
@@ -1993,8 +2042,15 @@ class Fifa14Protocol:
             "state": state,
         }
 
-    def member_player(self, game: HostedGame, member: dict) -> list[Field]:
-        """A roster entry, from a member record."""
+    def member_player(self, game: HostedGame, member: dict,
+                      viewer: ClientState | None = None) -> list[Field]:
+        """A roster entry, from a member record, as one player will read it.
+
+        `viewer` matters only when a relay is configured: a player's own
+        address is left alone -- it knows where it lives -- and everybody
+        else's is pointed at the relay, because those are the ones it will
+        dial.
+        """
         fields = [
             Field("CONG", INTEGER, member["group"]),
             Field("CSID", INTEGER, member["slot"]),
@@ -2027,8 +2083,22 @@ class Fifa14Protocol:
             # mPlayerSessionId: how a client recognises itself in a roster.
             Field("UID", INTEGER, member["persona"]),
         ]
-        if member["address"] is not None:
-            fields.append(Field("PNET", UNION, member["address"]))
+        address = member["address"]
+        relay = peer_relay()
+        if (address is not None and relay is not None and viewer is not None
+                and member["persona"] != viewer.xuid):
+            active, valu = address
+            rewritten = []
+            for entry in valu.value:
+                if entry.label == "XDDR":
+                    rewritten.append(Field(
+                        "XDDR", BINARY, relayed_address(bytes(entry.value), relay)
+                    ))
+                else:
+                    rewritten.append(entry)
+            address = (active, Field("VALU", STRUCT, rewritten))
+        if address is not None:
+            fields.append(Field("PNET", UNION, address))
         return sorted(fields, key=lambda field: encode_tag(field.label))
 
     def replicated_game_player(self, game: HostedGame) -> list[Field]:
@@ -2166,7 +2236,8 @@ class Fifa14Protocol:
         return [joining, joined]
 
     def game_setup_payload(self, game: HostedGame, session: int = 0,
-                           result: int = MATCHMAKING_SUCCESS_CREATED_GAME) -> list[Field]:
+                           result: int = MATCHMAKING_SUCCESS_CREATED_GAME,
+                           viewer: ClientState | None = None) -> list[Field]:
         """The five members of NotifyGameSetup.
 
         Shared by notification 20 and notification 22, because the 557-class
@@ -2178,14 +2249,15 @@ class Fifa14Protocol:
             Field("GAME", STRUCT, self.replicated_game_data(game)),
             Field("LFPJ", INTEGER, 0),
             Field("PROS", LIST, (STRUCT, [
-                self.member_player(game, member) for member in game.members
+                self.member_player(game, member, viewer) for member in game.members
             ] or [self.replicated_game_player(game)])),
             Field("QUEU", LIST, (STRUCT, [])),
             Field("REAS", UNION, self.setup_reason(session, result)),
         ]
 
     def game_setup_notifications(
-        self, game: HostedGame, session: int = 0
+        self, game: HostedGame, session: int = 0,
+        viewer: ClientState | None = None,
     ) -> list[bytes]:
         """`NotifyGameSetup`, and then who the host is.
 
@@ -2201,7 +2273,7 @@ class Fifa14Protocol:
         setup = notification_frame(
             GAME_MANAGER,
             NOTIFY_GAME_SETUP,
-            encode_fields(self.game_setup_payload(game, session)),
+            encode_fields(self.game_setup_payload(game, session, viewer=viewer)),
         )
         host = notification_frame(
             GAME_MANAGER,
@@ -2856,9 +2928,12 @@ class Fifa14Protocol:
             NOTIFY_GAME_SETUP,
             encode_fields(self.game_setup_payload(
                 game, session=guest["session"],
-                result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME)),
+                result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME,
+                viewer=guest["state"])),
         )
-        for frame in self.game_setup_notifications(game, session=host["session"]):
+        for frame in self.game_setup_notifications(
+            game, session=host["session"], viewer=host["state"]
+        ):
             if host["state"].push(frame):
                 self.logger.frame("notification", host["state"], frame)
         # The guest gets notification 20, not 22.

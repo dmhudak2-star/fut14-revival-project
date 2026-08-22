@@ -3359,3 +3359,59 @@ class TwoConsolesTests(unittest.TestCase):
         self.search(self.one, ip=25)
         self.settle(0.8)
         self.assertEqual(self.protocol.games, {})
+
+    def test_each_console_is_sent_the_other_address_through_the_relay(self) -> None:
+        """The lever: it is this server that hands each console the other's
+        address, so it is this server that can point it somewhere reachable.
+
+        Two consoles found each other on 22 August, entered the match, and
+        never saw each other -- two home NATs, France and the United States,
+        and no EA service left to help them through. Nobody can reconfigure
+        either router.
+        """
+        os.environ["FIFA14_PEER_RELAY"] = "87.106.7.87:3074"
+        try:
+            self.search(self.one, ip=25)
+            self.search(self.two, ip=26)
+            self.settle()
+            for viewer, mine, theirs in (
+                (self.one, 25, 26), (self.two, 26, 25),
+            ):
+                setup = next(
+                    f for f in self.pushed(viewer) if f["command"] in (20, 22)
+                )
+                _, roster = by_label(setup, "PROS").value
+                addresses = {}
+                for entry in roster:
+                    name = SERVER.find_field(entry, "NAME").value
+                    _, valu = SERVER.find_field(entry, "PNET").value
+                    addresses[name] = SERVER.find_field(valu.value, "XDDR").value
+                own = addresses[viewer.gamertag]
+                other = addresses[
+                    self.two.gamertag if viewer is self.one else self.one.gamertag
+                ]
+                # Its own address is left alone: it knows where it lives.
+                self.assertEqual(own[:4], bytes([192, 168, 1, mine]))
+                self.assertEqual(own[4:8], bytes(4))
+                # The one it will dial points at the relay.
+                self.assertEqual(other[:4], bytes([192, 168, 1, theirs]))
+                self.assertEqual(other[4:8], bytes([87, 106, 7, 87]))
+                self.assertEqual(other[8:10], (3074).to_bytes(2, "big"))
+                # And everything the console built for itself is untouched --
+                # the MAC, and the twenty bytes of abOnline nobody can read.
+                self.assertEqual(len(other), 36)
+                self.assertEqual(other[10:], bytes(26))
+        finally:
+            os.environ.pop("FIFA14_PEER_RELAY", None)
+
+    def test_without_a_relay_the_addresses_are_handed_over_untouched(self) -> None:
+        self.search(self.one, ip=25)
+        self.search(self.two, ip=26)
+        self.settle()
+        setup = next(f for f in self.pushed(self.one) if f["command"] == 20)
+        _, roster = by_label(setup, "PROS").value
+        for entry in roster:
+            _, valu = SERVER.find_field(entry, "PNET").value
+            self.assertEqual(
+                SERVER.find_field(valu.value, "XDDR").value[4:8], bytes(4)
+            )
