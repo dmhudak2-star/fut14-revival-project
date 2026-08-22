@@ -3022,10 +3022,35 @@ class TwoConsolesTests(unittest.TestCase):
     def pushed(self, state):
         return [decode_frame(frame) for frame in state.channel.sent]
 
+    def settle(self, timeout: float = 3.0) -> None:
+        """Wait for the pairing, which no longer happens inside the handler.
+
+        It is deferred by half a second so that the reply carrying the
+        client's own matchmaking session id is written before it is told about
+        a game -- two consoles were paired correctly on 22 August and both
+        carried on searching, because the guest heard about the game first and
+        had nothing to attach it to.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline and not self.protocol.games:
+            time.sleep(0.02)
+        # The game is registered before its notifications are pushed, so
+        # waiting for the game alone races the frames. Wait for the pushing to
+        # stop instead.
+        sent = -1
+        while time.time() < deadline:
+            now = len(self.one.channel.sent) + len(self.two.channel.sent)
+            if now and now == sent:
+                return
+            sent = now
+            time.sleep(0.05)
+
     def test_the_second_console_to_look_finds_the_first(self) -> None:
         self.search(self.one, ip=25)
+        self.settle(0.8)
         self.assertEqual(self.protocol.games, {})   # nobody to pair with yet
         self.search(self.two, ip=26)
+        self.settle()
         self.assertEqual(len(self.protocol.games), 1)
         game = next(iter(self.protocol.games.values()))
         self.assertEqual(
@@ -3038,6 +3063,7 @@ class TwoConsolesTests(unittest.TestCase):
         nothing else from a server."""
         self.search(self.one, ip=25)
         self.search(self.two, ip=26)
+        self.settle()
         setup = next(f for f in self.pushed(self.one) if f["command"] == 20)
         _, roster = by_label(setup, "PROS").value
         addresses = []
@@ -3053,6 +3079,7 @@ class TwoConsolesTests(unittest.TestCase):
         has to be the one that was already there to be dialled into."""
         self.search(self.one, ip=25)
         self.search(self.two, ip=26)
+        self.settle()
         first = [f["command"] for f in self.pushed(self.one)]
         second = [f["command"] for f in self.pushed(self.two)]
         self.assertIn(20, first)         # you created a game
@@ -3064,17 +3091,20 @@ class TwoConsolesTests(unittest.TestCase):
         nothing to do with the network."""
         self.search(self.one, version="qa-only-day45")
         self.search(self.two, version="some-other-build")
+        self.settle(0.8)
         self.assertEqual(self.protocol.games, {})
 
     def test_one_player_on_two_connections_is_not_two_players(self) -> None:
         third = self.console(3, self.one.xuid, "Imskobogota6z", 25)
         self.search(self.one)
         self.search(third)
+        self.settle(0.8)
         self.assertEqual(self.protocol.games, {})
 
     def test_the_pairing_is_written_down(self) -> None:
         self.search(self.one)
         self.search(self.two)
+        self.settle()
         events = [
             json.loads(line)
             for line in (Path(self.temp.name) / "journal.jsonl").read_text().splitlines()
@@ -3141,6 +3171,7 @@ class TwoConsolesTests(unittest.TestCase):
         """
         self.search(self.one, ip=25)
         self.search(self.two, ip=26)
+        self.settle()
         game_id = next(iter(self.protocol.games))
         self.protocol.handle(
             request(4, 22, [
@@ -3166,6 +3197,7 @@ class TwoConsolesTests(unittest.TestCase):
         partie" climbs by one every time somebody tries and gives up."""
         self.search(self.one, ip=25)
         self.search(self.two, ip=26)
+        self.settle()
         game_id = next(iter(self.protocol.games))
         for who in (self.two, self.one):
             self.protocol.handle(
@@ -3180,6 +3212,7 @@ class TwoConsolesTests(unittest.TestCase):
     def test_leaving_is_no_longer_an_unknown_route(self) -> None:
         self.search(self.one, ip=25)
         self.search(self.two, ip=26)
+        self.settle()
         self.protocol.handle(request(4, 22, [Field("GID", INTEGER, 1)]), self.two)
         events = [
             json.loads(line)
@@ -3216,8 +3249,10 @@ class TwoConsolesTests(unittest.TestCase):
         os.environ["FIFA14_SEARCH_WINDOW"] = "180"
         try:
             self.search(self.one, ip=25)
+            self.settle(0.8)
             self.assertEqual(self.protocol.games, {})
             self.search(self.two, ip=26)
+            self.settle()
             self.assertEqual(len(self.protocol.games), 1)
         finally:
             os.environ.pop("FIFA14_SEARCH_WINDOW", None)

@@ -2706,7 +2706,12 @@ class Fifa14Protocol:
                 return []
             for entry in (mine, partner):
                 self.searches.pop(entry["state"].connection_id, None)
-            host, guest = partner, mine       # whoever was waiting hosts
+            # Whoever was waiting hosts -- by when the search began, not by
+            # which of the two pairing timers happened to fire first. Both are
+            # armed, and with two consoles pressing within a second of each
+            # other they fire together; picking by timer made the host
+            # whichever one lost that race.
+            host, guest = sorted((mine, partner), key=lambda entry: entry["since"])
             game = host["draft"]
             game.game_id = self.next_game_id
             self.next_game_id += 1
@@ -2739,20 +2744,44 @@ class Fifa14Protocol:
         for frame in self.game_setup_notifications(game, session=host["session"]):
             if host["state"].push(frame):
                 self.logger.frame("notification", host["state"], frame)
-        joining = notification_frame(
-            GAME_MANAGER,
-            NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS,
-            encode_fields(self.game_setup_payload(game, session=guest["session"],
-                                                  result=MATCHMAKING_SUCCESS_JOINED_NEW_GAME)),
-        )
-        for frame in (joining, notification_frame(
-            GAME_MANAGER,
-            NOTIFY_PLAYER_JOIN_COMPLETED,
-            encode_fields([
-                Field("GID", INTEGER, game.game_id),
-                Field("PID", INTEGER, guest["state"].xuid),
-            ]),
-        )):
+        # The guest is told the same things in the same order, with 22 in
+        # place of 20 -- who hosts, that it is in, and what state the game is
+        # in. It was getting two of the four, which is not a game it can act
+        # on.
+        for frame in (
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS,
+                encode_fields(self.game_setup_payload(
+                    game, session=guest["session"],
+                    result=MATCHMAKING_SUCCESS_JOINED_NEW_GAME)),
+            ),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_PLATFORM_HOST_INITIALIZED,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("PHID", INTEGER, game.persona_id),
+                    Field("PHST", INTEGER, 0),
+                ]),
+            ),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_PLAYER_JOIN_COMPLETED,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("PID", INTEGER, guest["state"].xuid),
+                ]),
+            ),
+            notification_frame(
+                GAME_MANAGER,
+                NOTIFY_GAME_STATE_CHANGE,
+                encode_fields([
+                    Field("GID", INTEGER, game.game_id),
+                    Field("GSTA", INTEGER, game.state),
+                ]),
+            ),
+        ):
             if guest["state"].push(frame):
                 self.logger.frame("notification", guest["state"], frame)
         # And the host hears that somebody arrived.
@@ -2899,13 +2928,27 @@ class Fifa14Protocol:
                 "state": state,
                 "session": session,
                 "draft": draft,
+                # When this search began, which is what decides who hosts.
+                "since": time.monotonic(),
             }
 
         self.schedule_matchmaking_timeout(state, session, value("DUR", 20000))
         self.broadcast_census()
         # Somebody else may already be waiting, in which case neither of them
-        # has to wait any longer.
-        paired = self.pair_searches(state)
+        # has to wait any longer -- but not from inside this handler.
+        #
+        # Pairing pushes NotifyGameSetup straight down the socket, and this
+        # reply has not been written yet: the connection loop writes it after
+        # the handler returns. So on 22 August two consoles were paired
+        # correctly and both carried on searching, because the guest was told
+        # about a game before it had been told which search the game belonged
+        # to -- notification 22 and 30 on the wire ahead of its own MSID.
+        #
+        # Half a second is enough for the reply to be written and is invisible
+        # next to a search that runs for minutes.
+        pairing = threading.Timer(0.5, self.pair_searches, (state,))
+        pairing.daemon = True
+        pairing.start()
         return [
             response_frame(request, encode_fields([Field("MSID", INTEGER, session)])),
             notification_frame(
