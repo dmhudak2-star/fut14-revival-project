@@ -2744,17 +2744,25 @@ class Fifa14Protocol:
         for frame in self.game_setup_notifications(game, session=host["session"]):
             if host["state"].push(frame):
                 self.logger.frame("notification", host["state"], frame)
-        # The guest is told the same things in the same order, with 22 in
-        # place of 20 -- who hosts, that it is in, and what state the game is
-        # in. It was getting two of the four, which is not a game it can act
-        # on.
+        # The guest gets notification 20, not 22.
+        #
+        # 22 was the family convention -- `NotifyJoiningPlayerInitiateConnections`
+        # sounds exactly like what a joiner should receive -- and it was never
+        # read out of the client's dispatch. On 22 August two consoles were
+        # paired across the Atlantic and the journal settled it: the host got
+        # 20 and answered two seconds later with its XNet session; the guest
+        # got 22 and never said another word. One side connected, and it was
+        # the side that got 20.
+        #
+        # So both sides are set up the same way and differ only in their
+        # setup reason, which is the thing that actually says who joined what.
         for frame in (
             notification_frame(
                 GAME_MANAGER,
-                NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS,
+                NOTIFY_GAME_SETUP,
                 encode_fields(self.game_setup_payload(
                     game, session=guest["session"],
-                    result=MATCHMAKING_SUCCESS_JOINED_NEW_GAME)),
+                    result=MATCHMAKING_SUCCESS_JOINED_EXISTING_GAME)),
             ),
             notification_frame(
                 GAME_MANAGER,
