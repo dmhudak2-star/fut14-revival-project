@@ -3082,9 +3082,21 @@ class TwoConsolesTests(unittest.TestCase):
         self.settle()
         first = [f["command"] for f in self.pushed(self.one)]
         second = [f["command"] for f in self.pushed(self.two)]
-        self.assertIn(20, first)         # you created a game
-        self.assertIn(22, second)        # you are joining one that exists
-        self.assertNotIn(20, second)
+        # Both get notification 20. 22 was the family convention and the
+        # journal refuted it: paired across the Atlantic, the host got 20 and
+        # answered with its XNet session two seconds later, and the guest got
+        # 22 and never said another word.
+        self.assertIn(20, first)
+        self.assertIn(20, second)
+        self.assertNotIn(22, second)
+        # What tells them apart is the setup reason, which is what actually
+        # says who joined what.
+        host_setup = next(f for f in self.pushed(self.one) if f["command"] == 20)
+        guest_setup = next(f for f in self.pushed(self.two) if f["command"] == 20)
+        _, host_valu = by_label(host_setup, "REAS").value
+        _, guest_valu = by_label(guest_setup, "REAS").value
+        self.assertEqual(SERVER.find_field(host_valu.value, "RSLT").value, 0)
+        self.assertEqual(SERVER.find_field(guest_valu.value, "RSLT").value, 2)
 
     def test_two_builds_that_disagree_are_not_matched(self) -> None:
         """A mismatch would fail in the network layer for a reason that has
