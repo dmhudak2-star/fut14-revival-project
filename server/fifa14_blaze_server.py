@@ -1181,6 +1181,18 @@ def search_window() -> float:
         return 0.0
 
 
+def relay_pairs_path() -> Path | None:
+    """Où écrire qui joue contre qui, pour le relais.
+
+    Le relais voit des paquets et une adresse source, rien de plus. C'est ce
+    serveur qui sait qui a été apparié avec qui, donc c'est à lui de le dire.
+    Deviner à partir du seul trafic marcherait à deux joueurs et casserait au
+    troisième.
+    """
+    raw = os.environ.get("FIFA14_RELAY_PAIRS", "").strip()
+    return Path(raw) if raw else None
+
+
 def peer_relay() -> tuple[str, int] | None:
     """Où faire pointer l'adresse des adversaires, ou rien.
 
@@ -2643,6 +2655,7 @@ class Fifa14Protocol:
                 self.games.pop(game.game_id, None)
             self.logger.event("game_emptied", game=game.game_id)
         self.broadcast_census()
+        self.publish_relay_pairs()
         return [response_frame(request)]
 
     def destroy_game(self, request: bytes, state: ClientState) -> list[bytes]:
@@ -2901,6 +2914,36 @@ class Fifa14Protocol:
             "since": time.monotonic() - 1.0,
         }
 
+    def publish_relay_pairs(self) -> None:
+        """Dire au relais quelles adresses publiques vont ensemble.
+
+        Réécrit en entier à chaque changement plutôt que modifié : le fichier
+        est minuscule, et un relais qui lit un fichier à moitié écrit
+        renverrait le trafic d'un joueur à un inconnu.
+        """
+        path = relay_pairs_path()
+        if path is None:
+            return
+        pairs = []
+        for game in self.games.values():
+            addresses = [
+                member["state"].peer[0]
+                for member in game.members
+                if member.get("state") is not None and member["state"].peer
+            ]
+            if len(addresses) == 2 and addresses[0] != addresses[1]:
+                pairs.append(addresses)
+        document = json.dumps({"pairs": pairs}, sort_keys=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(document, encoding="utf-8")
+            temporary.replace(path)
+        except OSError as error:
+            self.logger.event("relay_pairs_unwritable", error=str(error))
+            return
+        self.logger.event("relay_pairs_published", pairs=pairs)
+
     def pair_searches(self, state: ClientState) -> list[bytes]:
         """Two consoles looking for a game at the same time are each other's.
 
@@ -3070,6 +3113,7 @@ class Fifa14Protocol:
             )
 
         self.broadcast_census()
+        self.publish_relay_pairs()
         return []
 
     def find_synthetic_opponent(

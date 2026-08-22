@@ -1,0 +1,33 @@
+# Le relais XNet : croise le trafic de match entre deux consoles.
+#
+# Le match ne passe pas par le serveur -- les deux consoles se parlent
+# directement, à l'adresse que le serveur leur a donnée l'une pour l'autre.
+# Derrière deux NAT domestiques, elles ne s'atteignent pas. `FIFA14_PEER_RELAY`
+# réécrit cette adresse pour la faire pointer ici, et une sonde a montré que le
+# noyau honore la réécriture : 25 paquets sont arrivés, dix de chaque console.
+# Il ne manquait qu'un intermédiaire pour croiser les flux.
+#
+# Il ne déchiffre rien : le trafic est chiffré de bout en bout entre les deux
+# consoles, avec des clés qu'elles ont fabriquées elles-mêmes.
+#
+#   sudo cp fifa14-xnet-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fifa14-xnet-relay
+
+[Unit]
+Description=FUT 14 Revival — relais XNet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fifa14
+WorkingDirectory=/opt/fifa14-revival
+ExecStart=/usr/bin/python3 /opt/fifa14-revival/tools/xnet_relay.py --port 3074 --pairs /opt/fifa14-revival/runtime/relay-pairs.json --journal /opt/fifa14-revival/runtime/xnet-relay.jsonl
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fifa14-revival/runtime
+
+[Install]
+WantedBy=multi-user.target
