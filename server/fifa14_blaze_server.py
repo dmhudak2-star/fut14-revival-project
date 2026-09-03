@@ -1862,7 +1862,7 @@ class Fifa14Protocol:
         Tried, and it does not port. With the keys unserved this console made
         **no `/pow/` request at all** -- not the handshake it had been making
         an hour earlier -- while the module string beside it read
-        `http://10.0.0.119:18080` the whole time.
+        `http://IP:18080` the whole time.
 
         Which answers the question the last note left open. POW reads the
         config, and the patched string is not a fallback it ever reaches. The
@@ -1907,12 +1907,12 @@ class Fifa14Protocol:
         to distinguish.
 
         On 28 August they finally disagreed. The launch patch wrote
-        `http://10.0.0.119:18080` into the string; the config still said
-        `10.0.0.119:18080`; and the object built from them held the
+        `http://IP:18080` into the string; the config still said
+        `IP:18080`; and the object built from them held the
         **scheme-less** one. The config is what POW reads.
 
         The scheme is not optional. Without it the module formats
-        `10.0.0.119:18080/pow/auth`, and default.xex's ProtoHttp will not open
+        `IP:18080/pow/auth`, and default.xex's ProtoHttp will not open
         a socket for a URL with no scheme -- which is why hand-patching this
         value into a live object was what produced the first `POST /pow/auth`
         this project has ever seen.
