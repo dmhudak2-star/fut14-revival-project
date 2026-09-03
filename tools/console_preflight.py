@@ -9,7 +9,7 @@ rien écrire, en quelques secondes, et se distinguent les unes des autres — ce
 qu'un timeout de patcheur ne fait pas.
 
     tools/console_preflight.py            l'adresse vient de fifa14revival.ini
-    tools/console_preflight.py <console-ip>
+    tools/console_preflight.py 10.0.0.179
 
 Rien n'est écrit sur la console : `dirlist` et `xbeinfo` sont en lecture seule.
 
